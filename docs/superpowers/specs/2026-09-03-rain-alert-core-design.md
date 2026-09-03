@@ -148,7 +148,8 @@ Degraded modes:
 Named test scenarios that the rules must satisfy:
 
 - 2017-03-12, 29.8 mm forecast in 24 h, probability ≥ 70 % → **imminent**.
-- 9 mm in 48 h at ≥ 60 % with a SENAMHI yellow warning → **prepare**.
+- 10 mm in 48 h at ≥ 60 % with a SENAMHI yellow warning → **prepare**.
+- 9 mm in 48 h at ≥ 60 % with a SENAMHI yellow warning → **none** (below the 9.5 mm *Prepare* threshold).
 - SENAMHI unavailable, 15 mm in 48 h at 65 % → **none** (degraded mode requires 70 %).
 
 ### 6.4 Scraper breakage detection
