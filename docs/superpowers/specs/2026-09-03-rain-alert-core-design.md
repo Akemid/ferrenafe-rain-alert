@@ -310,8 +310,18 @@ Tooling: `uv`, `pytest`, `ruff` for Python; CDK TypeScript for infrastructure.
 - The composer agent is deployed to AgentCore Runtime with the AgentCore CLI.
 - Expected monthly cost with free tiers for Lambda, Scheduler, DynamoDB, and SSM: cents, almost entirely from Bedrock and AgentCore when an alert occurs.
 
-## 11. Open Questions to Resolve at Implementation
+## 11. Repository and Data Hygiene
 
+The repository is intended to be published (recommended: open source under Apache 2.0, pending the owner's confirmation). The following rules apply from the first commit regardless of that decision, because git history is permanent:
+
+- **No personal data in the repository.** Contacts (names, phone numbers, emails, consent) live only in DynamoDB. Test fixtures use obviously fake data.
+- **No secrets in the repository.** Telegram bot tokens, AWS account IDs, email addresses, and API credentials come from SSM Parameter Store or environment variables. A committed example file lists variable names with no values. Secrets are checked before every commit.
+- **Disclaimer in the README.** The system is a community complement to the official warnings of SENAMHI and INDECI, not a replacement, and is provided without warranty.
+- **Open-Meteo license.** Free for non-commercial use only; the project is non-commercial. Any commercial reuse by third parties is their responsibility under Open-Meteo's terms.
+
+## 12. Open Questions to Resolve at Implementation
+
+- License choice (Apache 2.0 recommended) and public or private repository.
 - WhatsApp template constraints for v2 and their effect on the output contract.
 - Open-Meteo model accuracy for the Peruvian coast, observed during calibration.
 - Exact coordinates for Ferreñafe to store in configuration.
