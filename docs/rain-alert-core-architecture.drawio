@@ -1,0 +1,421 @@
+<mxfile host="Electron" version="29.6.1">
+  <diagram name="Page-1" id="diagram-1">
+    <mxGraphModel dx="1200" dy="800" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="2630" pageHeight="870" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ===================== TITLE BLOCK ===================== -->
+        <mxCell id="title-group" connectable="0" style="group;fontFamily=Helvetica;" value="" vertex="1" parent="1">
+          <mxGeometry height="83" width="1850" x="50" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="title-text" style="text;html=1;resizable=1;points=[];autosize=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=30;fontStyle=1;fontFamily=Helvetica;" value="Rain Early-Warning System - Ferre&#241;afe (Core Pipeline)" vertex="1" parent="title-group">
+          <mxGeometry height="42" width="1400" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle-text" style="text;html=1;resizable=0;points=[];autosize=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=16;fontFamily=Helvetica;" value="Preventive El Ni&#241;o rain alerts: deterministic evaluation, LLM only composes the message" vertex="1" parent="title-group">
+          <mxGeometry height="25" width="1400" x="5" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="title-separator" style="line;strokeWidth=2;html=1;fontSize=14;strokeColor=#FF9900;fontFamily=Helvetica;" value="" vertex="1" parent="title-group">
+          <mxGeometry height="10" width="1840" x="5" y="70" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== EXTERNAL DATA SOURCES (left) ===================== -->
+        <mxCell id="ext-senamhi" style="fillColor=#f5f5f5;strokeColor=light-dark(#666666,#D4D4D4);rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1;perimeterSpacing=0;" value="SENAMHI Website&lt;div&gt;&lt;i&gt;HTML warnings page&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="1">
+          <mxGeometry x="60" y="300" width="140" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="ext-senamhi-icon" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#232F3D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.internet;fontFamily=Helvetica;" value="" vertex="1" parent="ext-senamhi">
+          <mxGeometry x="46" y="42" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ext-openmeteo" style="fillColor=#f5f5f5;strokeColor=light-dark(#666666,#D4D4D4);rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1;perimeterSpacing=0;" value="Open-Meteo API&lt;div&gt;&lt;i&gt;hourly precipitation forecast&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="1">
+          <mxGeometry x="60" y="500" width="140" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="ext-openmeteo-icon" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#232F3D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.internet;fontFamily=Helvetica;" value="" vertex="1" parent="ext-openmeteo">
+          <mxGeometry x="46" y="42" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== AWS CLOUD BOUNDARY ===================== -->
+        <mxCell id="aws-cloud" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud;strokeColor=#232F3E;fillColor=light-dark(#232F3E0D,#232F3E0D);fillStyle=auto;verticalAlign=top;align=left;spacingLeft=30;fontColor=#232F3E;dashed=0;container=0;pointerEvents=0;collapsible=0;recursiveResize=0;fontFamily=Helvetica;" value="AWS Cloud - us-east-1" vertex="1" parent="1">
+          <mxGeometry x="360" y="140" width="1250" height="660" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== EventBridge Scheduler ===================== -->
+        <mxCell id="grp-eventbridge" style="fillColor=#FCE4EC;strokeColor=#E7157B;rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#E7157B;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1.5;" value="Scheduling" vertex="1" parent="1">
+          <mxGeometry x="700" y="190" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="svc-eventbridge-scheduler" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.eventbridge_scheduler;fontFamily=Helvetica;" value="EventBridge Scheduler&lt;div&gt;&lt;i&gt;every 6 hours&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="grp-eventbridge">
+          <mxGeometry x="36" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== Lambda alert-pipeline ===================== -->
+        <mxCell id="grp-lambda" style="fillColor=#FFF2E8;strokeColor=#ED7100;rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#ED7100;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1.5;" value="Compute" vertex="1" parent="1">
+          <mxGeometry x="700" y="400" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="svc-lambda" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;fontFamily=Helvetica;shadow=1;" value="AWS Lambda&lt;div&gt;&lt;i&gt;alert-pipeline (Python) orchestrator&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="grp-lambda">
+          <mxGeometry x="36" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== Parameter Store ===================== -->
+        <mxCell id="grp-paramstore" style="fillColor=#F5F5F5;strokeColor=#666666;rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#666666;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1.5;" value="Configuration" vertex="1" parent="1">
+          <mxGeometry x="400" y="640" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="svc-parameter-store" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#666666;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.parameter_store;fontFamily=Helvetica;" value="Parameter Store&lt;div&gt;&lt;i&gt;coordinates, thresholds, channel, checklist&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="grp-paramstore">
+          <mxGeometry x="36" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== DynamoDB contacts ===================== -->
+        <mxCell id="grp-dynamo-contacts" style="fillColor=#F5E6F7;strokeColor=#C925D1;rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#C925D1;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1.5;" value="Database" vertex="1" parent="1">
+          <mxGeometry x="700" y="640" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="svc-dynamo-contacts" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#C925D1;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;fontFamily=Helvetica;shadow=1;" value="DynamoDB - contacts&lt;div&gt;&lt;i&gt;recipients, channel, consent&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="grp-dynamo-contacts">
+          <mxGeometry x="36" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== DynamoDB alerts-sent ===================== -->
+        <mxCell id="grp-dynamo-alerts" style="fillColor=#F5E6F7;strokeColor=#C925D1;rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#C925D1;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1.5;" value="Database" vertex="1" parent="1">
+          <mxGeometry x="1000" y="640" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="svc-dynamo-alerts" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#C925D1;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;fontFamily=Helvetica;shadow=1;" value="DynamoDB - alerts-sent&lt;div&gt;&lt;i&gt;dedupe by level and time window&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="grp-dynamo-alerts">
+          <mxGeometry x="36" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== Bedrock AgentCore Runtime ===================== -->
+        <mxCell id="grp-agentcore" style="fillColor=#E0F2F1;strokeColor=#01A88D;rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#01A88D;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1.5;" value="Generative AI" vertex="1" parent="1">
+          <mxGeometry x="1150" y="400" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="svc-agentcore" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#01A88D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock_agentcore;fontFamily=Helvetica;shadow=1;" value="Bedrock AgentCore Runtime&lt;div&gt;&lt;i&gt;message-composer Strands agent&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="grp-agentcore">
+          <mxGeometry x="36" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== Bedrock foundation model ===================== -->
+        <mxCell id="grp-bedrock" style="fillColor=#E0F2F1;strokeColor=#01A88D;rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#01A88D;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1.5;" value="Generative AI" vertex="1" parent="1">
+          <mxGeometry x="1150" y="640" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="svc-bedrock" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#01A88D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;fontFamily=Helvetica;shadow=1;" value="Amazon Bedrock&lt;div&gt;&lt;i&gt;foundation model drafts message text&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="grp-bedrock">
+          <mxGeometry x="36" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== End User Messaging ===================== -->
+        <mxCell id="grp-eum" style="fillColor=#FCE4EC;strokeColor=#E7157B;rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#E7157B;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1.5;" value="Messaging" vertex="1" parent="1">
+          <mxGeometry x="1450" y="300" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="svc-eum" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.end_user_messaging;fontFamily=Helvetica;shadow=1;" value="End User Messaging&lt;div&gt;&lt;i&gt;WhatsApp template messages (v2)&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="grp-eum">
+          <mxGeometry x="36" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== Amazon SES ===================== -->
+        <mxCell id="grp-ses" style="fillColor=#FCE4EC;strokeColor=#E7157B;rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#E7157B;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1.5;" value="Email" vertex="1" parent="1">
+          <mxGeometry x="1450" y="500" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="svc-ses" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.simple_email_service;fontFamily=Helvetica;shadow=1;" value="Amazon SES&lt;div&gt;&lt;i&gt;email (v2) and operator alert (v1)&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="grp-ses">
+          <mxGeometry x="36" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== Recipients (right) ===================== -->
+        <mxCell id="ext-ward" style="fillColor=#f5f5f5;strokeColor=light-dark(#666666,#D4D4D4);rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1;perimeterSpacing=0;" value="Ward Members&lt;div&gt;&lt;i&gt;WhatsApp / Email (v2)&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="1">
+          <mxGeometry x="1720" y="300" width="150" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="ext-ward-icon" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#232F3D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.users;fontFamily=Helvetica;" value="" vertex="1" parent="ext-ward">
+          <mxGeometry x="51" y="42" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ext-operator" style="fillColor=#f5f5f5;strokeColor=light-dark(#666666,#D4D4D4);rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;fontFamily=Helvetica;container=1;collapsible=0;shadow=1;strokeWidth=1;perimeterSpacing=0;" value="Operator (human relay)&lt;div&gt;&lt;i&gt;Telegram / Email (v1); relays to WhatsApp group&lt;/i&gt;&lt;/div&gt;" vertex="1" parent="1">
+          <mxGeometry x="1720" y="500" width="150" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="ext-operator-icon" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#232F3D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.users;fontFamily=Helvetica;" value="" vertex="1" parent="ext-operator">
+          <mxGeometry x="51" y="42" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== EDGES ===================== -->
+
+        <!-- E1: EventBridge -> Lambda -->
+        <mxCell id="edge-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-eventbridge-scheduler" target="svc-lambda">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-1-label" value="every 6h" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-1">
+          <mxGeometry relative="1" x="0.3" y="-12" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- E2: Lambda -> Parameter Store -->
+        <mxCell id="edge-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=0.2;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-lambda" target="svc-parameter-store">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="724" y="580" />
+              <mxPoint x="460" y="580" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge-2-label" value="load config" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-2">
+          <mxGeometry relative="1" x="0" y="-16" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- E3: Lambda -> SENAMHI -->
+        <mxCell id="edge-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=0;exitY=0.3;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-lambda" target="ext-senamhi">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-3-label" value="scrape warnings" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-3">
+          <mxGeometry relative="1" x="0.1" y="-16" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- E4: Lambda -> Open-Meteo -->
+        <mxCell id="edge-4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=0;exitY=0.7;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-lambda" target="ext-openmeteo">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-4-label" value="fetch forecast" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-4">
+          <mxGeometry relative="1" x="0.1" y="16" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- E5/E9 merged: Lambda <-> DynamoDB alerts-sent (dedupe check + record) -->
+        <mxCell id="edge-5-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;startArrow=block;startFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=0.8;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-lambda" target="svc-dynamo-alerts">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="796" y="580" />
+              <mxPoint x="1060" y="580" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge-5-9-label" value="5 dedupe check / 9 record alert" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-5-9">
+          <mxGeometry relative="1" x="0" y="-16" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- E6: Lambda -> AgentCore Runtime -->
+        <mxCell id="edge-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=1;exitY=0.3;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-lambda" target="svc-agentcore">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-6-label" value="invoke agent" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-6">
+          <mxGeometry relative="1" x="0" y="-14" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- E7: AgentCore -> Bedrock -->
+        <mxCell id="edge-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-agentcore" target="svc-bedrock">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-7-label" value="draft message" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-7">
+          <mxGeometry relative="1" x="0" y="0" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- E8: Lambda -> DynamoDB contacts -->
+        <mxCell id="edge-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-lambda" target="svc-dynamo-contacts">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-8-label" value="read contacts" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-8">
+          <mxGeometry relative="1" x="0" y="0" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Lambda -> End User Messaging (routes above AgentCore) -->
+        <mxCell id="edge-eum" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=0.8;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-lambda" target="svc-eum">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="796" y="350" />
+              <mxPoint x="1450" y="350" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge-eum-label" value="WhatsApp v2" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-eum">
+          <mxGeometry relative="1" x="0.2" y="-14" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Lambda -> SES (routes above AgentCore, offset lane) -->
+        <mxCell id="edge-ses" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=1;exitY=0.15;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-lambda" target="svc-ses">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="820" y="370" />
+              <mxPoint x="1420" y="370" />
+              <mxPoint x="1420" y="560" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge-ses-label" value="email v2 / operator v1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-ses">
+          <mxGeometry relative="1" x="0.15" y="14" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- End User Messaging -> Ward Members -->
+        <mxCell id="edge-eum-ward" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.4;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-eum" target="ext-ward">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-eum-ward-label" value="WhatsApp v2" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-eum-ward">
+          <mxGeometry relative="1" x="0" y="-12" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- SES -> Operator -->
+        <mxCell id="edge-ses-operator" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.4;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-ses" target="ext-operator">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-ses-operator-label" value="operator alert" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-ses-operator">
+          <mxGeometry relative="1" x="0" y="-12" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- SES -> Ward Members (email v2, secondary) -->
+        <mxCell id="edge-ses-ward" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#545B64;fontFamily=Helvetica;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="svc-ses" target="ext-ward">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1510" y="460" />
+              <mxPoint x="1795" y="460" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge-ses-ward-label" value="email v2" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontFamily=Helvetica;labelBackgroundColor=none;fontColor=light-dark(#000000,#FFFFFF);" connectable="0" vertex="1" parent="edge-ses-ward">
+          <mxGeometry relative="1" x="0" y="-12" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ===================== ON-DIAGRAM STEP BADGES ===================== -->
+        <mxCell id="step-1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=16;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;align=center;verticalAlign=middle;labelBackgroundColor=none;" value="1" vertex="1" parent="1">
+          <mxGeometry x="746" y="341" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="step-2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=16;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;align=center;verticalAlign=middle;labelBackgroundColor=none;" value="2" vertex="1" parent="1">
+          <mxGeometry x="615" y="566" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="step-3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=16;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;align=center;verticalAlign=middle;labelBackgroundColor=none;" value="3" vertex="1" parent="1">
+          <mxGeometry x="540" y="390" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="step-4" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=16;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;align=center;verticalAlign=middle;labelBackgroundColor=none;" value="4" vertex="1" parent="1">
+          <mxGeometry x="540" y="524" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="step-5" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=16;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;align=center;verticalAlign=middle;labelBackgroundColor=none;" value="5" vertex="1" parent="1">
+          <mxGeometry x="815" y="548" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="step-6" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=16;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;align=center;verticalAlign=middle;labelBackgroundColor=none;" value="6" vertex="1" parent="1">
+          <mxGeometry x="845" y="400" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="step-7" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=16;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;align=center;verticalAlign=middle;labelBackgroundColor=none;" value="7" vertex="1" parent="1">
+          <mxGeometry x="1224" y="548" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="step-8" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=16;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;align=center;verticalAlign=middle;labelBackgroundColor=none;" value="8" vertex="1" parent="1">
+          <mxGeometry x="746" y="555" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="step-9" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=16;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;align=center;verticalAlign=middle;labelBackgroundColor=none;" value="9" vertex="1" parent="1">
+          <mxGeometry x="1035" y="595" width="28" height="28" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== LEGEND PANEL ===================== -->
+        <mxCell id="legend-bg" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shape=mxgraph.basic.rect;fillColor2=none;strokeWidth=1;size=20;indent=5;fillColor=light-dark(#EDF3FF,#305363);strokeColor=#6c8ebf;" value="" vertex="1" parent="1">
+          <mxGeometry height="790" width="650" x="1930" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-title" style="text;html=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=16;fontStyle=1;fontFamily=Helvetica;fontColor=light-dark(#000000,#FFFFFF);" value="Pipeline Steps" vertex="1" parent="1">
+          <mxGeometry height="24" width="400" x="1950" y="42" as="geometry" />
+        </mxCell>
+
+        <mxCell id="legend-container" connectable="0" style="group" value="" vertex="1" parent="1">
+          <mxGeometry height="700" width="602" x="1950" y="72" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step-1-legend" connectable="0" style="group;fontFamily=Helvetica;" value="" vertex="1" parent="legend-container">
+          <mxGeometry height="64" width="600" x="0" y="0" as="geometry" />
+        </mxCell>
+        <mxCell id="step-1-badge-legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=22;labelBackgroundColor=none;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;" value="1" vertex="1" parent="step-1-legend">
+          <mxGeometry height="38" width="40" y="2" as="geometry" />
+        </mxCell>
+        <mxCell id="step-1-desc-legend" style="text;html=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=14;labelBackgroundColor=none;whiteSpace=wrap;fontFamily=Helvetica;" value="&lt;div&gt;&lt;b&gt;Scheduled trigger&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: light-dark(rgb(0,0,0), rgb(255,255,255));&quot;&gt;EventBridge Scheduler runs the alert-pipeline Lambda every 6 hours.&lt;/span&gt;&lt;/div&gt;" vertex="1" parent="step-1-legend">
+          <mxGeometry height="64" width="548" x="52" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step-2-legend" connectable="0" style="group;fontFamily=Helvetica;" value="" vertex="1" parent="legend-container">
+          <mxGeometry height="64" width="600" x="0" y="72" as="geometry" />
+        </mxCell>
+        <mxCell id="step-2-badge-legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=22;labelBackgroundColor=none;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;" value="2" vertex="1" parent="step-2-legend">
+          <mxGeometry height="38" width="40" y="2" as="geometry" />
+        </mxCell>
+        <mxCell id="step-2-desc-legend" style="text;html=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=14;labelBackgroundColor=none;whiteSpace=wrap;fontFamily=Helvetica;" value="&lt;div&gt;&lt;b&gt;Load configuration&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: light-dark(rgb(0,0,0), rgb(255,255,255));&quot;&gt;Lambda reads city coordinates, thresholds, active channel and the preparedness checklist from Parameter Store.&lt;/span&gt;&lt;/div&gt;" vertex="1" parent="step-2-legend">
+          <mxGeometry height="64" width="548" x="52" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step-3-legend" connectable="0" style="group;fontFamily=Helvetica;" value="" vertex="1" parent="legend-container">
+          <mxGeometry height="64" width="600" x="0" y="144" as="geometry" />
+        </mxCell>
+        <mxCell id="step-3-badge-legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=22;labelBackgroundColor=none;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;" value="3" vertex="1" parent="step-3-legend">
+          <mxGeometry height="38" width="40" y="2" as="geometry" />
+        </mxCell>
+        <mxCell id="step-3-desc-legend" style="text;html=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=14;labelBackgroundColor=none;whiteSpace=wrap;fontFamily=Helvetica;" value="&lt;div&gt;&lt;b&gt;Scrape SENAMHI&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: light-dark(rgb(0,0,0), rgb(255,255,255));&quot;&gt;Lambda scrapes current warnings (yellow / orange / red level and dates) from the SENAMHI website.&lt;/span&gt;&lt;/div&gt;" vertex="1" parent="step-3-legend">
+          <mxGeometry height="64" width="548" x="52" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step-4-legend" connectable="0" style="group;fontFamily=Helvetica;" value="" vertex="1" parent="legend-container">
+          <mxGeometry height="64" width="600" x="0" y="216" as="geometry" />
+        </mxCell>
+        <mxCell id="step-4-badge-legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=22;labelBackgroundColor=none;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;" value="4" vertex="1" parent="step-4-legend">
+          <mxGeometry height="38" width="40" y="2" as="geometry" />
+        </mxCell>
+        <mxCell id="step-4-desc-legend" style="text;html=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=14;labelBackgroundColor=none;whiteSpace=wrap;fontFamily=Helvetica;" value="&lt;div&gt;&lt;b&gt;Fetch forecast&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: light-dark(rgb(0,0,0), rgb(255,255,255));&quot;&gt;Lambda fetches 48h hourly precipitation and probability from the Open-Meteo API for Ferre&#241;afe's coordinates.&lt;/span&gt;&lt;/div&gt;" vertex="1" parent="step-4-legend">
+          <mxGeometry height="64" width="548" x="52" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step-5-legend" connectable="0" style="group;fontFamily=Helvetica;" value="" vertex="1" parent="legend-container">
+          <mxGeometry height="64" width="600" x="0" y="288" as="geometry" />
+        </mxCell>
+        <mxCell id="step-5-badge-legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=22;labelBackgroundColor=none;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;" value="5" vertex="1" parent="step-5-legend">
+          <mxGeometry height="38" width="40" y="2" as="geometry" />
+        </mxCell>
+        <mxCell id="step-5-desc-legend" style="text;html=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=14;labelBackgroundColor=none;whiteSpace=wrap;fontFamily=Helvetica;" value="&lt;div&gt;&lt;b&gt;Evaluate &amp; dedupe&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: light-dark(rgb(0,0,0), rgb(255,255,255));&quot;&gt;Lambda applies fixed rules (none / prepare / imminent) and checks DynamoDB alerts-sent on the same bidirectional edge as step 9. &lt;b&gt;If no new alert level is found, the pipeline stops here.&lt;/b&gt;&lt;/span&gt;&lt;/div&gt;" vertex="1" parent="step-5-legend">
+          <mxGeometry height="64" width="548" x="52" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step-6-legend" connectable="0" style="group;fontFamily=Helvetica;" value="" vertex="1" parent="legend-container">
+          <mxGeometry height="64" width="600" x="0" y="360" as="geometry" />
+        </mxCell>
+        <mxCell id="step-6-badge-legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=22;labelBackgroundColor=none;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;" value="6" vertex="1" parent="step-6-legend">
+          <mxGeometry height="38" width="40" y="2" as="geometry" />
+        </mxCell>
+        <mxCell id="step-6-desc-legend" style="text;html=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=14;labelBackgroundColor=none;whiteSpace=wrap;fontFamily=Helvetica;" value="&lt;div&gt;&lt;b&gt;Invoke composer agent&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: light-dark(rgb(0,0,0), rgb(255,255,255));&quot;&gt;On a new alert, Lambda invokes the message-composer agent on Bedrock AgentCore Runtime with structured risk data.&lt;/span&gt;&lt;/div&gt;" vertex="1" parent="step-6-legend">
+          <mxGeometry height="64" width="548" x="52" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step-7-legend" connectable="0" style="group;fontFamily=Helvetica;" value="" vertex="1" parent="legend-container">
+          <mxGeometry height="64" width="600" x="0" y="432" as="geometry" />
+        </mxCell>
+        <mxCell id="step-7-badge-legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=22;labelBackgroundColor=none;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;" value="7" vertex="1" parent="step-7-legend">
+          <mxGeometry height="38" width="40" y="2" as="geometry" />
+        </mxCell>
+        <mxCell id="step-7-desc-legend" style="text;html=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=14;labelBackgroundColor=none;whiteSpace=wrap;fontFamily=Helvetica;" value="&lt;div&gt;&lt;b&gt;Draft the message&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: light-dark(rgb(0,0,0), rgb(255,255,255));&quot;&gt;The agent calls an Amazon Bedrock foundation model to draft the Spanish alert text, then returns the composed text to Lambda (not drawn separately, to reduce clutter).&lt;/span&gt;&lt;/div&gt;" vertex="1" parent="step-7-legend">
+          <mxGeometry height="64" width="548" x="52" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step-8-legend" connectable="0" style="group;fontFamily=Helvetica;" value="" vertex="1" parent="legend-container">
+          <mxGeometry height="64" width="600" x="0" y="504" as="geometry" />
+        </mxCell>
+        <mxCell id="step-8-badge-legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=22;labelBackgroundColor=none;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;" value="8" vertex="1" parent="step-8-legend">
+          <mxGeometry height="38" width="40" y="2" as="geometry" />
+        </mxCell>
+        <mxCell id="step-8-desc-legend" style="text;html=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=14;labelBackgroundColor=none;whiteSpace=wrap;fontFamily=Helvetica;" value="&lt;div&gt;&lt;b&gt;Validate &amp; notify&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: light-dark(rgb(0,0,0), rgb(255,255,255));&quot;&gt;Lambda validates the text, reads recipients/consent from DynamoDB contacts, then sends via SES email or End User Messaging WhatsApp (v2), or an operator alert (v1) who relays to the neighborhood WhatsApp group.&lt;/span&gt;&lt;/div&gt;" vertex="1" parent="step-8-legend">
+          <mxGeometry height="64" width="548" x="52" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step-9-legend" connectable="0" style="group;fontFamily=Helvetica;" value="" vertex="1" parent="legend-container">
+          <mxGeometry height="64" width="600" x="0" y="576" as="geometry" />
+        </mxCell>
+        <mxCell id="step-9-badge-legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#007CBD;strokeColor=default;fontColor=#FFFFFF;fontStyle=1;fontSize=22;labelBackgroundColor=none;fontFamily=Helvetica;shadow=1;glass=0;strokeWidth=2;" value="9" vertex="1" parent="step-9-legend">
+          <mxGeometry height="38" width="40" y="2" as="geometry" />
+        </mxCell>
+        <mxCell id="step-9-desc-legend" style="text;html=1;align=left;verticalAlign=top;spacingTop=-4;fontSize=14;labelBackgroundColor=none;whiteSpace=wrap;fontFamily=Helvetica;" value="&lt;div&gt;&lt;b&gt;Record the alert&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: light-dark(rgb(0,0,0), rgb(255,255,255));&quot;&gt;Lambda writes the sent alert to DynamoDB alerts-sent (same bidirectional edge as step 5) so future runs can dedupe correctly.&lt;/span&gt;&lt;/div&gt;" vertex="1" parent="step-9-legend">
+          <mxGeometry height="64" width="548" x="52" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
