@@ -1,0 +1,40 @@
+schema: spec-driven
+
+context: |
+  Tech stack (planned, no code yet): Python 3 hexagonal app under src/rain_alert/
+  (domain/ports/application/adapters/entrypoints), tooling uv + pytest + ruff.
+  Strands Agents composer agent under agent/, deployed via AgentCore CLI to
+  Bedrock AgentCore Runtime (Claude Haiku 4.5). Infra as AWS CDK (TypeScript)
+  under infra/, tested with aws-cdk-lib/assertions + jest.
+  Source of truth: docs/superpowers/specs/2026-09-03-rain-alert-core-design.md
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Respect section 3 (rejected alternatives) of the design spec — do not reopen closed decisions without new evidence
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Keep the domain layer free of AWS/HTTP/HTML/LLM concerns (see design spec section 6)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+    - The LLM composer never decides whether to alert (design spec section 3.2) — preserve this invariant
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Scaffold tooling (uv project, pytest, ruff, CDK TypeScript app) as its own early task before feature tasks
+  apply:
+    - Follow existing code patterns
+    tdd: true # Strict TDD Mode is enabled globally for this project
+    test_command: "uv run pytest" # planned — unverified, no pyproject.toml yet
+    lint_command: "uv run ruff check" # planned — unverified
+    infra_test_command: "npm test" # planned — run inside infra/, unverified, no package.json yet
+  verify:
+    test_command: "uv run pytest" # planned — unverified
+    build_command: "" # no build step defined yet for the Python app
+    infra_test_command: "npm test" # planned — run inside infra/, unverified
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
+    - Never commit personal data (contacts) or secrets — see design spec section 11

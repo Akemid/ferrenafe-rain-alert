@@ -1,0 +1,87 @@
+schema: spec-driven
+change: core-alert-cycle
+title: Core Alert Cycle (Local, No Cloud)
+created: 2026-09-03
+updated: 2026-09-03
+
+artifact_store:
+  mode: hybrid
+  openspec_root: openspec/changes/core-alert-cycle
+  engram_prefix: sdd/core-alert-cycle
+
+execution:
+  mode: interactive
+  delivery_strategy: ask-on-risk
+  strict_tdd: true
+
+# Subproject 1 of the design spec is sliced into three chained changes.
+chain:
+  position: 1
+  of: 3
+  next:
+    - composer-agent
+    - cloud-deployment
+
+phases:
+  explore:
+    status: skipped
+    artifact: null
+    note: >-
+      No sdd-explore run. Exploration input is the approved design spec
+      docs/superpowers/specs/2026-09-03-rain-alert-core-design.md plus
+      docs/rain-alert-core-architecture.drawio.
+  proposal:
+    status: done
+    artifact: openspec/changes/core-alert-cycle/proposal.md
+    engram_topic_key: sdd/core-alert-cycle/proposal
+    engram_saved: true
+    note: >-
+      Engram half persisted by the orchestrator from proposal.md on
+      2026-09-03 (propose executor had no mem_save tool).
+  spec:
+    status: pending
+    depends_on: [proposal]
+    artifact: null
+  design:
+    status: pending
+    depends_on: [proposal]
+    artifact: null
+  tasks:
+    status: pending
+    depends_on: [spec, design]
+    artifact: null
+  apply:
+    status: pending
+    depends_on: [tasks]
+    artifact: null
+  verify:
+    status: pending
+    depends_on: [apply]
+    artifact: null
+  archive:
+    status: pending
+    depends_on: [verify]
+    artifact: null
+
+next_recommended:
+  - sdd-spec
+  - sdd-design
+
+blocked_reasons: []
+
+resolved_decisions:
+  - id: threshold-contradiction
+    resolved: 2026-09-03
+    decision: >-
+      The Prepare rule (>= 9.5 mm accumulated in 48 h, Reque p95 boundary)
+      governs. The named scenario was corrected to 10 mm -> prepare and a
+      boundary scenario 9 mm -> none was added. Design spec 6.3 and
+      proposal.md success criteria updated.
+
+open_decisions:
+  - id: ferrenafe-coordinates
+    owner: sdd-spec
+    detail: >-
+      Exact latitude/longitude for Ferrenafe is an open item in design spec
+      section 12. A documented placeholder may be used in the local config
+      fake for this change.

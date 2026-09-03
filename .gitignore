@@ -16,6 +16,10 @@ cdk.out/
 # Environment and secrets
 .env
 .env.*
+!.env.example
+
+# Local agent tooling (machine-specific paths)
+.atl/
 
 # OS
 .DS_Store
