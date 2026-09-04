@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
+
+_ZERO_OFFSET = timedelta(0)
 
 
 class Level(StrEnum):
@@ -79,14 +81,23 @@ class Coordinates:
 
 @dataclass(frozen=True, slots=True)
 class TimeWindow:
-    """A UTC-aware time span; `end` must be strictly after `start`."""
+    """A UTC time span; `end` must be strictly after `start`.
+
+    The UTC requirement is enforced, not merely documented (D7). `key()` is
+    the DynamoDB sort key in change 3, so an ISO 8601 string carrying a
+    non-zero offset would sort wrongly against its UTC neighbours and silently
+    break the dedup key-range query.
+    """
 
     start: datetime
     end: datetime
 
     def __post_init__(self) -> None:
-        if self.start.tzinfo is None or self.end.tzinfo is None:
-            raise ValueError("TimeWindow requires timezone-aware datetimes")
+        for label, moment in (("start", self.start), ("end", self.end)):
+            if moment.tzinfo is None:
+                raise ValueError("TimeWindow requires timezone-aware datetimes")
+            if moment.utcoffset() != _ZERO_OFFSET:
+                raise ValueError(f"TimeWindow.{label} must be UTC, got offset {moment.utcoffset()}")
         if self.end <= self.start:
             raise ValueError("TimeWindow.end must be strictly after start")
 

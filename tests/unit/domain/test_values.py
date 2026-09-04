@@ -1,6 +1,6 @@
 """Domain value objects and enums (design.md section 3, D1)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -15,9 +15,11 @@ from rain_alert.domain.values import (
     is_escalation,
 )
 
+LIMA_OFFSET = timezone(timedelta(hours=-5))
+
 
 def _utc(hour: int) -> datetime:
-    return datetime(2026, 9, 3, hour, tzinfo=UTC)
+    return datetime(2026, 9, 3, 0, tzinfo=UTC) + timedelta(hours=hour)
 
 
 class TestLevelEnum:
@@ -129,6 +131,27 @@ class TestTimeWindow:
     def test_naive_end_raises(self) -> None:
         with pytest.raises(ValueError, match="timezone"):
             TimeWindow(start=_utc(0), end=datetime(2026, 9, 3, 1))
+
+    @pytest.mark.parametrize(
+        ("start", "end"),
+        [
+            (datetime(2026, 9, 3, 0, tzinfo=LIMA_OFFSET), _utc(1)),
+            (_utc(0), datetime(2026, 9, 3, 1, tzinfo=LIMA_OFFSET)),
+        ],
+        ids=["non-utc-start", "non-utc-end"],
+    )
+    def test_non_utc_offset_raises(self, start: datetime, end: datetime) -> None:
+        """D7 requires UTC. A non-zero offset would make `key()` emit a value
+        that sorts wrongly as the DynamoDB sort key in change 3."""
+        with pytest.raises(ValueError, match="UTC"):
+            TimeWindow(start=start, end=end)
+
+    def test_key_sorts_lexicographically_in_chronological_order(self) -> None:
+        """`key()` is the dedup sort key, so lexical order must equal
+        chronological order for the key range query to be correct."""
+        keys = [TimeWindow(start=_utc(hour), end=_utc(hour + 1)).key() for hour in range(0, 23, 3)]
+
+        assert keys == sorted(keys)
 
     def test_overlapping_windows_overlap(self) -> None:
         a = TimeWindow(start=_utc(0), end=_utc(2))
