@@ -27,7 +27,16 @@ class AlertPolicy:
 
     def decide(self, city_slug: str, assessment: RiskAssessment, now: datetime) -> SendDecision:
         """Query prior sent alerts in the lookback window, then delegate to
-        the pure rule."""
-        earliest_start = now - timedelta(hours=self._lookback_hours)
+        the pure rule.
+
+        The range start is clamped to the assessment window's own start, not
+        just `now - lookback`. An imminent window is the union of the current
+        SENAMHI warning windows and can begin well before the lookback, so a
+        long-duration aviso would otherwise hide the alert already sent for it
+        and the community would be re-alerted every cycle. Clamping only ever
+        widens the range, so the lookback still governs short windows.
+        """
+        lookback_start = now - timedelta(hours=self._lookback_hours)
+        earliest_start = min(lookback_start, assessment.window.start)
         prior = self._alerts.alerts_with_window_start_between(city_slug, earliest_start, assessment.window.end)
         return should_send(assessment, prior)
