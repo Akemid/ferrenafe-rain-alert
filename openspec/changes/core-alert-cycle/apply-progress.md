@@ -173,10 +173,140 @@ so it ships as one PR with the exception recorded rather than being re-cut.
 
 None. All Phase 1 tasks are complete and the gate is green.
 
-## Next Recommended
+## Next Recommended (as of slice 1)
 
 Open PR-1 to `main` (chain strategy `stacked-to-main`), then `sdd-apply` for
 Phase 2 (tasks 2.x: domain, ports, `RunAlertCycle` with fakes). Phase 2 must
 first settle the two Open Items from `tasks.md`: the `AlertPolicy` port-bound
 shell goes in `application/policies.py`, and `OutageNoticePolicy` is naming
 shorthand for the pure `evaluate_outage` function.
+
+---
+
+# Apply Progress: Core Alert Cycle — Slice 2 (Domain, Ports, RunAlertCycle)
+
+**Branch**: `feat/core-alert-cycle-2-domain` (from `main`, slice 1 already merged)
+**Batch**: 2 of N (previous apply-progress for slice 1 read and merged above, not overwritten)
+**Mode**: Strict TDD (test runner: `uv run pytest`)
+**Status**: Complete — all 22 Phase 2 tasks (2.1–2.22) done, verification gate green, one spec/design inconsistency resolved during apply, one task-ordering resequencing.
+
+## Completed Tasks
+
+- [x] 2.1 [RED] `tests/unit/domain/test_values.py`, `test_sources.py`
+- [x] 2.2 [GREEN] `domain/values.py`, `domain/sources.py`
+- [x] 2.3 [RED] `tests/unit/domain/test_entities.py`
+- [x] 2.4 [GREEN] `domain/entities.py`
+- [x] 2.5 [RED] `tests/unit/domain/test_messages.py`
+- [x] 2.6 [GREEN] `domain/messages.py`
+- [x] 2.7 [RED] `tests/unit/domain/test_config.py`
+- [x] 2.8 [GREEN] `domain/config.py`
+- [x] 2.9 `ports/__init__.py` (seven Protocols)
+- [x] 2.10 [RED] `tests/unit/domain/test_risk.py` (10 named scenarios)
+- [x] 2.11 [GREEN] `domain/risk.py` (`RiskEvaluator`, 5-branch order)
+- [x] 2.12 [RED] `tests/unit/domain/test_dedup.py`
+- [x] 2.13 [GREEN] `domain/dedup.py` (`should_send`) + `application/policies.py` (`AlertPolicy`)
+- [x] 2.14 [RED] `tests/unit/domain/test_outage.py` (8-row table)
+- [x] 2.15 [GREEN] `domain/outage.py` (`evaluate_outage`, `OutageDecision`)
+- [x] 2.16 [RED] `tests/unit/domain/test_template.py`
+- [x] 2.17 [GREEN] `domain/template.py` (deterministic `MessageComposer`)
+- [x] 2.18 `tests/support/fakes.py`, `tests/support/wiring.py` (+ `application/dependencies.py`, resequenced — see Deviations)
+- [x] 2.19 [RED] `tests/unit/application/test_run_alert_cycle.py`
+- [x] 2.20 [GREEN] `application/run_alert_cycle.py` (`RunAlertCycle`, `CycleResult`)
+- [x] 2.21 [REFACTOR] extracted `_forecast_reason()` in `risk.py`
+- [x] 2.22 PR-2 verification gate — all green
+
+## TDD Cycle Evidence
+
+| Task pair | Test file | RED confirmed (exact failure) | GREEN | REFACTOR |
+|---|---|---|---|---|
+| 2.1/2.2 | `test_values.py`, `test_sources.py` | `ModuleNotFoundError: No module named 'rain_alert.domain.values'` (and `.sources`) | 30 tests passed on first implementation | n/a |
+| 2.3/2.4 | `test_entities.py` | `ModuleNotFoundError: ...domain.entities` | 1 test failure on first pass (test helper bug: `datetime(2026,9,3,48,...)` — hour must be 0-23), fixed with `timedelta`; then 9/9 passed | n/a |
+| 2.5/2.6 | `test_messages.py` | `ModuleNotFoundError: ...domain.messages` | same test-helper hour-overflow bug, same `timedelta` fix; then 8/8 passed | n/a |
+| 2.7/2.8 | `test_config.py` | `ModuleNotFoundError: ...domain.config` | 2/2 passed on first implementation | n/a |
+| 2.10/2.11 | `test_risk.py` | `ModuleNotFoundError: ...domain.risk` | 10/10 passed on first implementation (5-branch short-circuit logic) | folded into 2.21 |
+| 2.12/2.13 | `test_dedup.py` | `ModuleNotFoundError: ...domain.dedup` | 6/6 passed on first implementation | n/a |
+| 2.14/2.15 | `test_outage.py` | `ModuleNotFoundError: ...domain.outage` | 10/10 passed on first implementation (all 8 table rows + 2 extra) | n/a |
+| 2.16/2.17 | `test_template.py` | `ModuleNotFoundError: ...domain.template` | 5/5 passed on first implementation | n/a |
+| 2.19/2.20 | `test_run_alert_cycle.py` | `ModuleNotFoundError: ...application.run_alert_cycle` | 1 test failure on first pass (test's own assumption about outage-recovery notice count was wrong — see Learned); fixed the test, then 8/8 passed | n/a |
+| 2.21 | (existing suites) | n/a — refactor task | n/a | extracted `_forecast_reason()`; full suite + mypy + ruff re-verified green, no behavior change |
+
+### Test Summary
+- **Total tests added this slice**: 90 (30 values/sources + 9 entities + 8 messages + 2 config + 10 risk + 6 dedup + 10 outage + 5 template + 8 run_alert_cycle + 2 architecture allow-list additions folded into existing file)
+- **Total tests passing repo-wide**: 98/98
+- **Layers used**: Unit (98), Integration (0), E2E (0)
+- **Pure functions added**: `is_escalation`, `status_of`, `Forecast.accumulated_mm/max_probability_pct/peak_hour/precipitation_window`, `should_send`, `evaluate_outage`, `RiskEvaluator.evaluate` (+ 4 private branch helpers + `_forecast_reason`)
+
+## Files Changed
+
+| File | Action | What Was Done |
+|---|---|---|
+| `src/rain_alert/domain/values.py` | Created | Enums (`Level`, `WarningLevel`, `SourceName`, `NoticeKind`, `UnavailableReason`), `LEVEL_RANK`, `is_escalation`, `Coordinates`, `TimeWindow` |
+| `src/rain_alert/domain/sources.py` | Created | `Available[T]`/`Unavailable`/`SourceResult[T]` (PEP 695), `status_of` |
+| `src/rain_alert/domain/entities.py` | Created | `Warning`, `HourlyPoint`, `Forecast` (contiguity-checked), `RiskAssessment`, `Contact` |
+| `src/rain_alert/domain/messages.py` | Created | `ForecastSummary`, `WarningSummary`, `MessageRequest`, `AlertMessage`, `AlertRecord`, `OutageRecord`, `OperatorNotice` |
+| `src/rain_alert/domain/config.py` | Created | `RiskThresholds`, `AlertConfig` |
+| `src/rain_alert/ports/__init__.py` | Modified | Seven `Protocol`s: `ConfigRepository`, `WarningProvider`, `ForecastProvider`, `MessageComposer`, `ContactRepository`, `Notifier`, `AlertRepository` |
+| `src/rain_alert/domain/risk.py` | Created | `RiskEvaluator` — 5-branch short-circuit evaluation, `_forecast_reason` helper |
+| `src/rain_alert/domain/dedup.py` | Created | Pure `should_send`, `SendDecision` |
+| `src/rain_alert/application/policies.py` | Created | `AlertPolicy` — port-bound shell over `should_send` |
+| `src/rain_alert/domain/outage.py` | Created | Pure `evaluate_outage`, `OutageDecision` — 8-row state machine |
+| `src/rain_alert/domain/template.py` | Created | Deterministic `MessageComposer` (Spanish recipient-facing text) |
+| `src/rain_alert/application/dependencies.py` | Created | `CycleDependencies` (D6, D7) |
+| `src/rain_alert/application/run_alert_cycle.py` | Created | `RunAlertCycle`, `CycleResult`, `_build_message_request` |
+| `tests/support/fakes.py` | Created | Hand-written recording spies for all seven ports, no `unittest.mock` |
+| `tests/support/wiring.py` | Created | `build_fake_deps()` with calm defaults |
+| `tests/unit/domain/test_{values,sources,entities,messages,config,risk,dedup,outage,template}.py` | Created | Table-driven unit tests, `ids=` naming spec scenarios where applicable |
+| `tests/unit/application/test_run_alert_cycle.py` | Created | Full-chain, dedup short-circuit, record-after-notify, 3-cycle dual-outage suppression, degraded wiring |
+| `tests/architecture/test_layer_boundaries.py` | Modified | `PORTS_ALLOWED_ROOTS` extended with `"datetime"` |
+| `pyproject.toml` | Modified | Added `pythonpath = ["."]` so `tests.support.*` resolves as a dotted import |
+| `openspec/changes/core-alert-cycle/tasks.md` | Modified | Checked off 2.1–2.22; updated Open Items and Review Workload Forecast |
+| `openspec/changes/core-alert-cycle/state.yaml` | Modified | Slice 2 status, gate result, line-budget flag |
+
+## Spec/Design Inconsistency Found and Resolved
+
+**The ports architecture allow-list did not include `datetime`.** `tests/architecture/test_layer_boundaries.py` (written in slice 1, merged to `main`) restricts `ports/` to `{typing, collections.abc, rain_alert.domain}`. But design.md section 4's own `ports/__init__.py` code block uses `datetime` in every port signature that carries `now` or a timestamp (`WarningProvider.fetch_current_warnings(self, region: str, now: datetime)`, etc.). Writing the seven ports exactly as designed failed `test_ports_package_imports_only_typing_and_domain` immediately.
+
+**Resolution**: extended `PORTS_ALLOWED_ROOTS` with `"datetime"` (a stdlib type with no I/O or third-party surface) rather than reopening design.md section 10 mid-slice, and dropped `from __future__ import annotations` from `ports/__init__.py` (not needed once `datetime` is a normal import, and avoids also having to allow-list `"__future__"`). Documented in a comment on `PORTS_ALLOWED_ROOTS` and in `tasks.md`'s Open Items section.
+
+## Deviations from Design
+
+1. **Task resequencing (2.18/2.20 split)**: `tasks.md` lists `application/dependencies.py` (`CycleDependencies`) as part of task 2.20's GREEN step (paired with `run_alert_cycle.py`), but task 2.18 (`tests/support/wiring.py`) needs the `CycleDependencies` type to type-check `build_fake_deps()`'s return value. `CycleDependencies` is a plain frozen dataclass with no business logic, so it was implemented as part of 2.18's work instead of deferred to 2.20. Task 2.20's remaining scope was `run_alert_cycle.py` itself. No test coverage was skipped — `CycleDependencies` has no behavior to test on its own; it is exercised end-to-end by every `RunAlertCycle` test.
+2. **`tests.support.*` import path**: design.md section 10 refers to `tests.support.wiring.build_fake_deps()` using dotted notation. Verifying this resolves as a real Python import (rather than relying on an incidental `sys.path` side effect of `tests/conftest.py`'s own import) required adding pytest's built-in `pythonpath = ["."]` option to `[tool.pytest.ini_options]`. This is additive, standard pytest configuration, not a third-party dependency.
+3. **`OutageDecision` narrow-with-recovery emits two notices, not one** (design.md section 6, row 7, and confirmed by the section 7.2 mermaid diagram cycle 5): when a dual outage narrows to a single still-down source, both a `SOURCES_RECOVERED` notice and a fresh `SOURCE_UNAVAILABLE` notice for the still-down source are emitted in the same cycle. My first draft of `test_run_alert_cycle.py`'s recovery test wrongly asserted exactly 2 total notices across the whole scenario; the actual (and design-correct) count is 3 (1 initial dual-outage notice + 2 from the narrow-with-recovery cycle). Fixed the test assertion, not the implementation — this is design's own literal behavior, not a bug.
+
+## Issues Found
+
+None blocking. See "Spec/Design Inconsistency Found and Resolved" above for the one issue that required a code-level decision.
+
+## Review Workload / Line Budget
+
+Actual diff since branching from `main` (`git diff main...HEAD --stat`):
+
+- **src/**: 13 files changed, 1021 insertions
+- **tests/**: 13 files changed, 1335 insertions
+- **other** (`pyproject.toml`): 4 insertions
+- **Total**: 2356 changed lines
+
+The task/design estimate for slice 2 was ~400 authored lines, with tests expected to "roughly double that" (~800 total per the orchestrator's own framing). The actual 2356-line diff is roughly 3x that combined estimate. This was not driven by scope creep — task 2.1 through 2.22 map 1:1 to what was implemented, no extra files, no gold-plating — but by the sheer number of table-driven scenario tests the specs explicitly require (10 risk-evaluation scenarios, 8 outage-transition rows, 6 dedup scenarios, plus entity/value/message/config coverage) combined with sizeable domain type surfaces (nine dataclasses in `entities.py`+`messages.py`, seven ports, a five-branch evaluator).
+
+**This is flagged, not silently absorbed**, per `ask-on-risk`: the fresh-context reviewer and/or owner should decide whether to accept `size:exception` for PR-2 as a single stacked PR (all 12 work-unit commits are independently reviewable and revertable), or request a further split (e.g., domain types in one PR, evaluator+dedup+outage+template in a second, use case+wiring in a third) before PR-2 opens. No PR was opened by this apply run per the orchestrator's instructions.
+
+## Learned / Gotchas
+
+- **A recurring test-helper bug**: several early test files defined `_utc(hour: int) -> datetime` as `datetime(2026, 9, 3, hour, tzinfo=UTC)`, which raises `ValueError: hour must be in 0..23` the moment a test passes `hour=48` (needed for a 48-hour window). Fixed by rebasing the helper on `datetime(2026, 9, 3, 0, tzinfo=UTC) + timedelta(hours=hour)` in each affected file. Not a domain bug — a test-fixture-construction bug caught immediately by the RED/GREEN cycle itself (the "RED" was for the wrong reason on the first run, which is exactly what strict TDD is supposed to surface).
+- **`ports/` needs `datetime`, but the slice-1 architecture test didn't allow it.** See "Spec/Design Inconsistency" above — worth flagging for change 3's own port additions, in case a similar gap appears there.
+- **PEP 695 generic syntax (`class Available[T]:`, `type SourceResult[T] = ...`) works cleanly under `mypy --strict` on Python 3.12** with no extra configuration — D8's floor was already the exact requirement for this.
+- **`FakeMessageComposer` delegates to the real `MessageComposer` template** rather than returning a canned message. This means `test_run_alert_cycle.py`'s degraded-mode wiring test exercises the *actual* Spanish disclosure text end-to-end (not a stub), catching real integration bugs between `RunAlertCycle`'s `_build_message_request` and the template's disclosure logic for free.
+
+## Remaining Tasks (this slice)
+
+None. All Phase 2 tasks are complete and the verification gate is green.
+
+## Next Recommended
+
+Fresh-context adversarial review of `feat/core-alert-cycle-2-domain` before
+opening PR-2 (interactive execution mode requires this). The review should
+explicitly weigh in on the line-budget flag above before a PR is opened.
+After review and any fixes, `sdd-apply` for Phase 3 (tasks 3.x: adapters,
+local repositories, CLI) remains, depending on PR-2 merging first per the
+`stacked-to-main` chain strategy.

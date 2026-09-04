@@ -9,12 +9,12 @@
 | Chained PRs recommended | Yes |
 | Suggested split | PR 1 (tooling+hygiene) → PR 2 (domain+ports+use case) → PR 3 (adapters+CLI) |
 | Delivery strategy | ask-on-risk |
-| Chain strategy | pending — owner must choose `stacked-to-main` or `feature-branch-chain` before apply |
+| Chain strategy | `stacked-to-main` — resolved by the owner before Phase 2 apply |
 
-Decision needed before apply: Yes
+Decision needed before apply: Yes (resolved: `stacked-to-main`, size exceptions accepted per slice on owner review)
 Chained PRs recommended: Yes
-Chain strategy: pending
-400-line budget risk: High
+Chain strategy: stacked-to-main
+400-line budget risk: High — realized. Slice 1 actual: 324 authored lines (owner accepted `size:exception`). Slice 2 actual: 2356 changed lines (1021 src, 1335 tests, `git diff main...HEAD --stat`) — far beyond the ~400/~800-with-tests estimate; flagged for owner/fresh-review decision before PR-2, not silently absorbed.
 
 Dependencies are strictly linear (PR3 needs PR2, PR2 needs PR1) — validates design §13's split without change. If `feature-branch-chain` is chosen: PR1 base = tracker, PR2 base = PR1 branch, PR3 base = PR2 branch. If `stacked-to-main`: each PR merges to main in order.
 
@@ -38,28 +38,28 @@ Dependencies are strictly linear (PR3 needs PR2, PR2 needs PR1) — validates de
 
 ## Phase 2: Domain, Ports, Use Case (PR 2, ~400 lines)
 
-- [ ] 2.1 [RED] `tests/unit/domain/test_values.py`, `test_sources.py` — enums, `is_escalation`, `Coordinates`/`TimeWindow` validation, `Available`/`Unavailable`/`SourceResult`, `status_of`. Design §3 (D1, D2).
-- [ ] 2.2 [GREEN] Implement `domain/values.py`, `domain/sources.py` to pass 2.1.
-- [ ] 2.3 [RED] `tests/unit/domain/test_entities.py` — `Warning`, `HourlyPoint`, `Forecast` (`accumulated_mm`, `max_probability_pct` per D10 max-over-window, `peak_hour`, `precipitation_window`), `RiskAssessment`, `Contact`.
-- [ ] 2.4 [GREEN] Implement `domain/entities.py` (D10).
-- [ ] 2.5 [RED] `tests/unit/domain/test_messages.py` — `ForecastSummary`, `WarningSummary`, `MessageRequest`, `AlertMessage`, `AlertRecord`, `OutageRecord.is_dual`, `OperatorNotice`.
-- [ ] 2.6 [GREEN] Implement `domain/messages.py`.
-- [ ] 2.7 [RED] `tests/unit/domain/test_config.py` — `RiskThresholds`, `AlertConfig` (`coordinates_are_placeholder`).
-- [ ] 2.8 [GREEN] Implement `domain/config.py`. Design §5.
-- [ ] 2.9 Write `src/rain_alert/ports/__init__.py` (seven `Protocol`s incl. `Notifier` two-method split, D3). No dedicated test file — enforced by `mypy --strict` (D9) and fake conformance in 2.18. Design §4.
-- [ ] 2.10 [RED] `tests/unit/domain/test_risk.py`, parametrized with `ids=` naming the risk-evaluation spec scenarios: Imminent from official warning, Imminent from forecast alone, Prepare on threshold, Below prepare threshold, Degraded prepare requires 70%, Degraded reasons disclose the outage, Imminent still fires, Prepare cannot fire without forecast data, Dual outage, Threshold source.
-- [ ] 2.11 [GREEN] Implement `domain/risk.py` (`RiskEvaluator`, 5-branch order, design §5).
-- [ ] 2.12 [RED] `tests/unit/domain/test_dedup.py` (pure `should_send`) — alert-dedup spec scenarios: First alert for a window, Prepare escalates to imminent, Repeat level, Imminent de-escalates to prepare, De-escalation to none.
-- [ ] 2.13 [GREEN] Implement `domain/dedup.py` (`should_send`, pure only — no port import) + `application/policies.py` (`AlertPolicy` shell wrapping `AlertRepository`, satisfies "Query before decision" and "Dedup state is read from AlertRepository"). See Open Items — file placement of the shell is not fixed by design §12.
-- [ ] 2.14 [RED] `tests/unit/domain/test_outage.py` — 8-row state-transition table (design §6) covering source-outage-notices spec: SENAMHI down triggers one notice, No duplicate notice while still down, dual-outage widen/narrow rows, Recovery after dual outage, No recovery notice without a prior outage, Distinct notice type (`NoticeKind` values).
-- [ ] 2.15 [GREEN] Implement `domain/outage.py` (`evaluate_outage`, `OutageDecision`, pure only).
-- [ ] 2.16 [RED] `tests/unit/domain/test_template.py` — alert-cycle spec: Template content, Degraded disclosure in the message.
-- [ ] 2.17 [GREEN] Implement `domain/template.py` (deterministic `MessageComposer`, D11).
-- [ ] 2.18 Write `tests/support/fakes.py`, `tests/support/wiring.py` (`build_fake_deps`, hand-written recording spies for all seven ports — no `unittest.mock`, design §10).
-- [ ] 2.19 [RED] `tests/unit/application/test_run_alert_cycle.py` — alert-cycle spec: Authorized send runs the full chain, Dedup short-circuits the cycle, Record after notify; source-outage-notices: Dual-source outage suppresses community alerts (`suppress_community_alert` hard guard); degraded-mode wiring.
-- [ ] 2.20 [GREEN] Implement `application/dependencies.py` (`CycleDependencies`, D6, D7) + `application/run_alert_cycle.py` (`RunAlertCycle`, `CycleResult` with `message_request` always populated per D11). Design §7.
-- [ ] 2.21 [REFACTOR] Deduplicate reason-building helpers across `risk.py`/`outage.py`; no behavior change. Verify: `uv run pytest -q`, `uv run mypy src`, `uv run ruff check`.
-- [ ] 2.22 PR-2 verification gate: `uv run pytest tests/unit/domain tests/unit/application tests/architecture -q`, `uv run mypy src`, `uv run ruff check`. Confirm all proposal Success Criteria evaluator/dedup/outage rows pass.
+- [x] 2.1 [RED] `tests/unit/domain/test_values.py`, `test_sources.py` — enums, `is_escalation`, `Coordinates`/`TimeWindow` validation, `Available`/`Unavailable`/`SourceResult`, `status_of`. Design §3 (D1, D2).
+- [x] 2.2 [GREEN] Implement `domain/values.py`, `domain/sources.py` to pass 2.1.
+- [x] 2.3 [RED] `tests/unit/domain/test_entities.py` — `Warning`, `HourlyPoint`, `Forecast` (`accumulated_mm`, `max_probability_pct` per D10 max-over-window, `peak_hour`, `precipitation_window`), `RiskAssessment`, `Contact`.
+- [x] 2.4 [GREEN] Implement `domain/entities.py` (D10).
+- [x] 2.5 [RED] `tests/unit/domain/test_messages.py` — `ForecastSummary`, `WarningSummary`, `MessageRequest`, `AlertMessage`, `AlertRecord`, `OutageRecord.is_dual`, `OperatorNotice`.
+- [x] 2.6 [GREEN] Implement `domain/messages.py`.
+- [x] 2.7 [RED] `tests/unit/domain/test_config.py` — `RiskThresholds`, `AlertConfig` (`coordinates_are_placeholder`).
+- [x] 2.8 [GREEN] Implement `domain/config.py`. Design §5.
+- [x] 2.9 Write `src/rain_alert/ports/__init__.py` (seven `Protocol`s incl. `Notifier` two-method split, D3). No dedicated test file — enforced by `mypy --strict` (D9) and fake conformance in 2.18. Design §4. DONE — required extending the ports architecture allow-list with `"datetime"` (see tasks.md "Open Items" resolution notes in apply-progress.md); design.md section 10 only listed `{typing, collections.abc, rain_alert.domain}` but every port signature needs `datetime`.
+- [x] 2.10 [RED] `tests/unit/domain/test_risk.py`, parametrized with `ids=` naming the risk-evaluation spec scenarios: Imminent from official warning, Imminent from forecast alone, Prepare on threshold, Below prepare threshold, Degraded prepare requires 70%, Degraded reasons disclose the outage, Imminent still fires, Prepare cannot fire without forecast data, Dual outage, Threshold source.
+- [x] 2.11 [GREEN] Implement `domain/risk.py` (`RiskEvaluator`, 5-branch order, design §5).
+- [x] 2.12 [RED] `tests/unit/domain/test_dedup.py` (pure `should_send`) — alert-dedup spec scenarios: First alert for a window, Prepare escalates to imminent, Repeat level, Imminent de-escalates to prepare, De-escalation to none.
+- [x] 2.13 [GREEN] Implement `domain/dedup.py` (`should_send`, pure only — no port import) + `application/policies.py` (`AlertPolicy` shell wrapping `AlertRepository`, satisfies "Query before decision" and "Dedup state is read from AlertRepository"). Open Item 1 resolved: shell lives in `application/policies.py`.
+- [x] 2.14 [RED] `tests/unit/domain/test_outage.py` — 8-row state-transition table (design §6) covering source-outage-notices spec: SENAMHI down triggers one notice, No duplicate notice while still down, dual-outage widen/narrow rows, Recovery after dual outage, No recovery notice without a prior outage, Distinct notice type (`NoticeKind` values).
+- [x] 2.15 [GREEN] Implement `domain/outage.py` (`evaluate_outage`, `OutageDecision`, pure only).
+- [x] 2.16 [RED] `tests/unit/domain/test_template.py` — alert-cycle spec: Template content, Degraded disclosure in the message.
+- [x] 2.17 [GREEN] Implement `domain/template.py` (deterministic `MessageComposer`, D11).
+- [x] 2.18 Write `tests/support/fakes.py`, `tests/support/wiring.py` (`build_fake_deps`, hand-written recording spies for all seven ports — no `unittest.mock`, design §10). DONE — `application/dependencies.py` (`CycleDependencies`) was implemented ahead of schedule alongside this task, since `build_fake_deps` needs the type to construct its return value; `pythonpath = ["."]` added to `pyproject.toml` so `tests.support.*` resolves as a real dotted import.
+- [x] 2.19 [RED] `tests/unit/application/test_run_alert_cycle.py` — alert-cycle spec: Authorized send runs the full chain, Dedup short-circuits the cycle, Record after notify; source-outage-notices: Dual-source outage suppresses community alerts (`suppress_community_alert` hard guard); degraded-mode wiring.
+- [x] 2.20 [GREEN] Implement `application/dependencies.py` (`CycleDependencies`, D6, D7) + `application/run_alert_cycle.py` (`RunAlertCycle`, `CycleResult` with `message_request` always populated per D11). Design §7. (`dependencies.py` itself landed in 2.18; this task's remaining scope was `run_alert_cycle.py`.)
+- [x] 2.21 [REFACTOR] Deduplicate reason-building helpers across `risk.py`/`outage.py`; no behavior change. Verify: `uv run pytest -q`, `uv run mypy src`, `uv run ruff check`. DONE — extracted `_forecast_reason()` in `risk.py` to remove three near-identical f-strings across the imminent-from-forecast, prepare-combined, and prepare-degraded branches.
+- [x] 2.22 PR-2 verification gate: `uv run pytest tests/unit/domain tests/unit/application tests/architecture -q`, `uv run mypy src`, `uv run ruff check`. Confirm all proposal Success Criteria evaluator/dedup/outage rows pass. DONE — all green (98 tests total repo-wide); see apply-progress.md for exact output.
 
 ## Phase 3: Adapters, Local CLI, Integration (PR 3, ~450 lines)
 
@@ -84,6 +84,7 @@ Dependencies are strictly linear (PR3 needs PR2, PR2 needs PR1) — validates de
 
 ## Open Items for Apply
 
-- **`AlertPolicy` / outage shell file placement is not fixed by design §12's File Changes table.** §6's code block header `# domain/dedup.py — pure` sits directly above the `AlertPolicy` class, which takes `AlertRepository` (a port) — importing a port from `domain/` (even under `TYPE_CHECKING`) would fail the architecture test described in §10 ("catches imports inside functions and `TYPE_CHECKING` blocks"). Tasks above place the pure `should_send` in `domain/dedup.py` and the port-bound `AlertPolicy` shell in a new `application/policies.py` not listed in §12 — confirm this placement (or an alternative) at apply time.
-- **§1 names an `OutageNoticePolicy` object** ("`AlertPolicy` and `OutageNoticePolicy` hold a port reference"), but §6/§7 only define a pure `evaluate_outage` function with `RunAlertCycle` itself calling `get_active_outage`/`save_active_outage`/`clear_active_outage` directly — no `OutageNoticePolicy` class or file appears in §12. Tasks above treat this as naming shorthand for `RunAlertCycle`'s outage-handling step, not a literal class; confirm at apply.
-- Endpoint path/query-param names for Open-Meteo (design §15, "*to verify at apply*") and exact SENAMHI header labels (§15) remain unresolved pending a live check during task 3.1–3.2 and 3.3–3.4.
+- **RESOLVED at Phase 2 apply**: `AlertPolicy` / outage shell file placement. The pure `should_send` lives in `domain/dedup.py`; the port-bound `AlertPolicy` shell (takes `AlertRepository`) lives in `application/policies.py`, which is not listed in design §12's File Changes table but does not violate it either (§12 lists `application/{dependencies,run_alert_cycle}.py` as the only application-layer files for slice 2 — `policies.py` is an addition, recorded here for the design doc's own tracking).
+- **RESOLVED at Phase 2 apply**: `OutageNoticePolicy` (design §1) is naming shorthand for `RunAlertCycle`'s outage-handling step. Implemented as the pure `evaluate_outage()` function in `domain/outage.py` plus `RunAlertCycle` calling `get_active_outage`/`save_active_outage`/`clear_active_outage` directly, exactly as §6/§7 describe. No `OutageNoticePolicy` class exists.
+- **RESOLVED at Phase 2 apply**: the ports architecture allow-list (design §10) listed `{typing, collections.abc, rain_alert.domain}` for `ports/`, but every port signature needs `datetime` for `now`/timestamp parameters (design §4's own code block uses it). Extended `PORTS_ALLOWED_ROOTS` in `tests/architecture/test_layer_boundaries.py` with `"datetime"` rather than reopening design §10.
+- Endpoint path/query-param names for Open-Meteo (design §15, "*to verify at apply*") and exact SENAMHI header labels (§15) remain unresolved pending a live check during task 3.1–3.2 and 3.3–3.4 (Phase 3, not yet started).
