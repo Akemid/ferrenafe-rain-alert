@@ -11,6 +11,7 @@ import pytest
 
 from rain_alert.domain.config import RiskThresholds
 from rain_alert.domain.entities import Forecast, HourlyPoint, Warning
+from rain_alert.domain.reasons import ForecastThresholdReason, ReasonKind, render_reasons_en
 from rain_alert.domain.risk import RiskEvaluator
 from rain_alert.domain.sources import Available, SourceResult, Unavailable
 from rain_alert.domain.values import Coordinates, Level, SourceName, TimeWindow, UnavailableReason, WarningLevel
@@ -83,7 +84,7 @@ class Case:
     forecast: SourceResult[Forecast]
     expected_level: Level
     expected_degraded: bool
-    reason_substring: str | None = None
+    expected_reason_kinds: tuple[ReasonKind, ...] | None = None
 
 
 CASES = [
@@ -93,6 +94,7 @@ CASES = [
         forecast=_forecast(24, mm_total=0.0, probability_pct=0),
         expected_level=Level.IMMINENT,
         expected_degraded=False,
+        expected_reason_kinds=(ReasonKind.OFFICIAL_WARNING,),
     ),
     Case(
         scenario_id="imminent-from-forecast-alone",
@@ -100,6 +102,7 @@ CASES = [
         forecast=_forecast(24, mm_total=29.8, probability_pct=70),
         expected_level=Level.IMMINENT,
         expected_degraded=False,
+        expected_reason_kinds=(ReasonKind.FORECAST_THRESHOLD,),
     ),
     Case(
         scenario_id="prepare-on-threshold",
@@ -107,6 +110,9 @@ CASES = [
         forecast=_forecast(48, mm_total=10.0, probability_pct=60),
         expected_level=Level.PREPARE,
         expected_degraded=False,
+        # Both halves of the combined rule must be in the audit trail:
+        # dropping the official-warning reason previously failed nothing.
+        expected_reason_kinds=(ReasonKind.OFFICIAL_WARNING, ReasonKind.FORECAST_THRESHOLD),
     ),
     Case(
         scenario_id="below-prepare-threshold",
@@ -128,7 +134,7 @@ CASES = [
         forecast=_forecast(48, mm_total=15.0, probability_pct=75),
         expected_level=Level.PREPARE,
         expected_degraded=True,
-        reason_substring="official SENAMHI source unavailable",
+        expected_reason_kinds=(ReasonKind.SENAMHI_UNAVAILABLE, ReasonKind.FORECAST_THRESHOLD),
     ),
     Case(
         scenario_id="imminent-still-fires",
@@ -162,8 +168,8 @@ def test_risk_evaluation_scenarios(case: Case) -> None:
 
     assert assessment.level == case.expected_level
     assert assessment.degraded is case.expected_degraded
-    if case.reason_substring is not None:
-        assert any(case.reason_substring in reason for reason in assessment.reasons)
+    if case.expected_reason_kinds is not None:
+        assert tuple(reason.kind for reason in assessment.reasons) == case.expected_reason_kinds
 
 
 class TestShortHorizonForecast:
@@ -176,8 +182,9 @@ class TestShortHorizonForecast:
         )
 
         assert assessment.level == Level.PREPARE
-        assert any("24 h" in reason for reason in assessment.reasons)
-        assert not any("48 h" in reason for reason in assessment.reasons)
+        forecast_reasons = [r for r in assessment.reasons if isinstance(r, ForecastThresholdReason)]
+        assert [reason.hours for reason in forecast_reasons] == [24]
+        assert not any("48 h" in rendered for rendered in render_reasons_en(assessment.reasons))
 
     def test_single_hour_cloudburst_reaches_imminent(self) -> None:
         """C2: a one-point forecast used to abort evaluation with

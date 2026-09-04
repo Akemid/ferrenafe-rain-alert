@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from rain_alert.domain.reasons import Reason
 from rain_alert.domain.values import Coordinates, Level, TimeWindow, WarningLevel
 
 _SAMPLE_DURATION = timedelta(hours=1)
@@ -93,7 +94,7 @@ class RiskAssessment:
 
     level: Level
     window: TimeWindow
-    reasons: tuple[str, ...]
+    reasons: tuple[Reason, ...]  # structured; rendered per audience
     senamhi_status: str
     open_meteo_status: str
     degraded: bool

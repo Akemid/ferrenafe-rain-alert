@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from rain_alert.domain.reasons import Reason
 from rain_alert.domain.values import Level, NoticeKind, SourceName, TimeWindow, WarningLevel
 
 
@@ -37,7 +38,7 @@ class MessageRequest:
     timezone: str
     level: Level
     window: TimeWindow
-    reasons: tuple[str, ...]
+    reasons: tuple[Reason, ...]
     forecast: ForecastSummary | None
     warning: WarningSummary | None
     senamhi_status: str
@@ -64,7 +65,7 @@ class AlertRecord:
     window: TimeWindow
     sent_at: datetime
     message: AlertMessage
-    reasons: tuple[str, ...]
+    reasons: tuple[Reason, ...]
     senamhi_status: str
     open_meteo_status: str
     composer: str  # "template" | "agent"

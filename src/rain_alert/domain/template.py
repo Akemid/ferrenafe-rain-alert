@@ -3,22 +3,79 @@
 
 Recipient-facing text is neutral, professional Spanish — the one deliberate
 exception in this codebase, since the composed message is read by the
-Ferreñafe community. Everything else (identifiers, comments, tests) stays
+Ferreñafe community (design spec 7.4). Everything else (identifiers,
+comments, tests, the operator audit trail in `domain/reasons.py`) stays
 English.
+
+Two consequences of that split are load-bearing here:
+
+- The evaluator's reasons arrive as structured `Reason` values, and this
+  module renders them into Spanish. It never prints the operator's English
+  audit line, and never quotes an internal threshold value.
+- Timestamps are converted to the configured local timezone for display
+  (D7). Domain datetimes are UTC, but a community reader must not be handed
+  an ISO-8601 string with a `+00:00` offset.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
+from typing import assert_never
+from zoneinfo import ZoneInfo
 
 from rain_alert.domain.messages import AlertMessage, MessageRequest
-from rain_alert.domain.values import Level
+from rain_alert.domain.reasons import (
+    ForecastThresholdReason,
+    NoQualifyingWarningReason,
+    Reason,
+    SenamhiUnavailableReason,
+    WarningReason,
+)
+from rain_alert.domain.values import Level, WarningLevel
 
 _LEVEL_LABELS_ES: Mapping[Level, str] = {
     Level.NONE: "sin riesgo",
     Level.PREPARE: "prepárate",
     Level.IMMINENT: "riesgo inminente",
 }
+
+_WARNING_LEVEL_LABELS_ES: Mapping[WarningLevel, str] = {
+    WarningLevel.YELLOW: "amarillo",
+    WarningLevel.ORANGE: "naranja",
+    WarningLevel.RED: "rojo",
+}
+
+_LOCAL_TIME_FORMAT = "%d/%m/%Y %H:%M"
+
+
+def _local_time(moment: datetime, timezone: str) -> str:
+    """`moment` (UTC, D7) as a readable local time string."""
+    return moment.astimezone(ZoneInfo(timezone)).strftime(_LOCAL_TIME_FORMAT)
+
+
+def _reason_line_es(reason: Reason) -> str | None:
+    """One reason as neutral Spanish prose, or `None` when the body already
+    states the same fact in its own dedicated sentence."""
+    match reason:
+        case WarningReason(level=level, title=title):
+            return f"Aviso oficial del SENAMHI, nivel {_WARNING_LEVEL_LABELS_ES[level]}: {title}."
+        case ForecastThresholdReason(accumulated_mm=accumulated, hours=hours, probability_pct=probability):
+            # The internal threshold value is deliberately not mentioned: it is
+            # operator detail, not information a recipient can act on.
+            return (
+                f"Se pronostican {accumulated:.1f} mm de lluvia acumulada en {hours} horas, "
+                f"con una probabilidad máxima de {probability} %."
+            )
+        case SenamhiUnavailableReason():
+            return None  # stated once by the degraded sentence below
+        case NoQualifyingWarningReason():
+            return (
+                "No hay un aviso oficial vigente del SENAMHI para la zona; "
+                "esta alerta se basa únicamente en el pronóstico del tiempo."
+            )
+        case _:  # pragma: no cover - a new reason variant must be given Spanish wording
+            assert_never(reason)
 
 
 class MessageComposer:
@@ -31,14 +88,19 @@ class MessageComposer:
         level_label = _LEVEL_LABELS_ES[request.level]
         title = f"Alerta de lluvias — {request.city} — {level_label}"
 
+        window_start = _local_time(request.window.start, request.timezone)
+        window_end = _local_time(request.window.end, request.timezone)
         lines = [
             f"Ciudad: {request.city}",
             f"Nivel: {level_label}",
-            f"Ventana: {request.window.start.isoformat()} a {request.window.end.isoformat()}",
+            f"Ventana: del {window_start} al {window_end} (hora local, {request.timezone})",
         ]
-        if request.reasons:
+
+        reason_lines = [line for line in (_reason_line_es(reason) for reason in request.reasons) if line is not None]
+        if reason_lines:
             lines.append("Motivos:")
-            lines.extend(f"- {reason}" for reason in request.reasons)
+            lines.extend(f"- {line}" for line in reason_lines)
+
         if request.senamhi_status == "unavailable":
             lines.append(
                 "La fuente oficial SENAMHI no estuvo disponible durante esta evaluación; "

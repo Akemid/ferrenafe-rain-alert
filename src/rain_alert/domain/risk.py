@@ -18,13 +18,19 @@ from datetime import datetime, timedelta
 
 from rain_alert.domain.config import RiskThresholds
 from rain_alert.domain.entities import Forecast, RiskAssessment, Warning
+from rain_alert.domain.reasons import (
+    ForecastThresholdReason,
+    Reason,
+    SenamhiUnavailableReason,
+    WarningReason,
+)
 from rain_alert.domain.sources import Available, SourceResult, status_of
 from rain_alert.domain.values import Level, TimeWindow
 
 IMMINENT_HORIZON_HOURS = 24
 PREPARE_HORIZON_HOURS = 48
 
-_Verdict = tuple[Level, TimeWindow, tuple[str, ...]]
+_Verdict = tuple[Level, TimeWindow, tuple[Reason, ...]]
 
 
 def _union_window(windows: Sequence[TimeWindow]) -> TimeWindow:
@@ -45,18 +51,23 @@ def evaluated_horizon(forecast: Forecast, requested_hours: int) -> int:
     return min(requested_hours, forecast.horizon_hours)
 
 
-def _warning_reason(warning: Warning) -> str:
-    return f"official SENAMHI warning: {warning.level.value} — {warning.title}"
+def _warning_reason(warning: Warning) -> WarningReason:
+    return WarningReason(level=warning.level, title=warning.title)
 
 
-def _forecast_reason(accumulated: float, hours: int, probability: int, *, degraded_threshold: int | None = None) -> str:
-    """One reason string shared by all three branches that cite an
-    accumulated-mm/max-probability forecast reading, so the wording (and any
-    future change to it) cannot drift between branches."""
-    reason = f"{accumulated:.1f} mm / {hours} h at {probability}% max probability"
-    if degraded_threshold is not None:
-        reason += f" (degraded threshold {degraded_threshold}%)"
-    return reason
+def _forecast_reason(
+    accumulated: float, hours: int, probability: int, *, probability_threshold: int | None = None
+) -> ForecastThresholdReason:
+    """One reason value shared by every branch that cites an
+    accumulated-mm/max-probability forecast reading, so the numbers reported
+    cannot drift between branches. `probability_threshold` is set only when a
+    stricter, forecast-only threshold applied."""
+    return ForecastThresholdReason(
+        accumulated_mm=accumulated,
+        hours=hours,
+        probability_pct=probability,
+        probability_threshold_pct=probability_threshold,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +114,7 @@ class RiskEvaluator:
         if not matches:
             return None
         window = _union_window([w.window for w in matches])
-        reasons = tuple(_warning_reason(w) for w in matches)
+        reasons: tuple[Reason, ...] = tuple(_warning_reason(w) for w in matches)
         return Level.IMMINENT, window, reasons
 
     def _imminent_from_forecast(
@@ -140,11 +151,11 @@ class RiskEvaluator:
         if accumulated < self.thresholds.prepare_mm_48h or probability < self.thresholds.prepare_probability_pct:
             return None
         window = _union_window([*(w.window for w in matches), data.precipitation_window(hours)])
-        reasons = (
+        combined_reasons: tuple[Reason, ...] = (
             *(_warning_reason(w) for w in matches),
             _forecast_reason(accumulated, hours, probability),
         )
-        return Level.PREPARE, window, reasons
+        return Level.PREPARE, window, combined_reasons
 
     def _prepare_degraded(
         self,
@@ -163,13 +174,13 @@ class RiskEvaluator:
         ):
             return None
         window = data.precipitation_window(hours)
-        reasons = (
-            "official SENAMHI source unavailable; forecast-only evaluation",
+        reasons: tuple[Reason, ...] = (
+            SenamhiUnavailableReason(),
             _forecast_reason(
                 accumulated,
                 hours,
                 probability,
-                degraded_threshold=self.thresholds.prepare_probability_pct_degraded,
+                probability_threshold=self.thresholds.prepare_probability_pct_degraded,
             ),
         )
         return Level.PREPARE, window, reasons
