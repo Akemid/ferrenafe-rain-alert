@@ -180,6 +180,68 @@ def test_risk_evaluation_scenarios(case: Case) -> None:
         assert tuple(reason.kind for reason in assessment.reasons) == case.expected_reason_kinds
 
 
+def _burst_forecast(*, mm_total: float, probability_pct: int, hours: int = 48) -> Available[Forecast]:
+    """All the rain in the first hour, so `accumulated_mm` is exactly
+    `mm_total`. Spreading it evenly would make an on-the-boundary case depend
+    on floating-point summation error rather than on the threshold rule."""
+    points = (
+        HourlyPoint(at=NOW, precipitation_mm=mm_total, probability_pct=probability_pct),
+        *(
+            HourlyPoint(at=NOW + timedelta(hours=h), precipitation_mm=0.0, probability_pct=probability_pct)
+            for h in range(1, hours)
+        ),
+    )
+    return Available(data=Forecast(location=COORDS, points=points), fetched_at=NOW)
+
+
+@dataclass(frozen=True)
+class BoundaryCase:
+    scenario_id: str
+    warnings: SourceResult[tuple[Warning, ...]]
+    mm_total: float
+    probability_pct: int
+    expected_level: Level
+
+
+BOUNDARY_CASES = [
+    # prepare, combined rule: >= 9.5 mm / 48 h at >= 60%
+    BoundaryCase("prepare-mm-exactly-at-9.5", _warnings(WarningLevel.YELLOW), 9.5, 60, Level.PREPARE),
+    BoundaryCase("prepare-mm-just-below-9.5", _warnings(WarningLevel.YELLOW), 9.49, 60, Level.NONE),
+    BoundaryCase("prepare-probability-exactly-at-60", _warnings(WarningLevel.YELLOW), 10.0, 60, Level.PREPARE),
+    BoundaryCase("prepare-probability-just-below-60", _warnings(WarningLevel.YELLOW), 10.0, 59, Level.NONE),
+    # imminent, forecast rule: >= 20 mm / 24 h at >= 70%
+    BoundaryCase("imminent-mm-exactly-at-20", _no_warnings(), 20.0, 70, Level.IMMINENT),
+    # 19.99 mm at 70% still clears the forecast-only prepare rule (branch 5).
+    BoundaryCase("imminent-mm-just-below-20", _no_warnings(), 19.99, 70, Level.PREPARE),
+    BoundaryCase("imminent-probability-exactly-at-70", _no_warnings(), 25.0, 70, Level.IMMINENT),
+    BoundaryCase("imminent-probability-just-below-70", _no_warnings(), 25.0, 69, Level.NONE),
+    # prepare, degraded rule (SENAMHI unavailable): >= 9.5 mm / 48 h at >= 70%
+    BoundaryCase("degraded-mm-exactly-at-9.5", _unavailable_warnings(), 9.5, 70, Level.PREPARE),
+    BoundaryCase("degraded-mm-just-below-9.5", _unavailable_warnings(), 9.49, 70, Level.NONE),
+    BoundaryCase("degraded-probability-exactly-at-70", _unavailable_warnings(), 15.0, 70, Level.PREPARE),
+    BoundaryCase("degraded-probability-just-below-70", _unavailable_warnings(), 15.0, 69, Level.NONE),
+    # prepare, forecast-only rule (SENAMHI healthy but silent): same stricter 70%
+    BoundaryCase("silent-senamhi-probability-exactly-at-70", _no_warnings(), 15.0, 70, Level.PREPARE),
+    BoundaryCase("silent-senamhi-probability-just-below-70", _no_warnings(), 15.0, 69, Level.NONE),
+    BoundaryCase("silent-senamhi-mm-exactly-at-9.5", _no_warnings(), 9.5, 70, Level.PREPARE),
+    BoundaryCase("silent-senamhi-mm-just-below-9.5", _no_warnings(), 9.49, 70, Level.NONE),
+]
+
+
+@pytest.mark.parametrize("case", BOUNDARY_CASES, ids=[case.scenario_id for case in BOUNDARY_CASES])
+def test_every_numeric_threshold_is_pinned_at_and_just_below_its_boundary(case: BoundaryCase) -> None:
+    """W6: without this table, flipping any `<` to `<=` in `risk.py` keeps the
+    suite green. On 9.5 mm that flip is the difference between warning
+    Ferreñafe and not.
+    """
+    evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+    forecast = _burst_forecast(mm_total=case.mm_total, probability_pct=case.probability_pct)
+
+    assessment = evaluator.evaluate(case.warnings, forecast, NOW)
+
+    assert assessment.level == case.expected_level
+
+
 class TestForecastOnlyPrepareWithASilentButHealthySenamhi:
     """The fifth branch (owner-approved 2026-09-04).
 
