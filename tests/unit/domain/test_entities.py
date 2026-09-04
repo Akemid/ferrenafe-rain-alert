@@ -1,12 +1,18 @@
-"""Domain entities: Warning, Forecast, RiskAssessment, Contact (design.md
-section 3, D10 — probability aggregation is max over the window)."""
+"""`Forecast` behaviour: accumulation, D10 max-over-window probability, peak
+hour, window coverage, and the invariants `__post_init__` defends (design.md
+section 3).
+
+The other entities in this module are frozen dataclasses with no behaviour;
+field-presence tests for them were pruned as tautological — `mypy --strict`
+already catches a field rename.
+"""
 
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from rain_alert.domain.entities import Contact, Forecast, HourlyPoint, RiskAssessment, Warning
-from rain_alert.domain.values import Coordinates, Level, TimeWindow, WarningLevel
+from rain_alert.domain.entities import Forecast, HourlyPoint
+from rain_alert.domain.values import Coordinates
 
 
 def _utc(hour: int) -> datetime:
@@ -15,22 +21,6 @@ def _utc(hour: int) -> datetime:
 
 def _hourly_points(count: int, *, mm: float, probability: int) -> tuple[HourlyPoint, ...]:
     return tuple(HourlyPoint(at=_utc(h), precipitation_mm=mm, probability_pct=probability) for h in range(count))
-
-
-class TestWarning:
-    def test_warning_carries_expected_fields(self) -> None:
-        window = TimeWindow(start=_utc(0), end=_utc(6))
-        warning = Warning(
-            source_id="senamhi-123",
-            title="Aviso de lluvias intensas",
-            level=WarningLevel.ORANGE,
-            region="Lambayeque",
-            window=window,
-            emitted_at=_utc(0),
-        )
-        assert warning.source_id == "senamhi-123"
-        assert warning.level == WarningLevel.ORANGE
-        assert warning.window == window
 
 
 class TestForecast:
@@ -121,26 +111,3 @@ class TestForecast:
         )
         with pytest.raises(ValueError, match="contiguous"):
             Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
-
-
-class TestRiskAssessment:
-    def test_risk_assessment_carries_expected_fields(self) -> None:
-        window = TimeWindow(start=_utc(0), end=_utc(48))
-        assessment = RiskAssessment(
-            level=Level.PREPARE,
-            window=window,
-            reasons=("10.0 mm / 48 h at 60% max probability",),
-            senamhi_status="available",
-            open_meteo_status="available",
-            degraded=False,
-        )
-        assert assessment.level == Level.PREPARE
-        assert assessment.reasons == ("10.0 mm / 48 h at 60% max probability",)
-        assert assessment.degraded is False
-
-
-class TestContact:
-    def test_contact_carries_expected_fields(self) -> None:
-        contact = Contact(contact_id="operator-local", channel="console", handle="stdout", consent_at=None)
-        assert contact.contact_id == "operator-local"
-        assert contact.consent_at is None

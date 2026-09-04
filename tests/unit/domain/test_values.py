@@ -1,62 +1,23 @@
-"""Domain value objects and enums (design.md section 3, D1)."""
+"""Domain value-object behaviour: `is_escalation` ranking, `Coordinates`
+range checks, and the `TimeWindow` invariants and sort key (design.md section
+3, D1, D7).
+
+The per-enum "these are the literal values" tests were pruned as
+tautological: they restated the enum definition without asserting behaviour,
+and `mypy --strict` already catches a renamed member.
+"""
 
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from rain_alert.domain.values import (
-    Coordinates,
-    Level,
-    NoticeKind,
-    SourceName,
-    TimeWindow,
-    UnavailableReason,
-    WarningLevel,
-    is_escalation,
-)
+from rain_alert.domain.values import Coordinates, Level, TimeWindow, is_escalation
 
 LIMA_OFFSET = timezone(timedelta(hours=-5))
 
 
 def _utc(hour: int) -> datetime:
     return datetime(2026, 9, 3, 0, tzinfo=UTC) + timedelta(hours=hour)
-
-
-class TestLevelEnum:
-    def test_level_values(self) -> None:
-        assert Level.NONE == "none"
-        assert Level.PREPARE == "prepare"
-        assert Level.IMMINENT == "imminent"
-
-
-class TestWarningLevelEnum:
-    def test_warning_level_values(self) -> None:
-        assert WarningLevel.YELLOW == "yellow"
-        assert WarningLevel.ORANGE == "orange"
-        assert WarningLevel.RED == "red"
-
-
-class TestSourceNameEnum:
-    def test_source_name_values(self) -> None:
-        assert SourceName.SENAMHI == "senamhi"
-        assert SourceName.OPEN_METEO == "open_meteo"
-
-
-class TestNoticeKindEnum:
-    def test_notice_kind_values(self) -> None:
-        assert NoticeKind.SOURCE_UNAVAILABLE == "source_unavailable"
-        assert NoticeKind.SOURCES_RECOVERED == "sources_recovered"
-
-
-class TestUnavailableReasonEnum:
-    def test_unavailable_reason_values(self) -> None:
-        assert UnavailableReason.TRANSPORT_ERROR == "transport_error"
-        assert UnavailableReason.TIMEOUT == "timeout"
-        assert UnavailableReason.BAD_STATUS == "bad_status"
-        assert UnavailableReason.MALFORMED_PAYLOAD == "malformed_payload"
-        assert UnavailableReason.STRUCTURE_UNRECOGNIZED == "structure_unrecognized"
-        assert UnavailableReason.NO_ROWS_EXTRACTED == "no_rows_extracted"
-        assert UnavailableReason.INSUFFICIENT_HORIZON == "insufficient_horizon"
 
 
 class TestIsEscalation:
