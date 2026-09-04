@@ -161,6 +161,39 @@ class TestDualSourceOutageSuppressesCommunityAlerts:
         assert deps.notifier.notice_calls[1].sources == frozenset({SourceName.OPEN_METEO})
 
 
+class TestOutageStateIsWrittenOnlyWhenItChanged:
+    def test_a_healthy_cycle_performs_no_outage_writes(self) -> None:
+        """W3: `OutageDecision.state_changed` had no production reader, so the
+        use case branched on `next_state is None` and every healthy cycle
+        issued a redundant `clear_active_outage` — in change 3 that is a
+        DynamoDB `DeleteItem` every six hours forever."""
+        deps = build_fake_deps()
+
+        RunAlertCycle(deps).execute()
+
+        assert deps.alerts.clear_outage_calls == []
+        assert deps.alerts.save_outage_calls == []
+
+    def test_recovery_clears_the_outage_exactly_once(self) -> None:
+        deps = build_fake_deps(warnings=_unavailable(SourceName.SENAMHI))
+        RunAlertCycle(deps).execute()
+        assert len(deps.alerts.save_outage_calls) == 1
+
+        deps.warnings.result = Available(data=(), fetched_at=NOW)
+        RunAlertCycle(deps).execute()
+        RunAlertCycle(deps).execute()
+
+        assert deps.alerts.clear_outage_calls == [DEFAULT_CONFIG.city_slug]
+
+    def test_an_ongoing_unchanged_outage_is_not_rewritten(self) -> None:
+        deps = build_fake_deps(warnings=_unavailable(SourceName.SENAMHI))
+
+        for _ in range(3):
+            RunAlertCycle(deps).execute()
+
+        assert len(deps.alerts.save_outage_calls) == 1
+
+
 class TestDegradedModeWiring:
     def test_degraded_assessment_flows_through_to_the_composed_message(self) -> None:
         forecast = _forecast(48, mm_total=15.0, probability_pct=75)

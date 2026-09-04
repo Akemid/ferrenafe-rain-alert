@@ -124,10 +124,14 @@ class RunAlertCycle:
         outage_decision = evaluate_outage(warnings, forecast, active_outage, config.city_slug, now)
         for notice in outage_decision.notices:
             deps.notifier.send_operator_notice(notice)
-        if outage_decision.next_state is None:
-            deps.alerts.clear_active_outage(config.city_slug)
-        else:
-            deps.alerts.save_active_outage(outage_decision.next_state)
+        # Gated on `state_changed`, not on `next_state is None`: a healthy
+        # cycle and an unchanged ongoing outage both need zero writes, and in
+        # change 3 each write is a DynamoDB call every six hours.
+        if outage_decision.state_changed:
+            if outage_decision.next_state is None:
+                deps.alerts.clear_active_outage(config.city_slug)
+            else:
+                deps.alerts.save_active_outage(outage_decision.next_state)
 
         evaluator = deps.evaluator_factory(config.thresholds)
         assessment = evaluator.evaluate(warnings, forecast, now)
