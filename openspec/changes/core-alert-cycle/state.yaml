@@ -39,17 +39,39 @@ phases:
       Engram half persisted by the orchestrator from proposal.md on
       2026-09-03 (propose executor had no mem_save tool).
   spec:
-    status: pending
+    status: done
     depends_on: [proposal]
-    artifact: null
+    artifact:
+      - openspec/changes/core-alert-cycle/specs/risk-evaluation/spec.md
+      - openspec/changes/core-alert-cycle/specs/alert-dedup/spec.md
+      - openspec/changes/core-alert-cycle/specs/source-outage-notices/spec.md
+      - openspec/changes/core-alert-cycle/specs/weather-sources/spec.md
+      - openspec/changes/core-alert-cycle/specs/alert-cycle/spec.md
+      - openspec/changes/core-alert-cycle/specs/local-alert-cli/spec.md
+      - openspec/changes/core-alert-cycle/specs/repo-hygiene/spec.md
+    engram_topic_key: sdd/core-alert-cycle/spec
+    engram_saved: true
   design:
-    status: pending
+    status: done
     depends_on: [proposal]
-    artifact: null
+    artifact: openspec/changes/core-alert-cycle/design.md
+    engram_topic_key: sdd/core-alert-cycle/design
+    engram_saved: true
+    note: >-
+      Engram half persisted by the orchestrator from design.md on 2026-09-03.
+      Pins the port/type contracts that changes 2 and 3 consume.
   tasks:
-    status: pending
+    status: done
     depends_on: [spec, design]
-    artifact: null
+    artifact: openspec/changes/core-alert-cycle/tasks.md
+    engram_topic_key: sdd/core-alert-cycle/tasks
+    engram_saved: true
+    note: >-
+      43 tasks across 3 phases mapped 1:1 to the design's PR slices. Review
+      Workload Forecast: High risk, chained PRs recommended, chain strategy
+      pending owner choice. Two design/spec placement ambiguities (AlertPolicy
+      shell location, OutageNoticePolicy naming) recorded under "Open Items
+      for Apply" rather than resolved.
   apply:
     status: pending
     depends_on: [tasks]
@@ -64,8 +86,7 @@ phases:
     artifact: null
 
 next_recommended:
-  - sdd-spec
-  - sdd-design
+  - sdd-apply
 
 blocked_reasons: []
 

@@ -1,0 +1,643 @@
+# Design: Core Alert Cycle (Local, No Cloud)
+
+Source of truth: `docs/superpowers/specs/2026-09-03-rain-alert-core-design.md` (section 3 decisions are closed; section 10.1 fixes the layout). System diagram: `docs/rain-alert-core-architecture.drawio` — not duplicated here. Scope and slicing: `proposal.md`. Behaviour: `specs/*/spec.md`.
+
+This document pins the **contracts that changes 2 and 3 consume**. Anything marked *contract* is breaking to change after this slice merges.
+
+---
+
+## 1. Technical Approach
+
+Hexagonal, domain-first, strict TDD. Three rings:
+
+| Ring | Package | May import | Never imports |
+|---|---|---|---|
+| Domain | `src/rain_alert/domain/` | stdlib only | ports, adapters, entrypoints, any third party |
+| Ports | `src/rain_alert/ports/` | `typing`, domain types | adapters, third party |
+| Edges | `src/rain_alert/application/`, `adapters/`, `entrypoints/` | ports, domain, third party | — |
+
+Two structural rules carry most of the design's weight:
+
+1. **Every rule is a pure function; every port-bound object is a thin shell over one.** `AlertPolicy` and `OutageNoticePolicy` hold a port reference so they can satisfy the specs literally ("MUST query `AlertRepository`"), but each delegates to a module-level pure function that takes state in and returns a decision out. All rule tests are table-driven with no fakes at all.
+2. **Availability is a value, not an exception.** Source outage is reasoned about in four rule branches and three notice branches, so it travels as data.
+
+The LLM composer invariant (design spec 3.2) is preserved structurally: `MessageComposer` is invoked by `RunAlertCycle` **after** `AlertPolicy` has already authorized the send, receives a `MessageRequest` that already contains the decided level, and its return value never feeds back into any decision.
+
+---
+
+## 2. Architecture Decisions
+
+### D1 — Domain types are frozen stdlib dataclasses
+
+**Choice**: `@dataclass(frozen=True, slots=True)` + `StrEnum`, stdlib only.
+**Rejected**: Pydantic (adds a third-party dependency to the pure core and megabytes to the change-3 Lambda bundle; boundary validation belongs in adapters, hand-written); `NamedTuple` (positional access leaks into call sites, no `__post_init__` invariant hook); mutable dataclasses (assessments are passed to composer and notifier — immutability removes a whole class of bug).
+**Rationale**: value equality makes table-driven assertions one line (`assert evaluate(...) == RiskAssessment(...)`); `frozen` makes them safe to share; `StrEnum` serializes to DynamoDB/JSON in change 3 with no mapper and reads well in test failure output.
+
+### D2 — `SourceResult` is a tagged union, not an optional-data record
+
+```python
+type SourceResult[T] = Available[T] | Unavailable   # PEP 695, Python 3.12+
+```
+
+**Rejected**: one record with `status` + `data: T | None` (every reader must re-check the invariant and type checkers cannot narrow); raising on failure (would put degraded-mode control flow into `try/except` in the use case and make the four degraded rule branches awkward to test).
+**Rationale**: `Unavailable` has **no** `data` attribute, so unavailable data is unreadable by construction, and `match` narrows cleanly. `Unavailable.reason` is a machine-usable enum plus free text, which the operator notice and the CLI both need.
+
+### D3 — `Notifier` has two methods, not one union method
+
+**Choice**: `send_alert(message, recipients)` and `send_operator_notice(notice)`.
+**Rejected**: a single `send(payload: AlertMessage | OperatorNotice)`.
+**Rationale**: the two calls differ in audience, payload shape (alerts need a recipient list; notices go to the single operator), and routing. A union would force every adapter to `match` on the payload type — the split *is* the real seam. In change 3 it lets operator notices go to Telegram while community alerts go elsewhere, with no branching inside an adapter. Cost is two trivial methods per adapter.
+
+### D4 — HTTP client: `httpx` (sync)
+
+| Option | Trade-off | Decision |
+|---|---|---|
+| `httpx` | Granular `Timeout(connect=, read=)`; **`MockTransport` gives an offline test seam with no extra test dependency**; pure-Python dep chain | **Chosen** |
+| `requests` | Coarser timeout API; needs `responses`/`requests-mock` as an extra dev dependency for the same seam | Rejected |
+| stdlib `urllib.request` | Zero deps, smallest bundle, but hand-rolling timeouts, status/error mapping and a test seam costs more code than the dependency saves | Rejected |
+
+Installed size is comparable to `requests`; the test seam decided it. *To verify at apply: measured wheel size against the change-3 Lambda package budget.*
+
+### D5 — HTML parsing: `beautifulsoup4` on the stdlib `html.parser`
+
+| Option | Trade-off | Decision |
+|---|---|---|
+| `beautifulsoup4` + `html.parser` | **Pure Python — no compiled wheel, simplest Lambda packaging**; most tolerant of malformed markup; most readable row/cell extraction | **Chosen** |
+| `lxml` | Fast and XPath-capable, but a C extension needing an architecture-matched manylinux wheel and ~10 MB | Rejected |
+| `selectolax` | Fastest, also compiled | Rejected |
+
+**Rationale**: one page every six hours makes parse speed irrelevant; packaging simplicity and malformed-HTML tolerance are what actually matter. Runtime dependency footprint for this change is therefore exactly two packages: `httpx`, `beautifulsoup4`.
+
+### D6 — Ports are bundled into `CycleDependencies`
+
+Seven ports plus an evaluator, two policies and a clock would give `RunAlertCycle` ten constructor parameters. Instead one frozen `CycleDependencies` bundle is injected. **Rejected**: a service locator or global registry (hides the graph, breaks per-test substitution); splitting `RunAlertCycle` into sub-use-cases (the seven-port count is fixed by spec 10.1, not by mixed responsibilities — the use case has exactly one reason to change).
+**Rationale**: keeps constructor injection, makes CLI and change-3 Lambda wiring a single object, and makes test wiring one call: `build_fake_deps(forecast=Unavailable(...))`.
+
+### D7 — Time is injected as a `Clock`, not frozen by a library
+
+`CycleDependencies.now: Callable[[], datetime]`. **Rejected**: `freezegun` (a dev dependency to work around a design flaw); calling `datetime.now()` inside the domain (untestable). All domain datetimes MUST be timezone-aware UTC, enforced in `__post_init__`; conversion to `America/Lima` happens only for display, in the template and the CLI, using stdlib `zoneinfo` with the tz name from config. *To verify at apply (change 3): whether the Lambda runtime ships the system tz database or `tzdata` must be added.*
+
+### D8 — Python floor 3.12
+
+`requires-python = ">=3.12"`. Needs 3.12 for PEP 695 generic/type-alias syntax (D2) and 3.11 for `StrEnum` (D1). 3.12 is the conservative floor among AWS Lambda managed Python runtimes; nothing in the code is forward-incompatible, so a later bump is non-breaking. *To verify at apply of change 3: the exact set of managed Lambda Python runtimes then available.*
+
+### D9 — `mypy --strict` on `src/` is added to the tooling list
+
+The proposal lists `uv`, `pytest`, `ruff`. **Design position: add `mypy`.** Without a static checker, `typing.Protocol` ports are decorative — nothing would catch an adapter in change 3 drifting from a signature, which is precisely the risk the proposal flags ("changing a port after change 1 merges is a breaking change"). This is the cheapest possible guard on the artefact this whole change exists to produce. Recorded as an open question for owner confirmation (§10).
+
+### D10 — Probability aggregation is `max` over the evaluated horizon
+
+"≥ 9.5 mm in 48 h with probability ≥ 60 %" does not say *which* probability. **Choice**: the maximum hourly `precipitation_probability` over the evaluated horizon. **Rejected**: mean (dilutes a short intense storm to below threshold — the exact 2017 case the system exists for); probability of the single peak-precipitation hour (brittle to one-hour model noise). Kept as a documented domain constant, not a config knob, to avoid config sprawl; listed for calibration review (§10).
+
+### D11 — Message preview without invoking the composer
+
+Two specs pull in opposite directions: `alert-cycle` requires that a deduplicated cycle invoke **neither** composer nor notifier; `local-alert-cli` requires the CLI to print the message text on **every** run. Resolution: `CycleResult.message_request` is **always** populated, `CycleResult.message` only when a send was authorized. On a non-send the CLI renders the preview itself by calling the deterministic template on `message_request`, labelled `PREVIEW (NOT SENT)`. The agent in change 2 is therefore never invoked for a preview, and no cost is incurred on a deduplicated cycle.
+
+### D12 — No retries in this slice
+
+A failed fetch yields `Unavailable` immediately. **Rationale**: the degraded path is a first-class, fully tested behaviour, the cycle repeats in six hours, and the retry budget cannot be chosen sensibly before the change-3 Lambda timeout is known. Revisit in change 3.
+
+---
+
+## 3. Domain Types (*contract*)
+
+```python
+# domain/values.py
+class Level(StrEnum):            NONE = "none"; PREPARE = "prepare"; IMMINENT = "imminent"
+class WarningLevel(StrEnum):     YELLOW = "yellow"; ORANGE = "orange"; RED = "red"
+class SourceName(StrEnum):       SENAMHI = "senamhi"; OPEN_METEO = "open_meteo"
+class NoticeKind(StrEnum):
+    SOURCE_UNAVAILABLE = "source_unavailable"
+    SOURCES_RECOVERED  = "sources_recovered"
+    # change 2 adds: AGENT_FALLBACK_USED = "agent_fallback_used"
+class UnavailableReason(StrEnum):
+    TRANSPORT_ERROR = "transport_error"; TIMEOUT = "timeout"; BAD_STATUS = "bad_status"
+    MALFORMED_PAYLOAD = "malformed_payload"; STRUCTURE_UNRECOGNIZED = "structure_unrecognized"
+    NO_ROWS_EXTRACTED = "no_rows_extracted"; INSUFFICIENT_HORIZON = "insufficient_horizon"
+
+LEVEL_RANK: Mapping[Level, int] = {Level.NONE: 0, Level.PREPARE: 1, Level.IMMINENT: 2}
+def is_escalation(previous: Level, candidate: Level) -> bool: ...
+
+@dataclass(frozen=True, slots=True)
+class Coordinates:      latitude: float; longitude: float   # range-checked in __post_init__
+
+@dataclass(frozen=True, slots=True)
+class TimeWindow:                                            # both UTC-aware; end > start
+    start: datetime; end: datetime
+    def overlaps(self, other: TimeWindow) -> bool: ...
+    def key(self) -> str: ...                                # "<start ISO8601 UTC>" — the dedup sort key
+
+# domain/sources.py
+@dataclass(frozen=True, slots=True)
+class Available[T]:    data: T; fetched_at: datetime
+@dataclass(frozen=True, slots=True)
+class Unavailable:     source: SourceName; reason: UnavailableReason; detail: str; observed_at: datetime
+type SourceResult[T] = Available[T] | Unavailable
+def status_of(result: SourceResult[Any]) -> str: ...          # "available" | "unavailable"
+
+# domain/entities.py
+@dataclass(frozen=True, slots=True)
+class Warning:
+    source_id: str; title: str; level: WarningLevel; region: str; window: TimeWindow; emitted_at: datetime
+
+@dataclass(frozen=True, slots=True)
+class HourlyPoint: at: datetime; precipitation_mm: float; probability_pct: int
+
+@dataclass(frozen=True, slots=True)
+class Forecast:                                              # 48 contiguous hourly points
+    location: Coordinates; points: tuple[HourlyPoint, ...]
+    def accumulated_mm(self, hours: int) -> float: ...
+    def max_probability_pct(self, hours: int) -> int: ...     # D10
+    def peak_hour(self, hours: int) -> HourlyPoint: ...
+    def precipitation_window(self, hours: int) -> TimeWindow: ...
+
+@dataclass(frozen=True, slots=True)
+class RiskAssessment:
+    level: Level; window: TimeWindow; reasons: tuple[str, ...]
+    senamhi_status: str; open_meteo_status: str; degraded: bool
+
+@dataclass(frozen=True, slots=True)
+class Contact: contact_id: str; channel: str; handle: str; consent_at: datetime | None
+
+# domain/messages.py — mirrors design spec 7.2 / 7.4 exactly so change 2 maps 1:1
+@dataclass(frozen=True, slots=True)
+class ForecastSummary: mm_24h: float; mm_48h: float; peak_at: datetime; peak_probability_pct: int
+@dataclass(frozen=True, slots=True)
+class WarningSummary:  source_id: str; level: WarningLevel; title: str; window: TimeWindow
+
+@dataclass(frozen=True, slots=True)
+class MessageRequest:                                        # the composer's ONLY input; never raw series
+    city: str; timezone: str; level: Level; window: TimeWindow; reasons: tuple[str, ...]
+    forecast: ForecastSummary | None; warning: WarningSummary | None
+    senamhi_status: str; open_meteo_status: str; checklist: tuple[str, ...]
+
+@dataclass(frozen=True, slots=True)
+class AlertMessage: title: str; body: str; level: Level; valid_until: datetime   # == spec 7.4
+
+@dataclass(frozen=True, slots=True)
+class AlertRecord:
+    city_slug: str; level: Level; window: TimeWindow; sent_at: datetime
+    message: AlertMessage; reasons: tuple[str, ...]
+    senamhi_status: str; open_meteo_status: str; composer: str   # "template" | "agent"
+
+@dataclass(frozen=True, slots=True)
+class OutageRecord:                                          # at most one active per city
+    city_slug: str; unavailable_sources: frozenset[SourceName]
+    opened_at: datetime; notified_at: datetime | None
+    def is_dual(self) -> bool: ...
+
+@dataclass(frozen=True, slots=True)
+class OperatorNotice:
+    kind: NoticeKind; subject: str; body: str; sources: frozenset[SourceName]; occurred_at: datetime
+```
+
+---
+
+## 4. Ports (*contract* — `typing.Protocol`, structural, fakes do not subclass)
+
+```python
+class ConfigRepository(Protocol):
+    def load(self) -> AlertConfig: ...
+
+class WarningProvider(Protocol):
+    def fetch_current_warnings(self, region: str, now: datetime) -> SourceResult[tuple[Warning, ...]]: ...
+
+class ForecastProvider(Protocol):
+    def fetch_forecast(self, location: Coordinates, hours: int, now: datetime) -> SourceResult[Forecast]: ...
+
+class MessageComposer(Protocol):
+    def compose(self, request: MessageRequest) -> AlertMessage: ...
+
+class ContactRepository(Protocol):
+    def list_active(self, channel: str) -> tuple[Contact, ...]: ...
+
+class Notifier(Protocol):                                             # D3
+    def send_alert(self, message: AlertMessage, recipients: tuple[Contact, ...]) -> None: ...
+    def send_operator_notice(self, notice: OperatorNotice) -> None: ...
+
+class AlertRepository(Protocol):
+    # --- community-alert dedup ---
+    def alerts_with_window_start_between(
+        self, city_slug: str, earliest_start: datetime, latest_start: datetime
+    ) -> tuple[AlertRecord, ...]: ...                                 # ascending by window start
+    def record_alert(self, record: AlertRecord) -> None: ...
+    # --- outage-notice dedup state ---
+    def get_active_outage(self, city_slug: str) -> OutageRecord | None: ...
+    def save_active_outage(self, record: OutageRecord) -> None: ...    # upsert
+    def clear_active_outage(self, city_slug: str) -> None: ...
+```
+
+`@runtime_checkable` is deliberately not used: it only checks method *names*, giving false confidence. Conformance is guarded statically by D9.
+
+### 4.1 `AlertRepository` key design → DynamoDB `alerts-sent` (design spec 9)
+
+Both item kinds live in **one** table with a generic composite key, so change 3's adapter is a mechanical mapping with no GSI:
+
+| Item | `pk` | `sk` | Attributes |
+|---|---|---|---|
+| Sent alert | `ALERT#<city_slug>` | `<window_start ISO8601 UTC>#<level>` | `window_end`, `sent_at`, `level`, `title`, `body`, `valid_until`, `reasons`, `senamhi_status`, `open_meteo_status`, `composer` |
+| Active outage | `OUTAGE#<city_slug>` | `CURRENT` | `unavailable_sources`, `opened_at`, `notified_at` |
+
+| Port method | DynamoDB call in change 3 |
+|---|---|
+| `alerts_with_window_start_between` | `Query(pk = "ALERT#<slug>", sk BETWEEN "<earliest>#" AND "<latest>#~")` |
+| `record_alert` | `PutItem` |
+| `get_active_outage` | `GetItem(pk = "OUTAGE#<slug>", sk = "CURRENT")` |
+| `save_active_outage` | `PutItem` (single item, idempotent upsert) |
+| `clear_active_outage` | `DeleteItem` |
+
+Why a **range** query rather than "give me the last alert": overlap and escalation are *rules*, and rules belong in `AlertPolicy`. The store stays a dumb key-range read, which is both the cheapest DynamoDB access pattern and trivially fakeable. Window start is the sort key precisely so the dedup lookback is a native sort-key range.
+
+The local `JsonFileAlertRepository` persists the same two collections (`alerts: [...]`, `active_outage: {...} | null`), so the file adapter and the DynamoDB adapter are shape-identical.
+
+---
+
+## 5. Configuration and `RiskEvaluator`
+
+```python
+@dataclass(frozen=True, slots=True)
+class RiskThresholds:
+    prepare_mm_48h: float                       # 9.5  — Reque p95 boundary
+    prepare_probability_pct: int                # 60
+    prepare_probability_pct_degraded: int       # 70   — SENAMHI unavailable
+    prepare_warning_levels: frozenset[WarningLevel]   # {yellow, orange, red}
+    imminent_mm_24h: float                      # 20.0
+    imminent_probability_pct: int               # 70
+    imminent_warning_levels: frozenset[WarningLevel]  # {orange, red}
+
+@dataclass(frozen=True, slots=True)
+class AlertConfig:
+    city: str; city_slug: str; coordinates: Coordinates; timezone: str
+    region: str; thresholds: RiskThresholds
+    checklist: tuple[str, ...]; active_channel: str
+    forecast_hours: int                         # 48
+    dedup_lookback_hours: int                   # 72
+    coordinates_are_placeholder: bool           # True until design spec 12 is closed
+```
+
+`RiskEvaluator(thresholds)` is constructor-injected with values loaded from `ConfigRepository` by the use case. No threshold, coordinate or probability literal appears anywhere in `domain/risk.py`.
+
+Evaluation order (short-circuit, most severe first):
+
+| # | Branch | Condition | Window |
+|---|---|---|---|
+| 1 | Imminent / official | SENAMHI available **and** any current warning level ∈ `imminent_warning_levels` | warning window (union if several) |
+| 2 | Imminent / forecast | Open-Meteo available **and** `accumulated_mm(24) >= imminent_mm_24h` **and** `max_probability_pct(24) >= imminent_probability_pct` | `precipitation_window(24)` |
+| 3 | Prepare / combined | both available, warning level ∈ `prepare_warning_levels`, `accumulated_mm(48) >= prepare_mm_48h`, `max_probability_pct(48) >= prepare_probability_pct` | union(warning window, `precipitation_window(48)`) |
+| 4 | Prepare / degraded | SENAMHI **unavailable**, Open-Meteo available, `accumulated_mm(48) >= prepare_mm_48h`, `max_probability_pct(48) >= prepare_probability_pct_degraded` | `precipitation_window(48)` |
+| 5 | None | anything else, including both sources unavailable | the evaluated horizon from `now` |
+
+Branches 1 and 2 are independent, so `imminent` still fires when the other source is down (spec 6.3). `prepare` cannot fire without forecast data. Both unavailable falls through to 5 by construction — there is no branch that can be reached without at least one `Available`. `degraded=True` whenever either status is `unavailable`; in branch 4 the reasons tuple always includes the explicit "official SENAMHI source unavailable" reason, which the template then surfaces in the body.
+
+Deliberately **not** built: a rule registry, predicate table or threshold DSL. Two levels and five branches do not clear the rule of three; explicit ordered branches are the readable, debuggable form. Each branch's condition lives in a small named helper returning `(matched, reason)` so the reasons tuple is produced by the same code that made the decision — the audit trail cannot drift from the verdict.
+
+---
+
+## 6. `AlertPolicy` and the Dual-Outage Rule
+
+```python
+# domain/dedup.py  — pure
+def should_send(assessment: RiskAssessment, prior: tuple[AlertRecord, ...]) -> SendDecision: ...
+# application-facing shell
+class AlertPolicy:
+    def __init__(self, alerts: AlertRepository, lookback_hours: int) -> None: ...
+    def decide(self, city_slug: str, assessment: RiskAssessment, now: datetime) -> SendDecision: ...
+```
+
+`decide` reads `alerts_with_window_start_between(city_slug, now - lookback, assessment.window.end)`, then calls `should_send`. Rules: `level == NONE` → no; no overlapping prior record → yes (new); overlapping prior with `is_escalation(prior_max_level, level)` → yes; equal level → no; lower level → no. `SendDecision(send: bool, reason: str)` — the reason is printed by the CLI and logged in change 3.
+
+```python
+# domain/outage.py  — pure
+def evaluate_outage(
+    senamhi: SourceResult[...], open_meteo: SourceResult[...],
+    active: OutageRecord | None, city_slug: str, now: datetime,
+) -> OutageDecision: ...
+
+@dataclass(frozen=True, slots=True)
+class OutageDecision:
+    notices: tuple[OperatorNotice, ...]
+    next_state: OutageRecord | None      # None => clear
+    state_changed: bool
+    suppress_community_alert: bool       # True iff both sources unavailable
+```
+
+State transition table — this is the whole rule:
+
+| Unavailable now | Active record | Notices | `next_state` |
+|---|---|---|---|
+| ∅ | none | — | none |
+| ∅ | present | one `SOURCES_RECOVERED` | cleared |
+| {A} | none | one `SOURCE_UNAVAILABLE` naming A | open, `notified_at = now` |
+| {A} | same set, already notified | — (dedup) | unchanged |
+| {A, B} | none | one `SOURCE_UNAVAILABLE` naming both | open dual, `notified_at = now` |
+| {A, B} | `{A, B}`, already notified | — (dedup) | unchanged |
+| {A} | `{A, B}` | one `SOURCES_RECOVERED` naming B **and** one `SOURCE_UNAVAILABLE` for the still-down A | narrowed to `{A}`, `notified_at = now` |
+| {A, B} | `{A}` | one `SOURCE_UNAVAILABLE` naming the newly-down B | widened to `{A, B}` |
+
+**Where the state lives**: nowhere in the domain. `OutageRecord` is read from and written to `AlertRepository` by `RunAlertCycle` (`get_active_outage` / `save_active_outage` / `clear_active_outage`), which is why three consecutive dual-outage cycles emit exactly one notice even though each cycle is a fresh process. In this change the durable store is `JsonFileAlertRepository`; in change 3 it is the `OUTAGE#<slug>` / `CURRENT` item. The contract is identical, and the eight-row table above is the test matrix.
+
+`suppress_community_alert` is redundant with the evaluator (dual outage already yields `NONE`, which `should_send` already refuses) and is enforced anyway as a hard guard in the use case — defence in depth on the one behaviour where a bug would send an unfounded alert to the community.
+
+---
+
+## 7. `RunAlertCycle`
+
+```python
+@dataclass(frozen=True, slots=True)
+class CycleDependencies:                       # D6
+    config: ConfigRepository; warnings: WarningProvider; forecast: ForecastProvider
+    composer: MessageComposer; contacts: ContactRepository; notifier: Notifier
+    alerts: AlertRepository
+    evaluator_factory: Callable[[RiskThresholds], RiskEvaluator]
+    now: Callable[[], datetime]                # D7
+
+@dataclass(frozen=True, slots=True)
+class CycleResult:
+    config_city: str; senamhi: SourceResult[...]; open_meteo: SourceResult[...]
+    assessment: RiskAssessment; decision: SendDecision
+    message_request: MessageRequest            # ALWAYS populated — D11
+    message: AlertMessage | None               # only when composed
+    sent: bool; recipients_count: int
+    notices: tuple[OperatorNotice, ...]
+
+class RunAlertCycle:
+    def __init__(self, deps: CycleDependencies) -> None: ...
+    def execute(self) -> CycleResult: ...
+```
+
+Steps: (1) `config.load()` → (2) `warnings.fetch_current_warnings` → (3) `forecast.fetch_forecast` → (3b) `evaluate_outage` + persist state + send notices → (4) `evaluator.evaluate` → (5) `policy.decide` → (6) `composer.compose` → (7) `contacts.list_active` + `notifier.send_alert` + `alerts.record_alert`. Steps 6–7 run **only** when `decision.send` is true and `suppress_community_alert` is false. Recording happens strictly after successful notification.
+
+### 7.1 Happy path — new `prepare`, both sources available
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant E as Entrypoint (CLI / Lambda)
+    participant U as RunAlertCycle
+    participant C as ConfigRepository
+    participant W as WarningProvider
+    participant F as ForecastProvider
+    participant O as OutageNoticePolicy
+    participant V as RiskEvaluator
+    participant P as AlertPolicy
+    participant M as MessageComposer
+    participant K as ContactRepository
+    participant N as Notifier
+    participant R as AlertRepository
+
+    E->>U: execute()
+    U->>C: load()
+    C-->>U: AlertConfig (coords, thresholds, checklist)
+    U->>W: fetch_current_warnings(region, now)
+    W-->>U: Available([Warning(yellow)])
+    U->>F: fetch_forecast(coords, 48h, now)
+    F-->>U: Available(Forecast)
+    U->>O: evaluate_outage(both available, active=None)
+    O-->>U: no notices, state unchanged
+    U->>V: evaluate(warnings, forecast, now)
+    V-->>U: RiskAssessment(prepare, window, reasons)
+    U->>P: decide(city, assessment, now)
+    P->>R: alerts_with_window_start_between(city, now-72h, window.end)
+    R-->>P: ()
+    P-->>U: SendDecision(send=True, "new level for window")
+    U->>M: compose(MessageRequest)
+    M-->>U: AlertMessage(title, body, prepare, valid_until)
+    U->>K: list_active(channel)
+    K-->>U: (Contact,)
+    U->>N: send_alert(message, recipients)
+    N-->>U: ok
+    U->>R: record_alert(AlertRecord)
+    U-->>E: CycleResult(sent=True, message, request)
+```
+
+### 7.2 Degraded and dual-outage path
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant E as Entrypoint (CLI / Lambda)
+    participant U as RunAlertCycle
+    participant W as WarningProvider
+    participant F as ForecastProvider
+    participant O as OutageNoticePolicy
+    participant V as RiskEvaluator
+    participant P as AlertPolicy
+    participant N as Notifier
+    participant R as AlertRepository
+
+    Note over U: Cycle 1 — SENAMHI HTML unrecognized, Open-Meteo healthy
+    U->>W: fetch_current_warnings(...)
+    W-->>U: Unavailable(senamhi, STRUCTURE_UNRECOGNIZED)
+    U->>F: fetch_forecast(...)
+    F-->>U: Available(Forecast 15 mm / 48 h @ 65%)
+    U->>R: get_active_outage(city)
+    R-->>U: None
+    U->>O: evaluate_outage({senamhi}, active=None)
+    O-->>U: [SOURCE_UNAVAILABLE(senamhi)], open outage
+    U->>N: send_operator_notice(SOURCE_UNAVAILABLE)
+    U->>R: save_active_outage(OutageRecord{senamhi}, notified_at=now)
+    U->>V: evaluate(...)
+    V-->>U: RiskAssessment(none, degraded=True)  %% 65% < 70% degraded rule
+    U->>P: decide(...)
+    P-->>U: SendDecision(send=False, "level none")
+    Note over U,N: no composer call, no community alert
+
+    Note over U: Cycles 2-4 — BOTH sources unavailable
+    U->>O: evaluate_outage({senamhi, open_meteo}, active={senamhi})
+    O-->>U: [SOURCE_UNAVAILABLE(open_meteo)], widen to dual
+    U->>N: send_operator_notice(...)
+    U->>R: save_active_outage({senamhi, open_meteo})
+    Note over U: next cycles: active set unchanged and already notified -> ZERO notices
+    U->>V: evaluate(...)
+    V-->>U: RiskAssessment(none)  %% suppress_community_alert also True
+    Note over U,N: community alerts: none, in any dual-outage cycle
+
+    Note over U: Cycle 5 — Open-Meteo returns
+    U->>O: evaluate_outage({senamhi}, active={senamhi, open_meteo})
+    O-->>U: [SOURCES_RECOVERED(open_meteo), SOURCE_UNAVAILABLE(senamhi)]
+    U->>N: send_operator_notice(SOURCES_RECOVERED)
+    U->>R: save_active_outage({senamhi})
+    U->>V: evaluate(...)  %% degraded rules apply again (>= 70%)
+```
+
+---
+
+## 8. Adapters in This Change
+
+### 8.1 `adapters/open_meteo.py`
+
+| Aspect | Decision |
+|---|---|
+| Endpoint | `GET https://api.open-meteo.com/v1/forecast` — *to verify at apply; the hourly variable names are confirmed by design spec 5.2* |
+| Query params | `latitude`, `longitude`, `hourly=precipitation,precipitation_probability`, `forecast_days=3`, `timezone=UTC` |
+| Why `forecast_days=3` | the API returns whole days from today, so 3 days guarantees a full 48 h **forward** horizon from the current hour; the adapter slices `[now_hour, now_hour + forecast_hours)` |
+| Why `timezone=UTC` | slicing and window arithmetic stay unambiguous; local time is a display concern only (D7) |
+| Timeouts | `httpx.Timeout(connect=3.0, read=5.0, write=3.0, pool=3.0)`; no retries (D12) |
+| `Unavailable` when | transport error → `TRANSPORT_ERROR`; timeout → `TIMEOUT`; status ≠ 200 → `BAD_STATUS`; non-JSON body, missing `hourly.time` / `precipitation` / `precipitation_probability`, or unequal array lengths → `MALFORMED_PAYLOAD`; fewer than `forecast_hours` points at or after `now` → `INSUFFICIENT_HORIZON` |
+| Never | returns a partially-filled `Forecast`. `Forecast.__post_init__` requires contiguous hourly points, so a gap is a parse failure, not silent interpolation |
+| Attribution | Open-Meteo non-commercial terms noted in `README.md` (repo-hygiene spec) |
+
+### 8.2 `adapters/senamhi_scraper.py`
+
+| Aspect | Decision |
+|---|---|
+| Target | `https://www.senamhi.gob.pe/?dp=lambayeque&p=aviso-meteorologico` (design spec 5.1) |
+| Fetch seam | an injected `HtmlFetcher` protocol (`fetch(url) -> str`). Parsing is therefore unit-tested with zero HTTP, and the httpx-backed fetcher is tested separately |
+| Table location | **by header signature**, not by CSS class or table index: normalized (accent-stripped, lower-cased) header cell texts must contain the expected field set, then header text → column index is mapped and rows are read by that map. Class names and layout wrappers churn far more often than column headers, and an index-based selector fails silently where a signature check fails loudly. *Exact header labels to be captured from a live snapshot at apply.* |
+| Level normalization | accent-stripped lower-case token map `amarillo→YELLOW`, `naranja→ORANGE`, `rojo→RED`; unknown token → row counted as an anomaly, not guessed |
+| Date parsing | explicit `strptime` against an ordered list of accepted formats, in `America/Lima`, then converted to UTC; failure → row anomaly |
+| "Current" filter | `window.start <= now <= window.end`. Historical rows still prove the parse worked, so they count toward the row check but are excluded from the returned tuple. This is what separates *healthy page, zero current warnings* → `Available(())` from *nothing parsed* → `Unavailable` |
+| `Unavailable` when (spec 6.4) | table not found; header signature unrecognized → `STRUCTURE_UNRECOGNIZED`; zero data rows extracted → `NO_ROWS_EXTRACTED`; more than half of the extracted rows unparseable → `STRUCTURE_UNRECOGNIZED`; transport error/timeout → `TRANSPORT_ERROR` / `TIMEOUT`. Never `Available` with an empty list from a failed parse |
+| Detail pages | **not fetched** in this change; `Warning.source_id` carries the ID so change 2's `get_warning_detail` tool can use it |
+| Fixtures | `tests/fixtures/senamhi/`: `active_warning.html`, `history_only.html` (well-formed, none current), `broken_structure.html` (headers renamed / table replaced by divs), `empty_table.html` (headers present, zero rows). Captured verbatim once from the live page and pinned; a short `tests/fixtures/senamhi/README.md` records the capture date, URL and refresh procedure. A `@pytest.mark.integration` canary asserts the live page still matches the header signature — the early warning for breakage |
+
+### 8.3 Other adapters
+
+| Adapter | Notes |
+|---|---|
+| `adapters/console_notifier.py` | Prints to stdout with `[DRY-RUN ALERT]` / `[OPERATOR NOTICE]` prefixes. Prints the **recipient count only**, never handles or identifiers (hygiene spec). The module imports no HTTP client, so "never sends" is structural |
+| `adapters/local/json_alert_repository.py` | `JsonFileAlertRepository` over `./.local-state/alerts.json` (gitignored), same two collections as §4.1. Atomic write via temp file + `os.replace` |
+| `adapters/local/in_memory_alert_repository.py` | Same port, no I/O — the default in unit tests |
+| `adapters/local/static_config_repository.py` | Builds `AlertConfig` from module constants + optional `RAIN_ALERT_LAT` / `RAIN_ALERT_LON` env overrides. Coordinates default to an **approximate placeholder** with `coordinates_are_placeholder=True` and a comment pointing at design spec §12 / `state.yaml → open_decisions.ferrenafe-coordinates`. The CLI prints `(PLACEHOLDER — pending confirmation)` beside the coordinates whenever the flag is set, and a unit test asserts the marker exists |
+| `adapters/local/static_contact_repository.py` | Returns exactly one synthetic contact `Contact("operator-local", channel="console", handle="stdout")`. **No email address, no phone number, no `example.com`** — nothing that a hygiene grep must be taught to forgive |
+
+---
+
+## 9. Local CLI
+
+```
+uv run rain-alert-cycle [--json] [--now <ISO8601>] [--state-file PATH] [--offline-fixtures DIR]
+# equivalently: uv run python -m rain_alert.entrypoints.cli
+```
+
+`[project.scripts] rain-alert-cycle = "rain_alert.entrypoints.cli:main"`.
+
+**Dry-run guarantee is structural, not a flag.** The CLI's wiring can only construct `ConsoleNotifier`, and no sending notifier exists anywhere in this change's codebase. There is deliberately **no `--dry-run` flag**, because offering one would imply a send mode exists.
+
+`--now` makes runs reproducible; `--state-file` points at a scratch dedup/outage state; `--offline-fixtures` runs the whole cycle against the pinned HTML and a recorded Open-Meteo payload with zero network access.
+
+Output on **every** run, sent or not:
+
+```
+Ferreñafe  (-6.6400, -79.7900)  (PLACEHOLDER — pending confirmation)
+Sources    senamhi: unavailable (structure_unrecognized: header signature not matched)
+           open_meteo: available (fetched 2026-09-03T14:00:00Z)
+Level      none   [degraded]
+Window     2026-09-03T14:00Z → 2026-09-05T14:00Z
+Reasons    - official SENAMHI source unavailable; forecast-only evaluation
+           - 15.0 mm / 48 h at 65% max probability (degraded threshold 70%)
+Decision   NOT SENT — level none
+Message    PREVIEW (NOT SENT)
+           title: ...
+           body:  ...
+Notices    1 emitted — source_unavailable (senamhi)
+```
+
+`--json` emits the same `CycleResult` as machine-readable JSON for calibration logging. **Exit code is 0 for any completed cycle**, including `none`, degraded and deduplicated outcomes; non-zero only on an unhandled internal error. A degraded cycle is the system working as designed, and a non-zero code would break any future cron or CI wrapper.
+
+---
+
+## 10. Testing Architecture (Strict TDD)
+
+| Layer | What | How |
+|---|---|---|
+| Domain rules | evaluator branches, dedup rules, the eight outage transitions, template content | `@pytest.mark.parametrize` over frozen case dataclasses; `ids=` carry the **spec scenario names** so a failure names the requirement it broke. No fakes, no I/O, milliseconds |
+| Use case | order of steps, dedup short-circuit, degraded wiring, record-after-notify, dual-outage suppression | `build_fake_deps(**overrides)` + hand-written recording spies that append typed call records. `unittest.mock` deliberately avoided: `Mock` satisfies any Protocol and would hide exactly the drift we care about |
+| Open-Meteo adapter | success slice, timeout, bad status, malformed payload, short horizon | `httpx.MockTransport` — offline, no extra dependency (D4) |
+| SENAMHI parser | active warning, history-only, broken structure, empty table, unknown level token, unparseable dates | the four pinned fixtures + a stub `HtmlFetcher`. Parsing never touches the network |
+| Repositories | round-trip, outage upsert/clear, atomic write | `tmp_path` fixture for the JSON adapter; the in-memory one is exercised by every use-case test |
+| CLI | output contains level, reasons and message preview on a non-send run; console notifier never constructs an HTTP client | `capsys`, wired to fixtures via `--offline-fixtures` |
+| Architecture | domain purity | see below |
+| Integration (opt-in) | real Open-Meteo fetch; real SENAMHI header-signature canary | `@pytest.mark.integration`, **deselected by default** via `addopts = "-m 'not integration'"`; run with `uv run pytest -m integration` |
+
+**Architecture test** — `tests/architecture/test_layer_boundaries.py` parses every module under `src/rain_alert/domain/` with `ast.parse` and fails on any `Import` / `ImportFrom` whose root module is in `{httpx, requests, urllib3, urllib.request, boto3, botocore, bs4, soupsieve, lxml, selectolax, strands, bedrock_agentcore, anthropic, openai, langchain}` or starts with `rain_alert.adapters` / `rain_alert.entrypoints` / `rain_alert.application`. A second case asserts `ports/` imports only `typing`, `collections.abc` and `rain_alert.domain`. Static AST inspection rather than import-and-introspect: it catches imports inside functions and `TYPE_CHECKING` blocks, and it runs without executing module side effects. The forbidden list is a module constant so change 2 and change 3 extend it in one line.
+
+**Fake sharing between tests and the CLI** — two distinct categories, deliberately separated:
+
+- **Local adapters that ship in `src/`** (`adapters/local/*`, `console_notifier`): real, supported implementations the CLI depends on. Tested like any adapter.
+- **Recording spies that live in `tests/support/`** (`fakes.py`, `wiring.py`): test-only, they assert call order and arguments. Exposed through `conftest.py` fixtures.
+
+Both `tests/support/wiring.build_fake_deps()` and `entrypoints/wiring.build_local_deps()` return the same `CycleDependencies` type, so the object graph the CLI runs is the object graph the tests exercise — only the leaves differ. This is the reason D6 exists.
+
+---
+
+## 11. Project Layout and Tooling
+
+```
+pyproject.toml            uv project, hatchling backend, requires-python >= 3.12
+uv.lock                   committed
+.python-version           3.12
+src/rain_alert/
+  domain/     values.py entities.py sources.py messages.py config.py risk.py dedup.py outage.py template.py
+  ports/      __init__.py            (the seven Protocols)
+  application/run_alert_cycle.py dependencies.py
+  adapters/   open_meteo.py senamhi_scraper.py console_notifier.py http.py local/
+  entrypoints/cli.py wiring.py
+tests/        unit/{domain,application,adapters} architecture/ integration/
+              fixtures/senamhi/ support/{fakes.py,wiring.py} conftest.py
+LICENSE  README.md  .gitignore  .env.example
+```
+
+| Setting | Value | Rationale |
+|---|---|---|
+| `requires-python` | `>=3.12` | D8 |
+| Runtime deps | `httpx`, `beautifulsoup4` | D4, D5 — two packages, chosen for the change-3 Lambda bundle |
+| Dev deps | `pytest`, `ruff`, `mypy` | D9; `pytest-cov` omitted (`coverage_threshold: 0`), `freezegun` omitted (D7) |
+| `[tool.pytest.ini_options]` | `testpaths=["tests"]`, `addopts="-q -m 'not integration'"`, `markers=["integration: hits real network sources (opt-in)"]` | the default suite is offline and fast, which is what strict TDD needs |
+| `[tool.ruff]` | `line-length=120`, `target-version="py312"`, `select=["E","W","F","I","B","C4","UP","SIM"]`, `ignore=["E501"]`, formatter double quotes | project style skill |
+| `[tool.mypy]` | `strict=true` on `src/`, relaxed `disallow_untyped_defs` for `tests.*` | D9 |
+| Commands | `uv run pytest`, `uv run ruff check`, `uv run mypy src` | matches `openspec/config.yaml` (`mypy` is the added command per D9) |
+
+`src/` layout so tests import the installed package and cannot accidentally pass by relative path. `.gitignore` covers `.env`, `.local-state/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.ruff_cache/`, `.mypy_cache/`.
+
+---
+
+## 12. File Changes
+
+| Path | Action | Slice |
+|---|---|---|
+| `pyproject.toml`, `uv.lock`, `.python-version` | Create | 1 |
+| `LICENSE`, `README.md`, `.gitignore`, `.env.example` | Create | 1 |
+| `src/rain_alert/{__init__,domain/__init__,ports/__init__,application/__init__,adapters/__init__,entrypoints/__init__}.py` | Create | 1 |
+| `tests/architecture/test_layer_boundaries.py`, `tests/conftest.py` | Create | 1 |
+| `src/rain_alert/domain/{values,entities,sources,messages,config}.py` | Create | 2 |
+| `src/rain_alert/domain/{risk,dedup,outage,template}.py` | Create | 2 |
+| `src/rain_alert/ports/__init__.py` (seven Protocols) | Modify | 2 |
+| `src/rain_alert/application/{dependencies,run_alert_cycle}.py` | Create | 2 |
+| `tests/unit/{domain,application}/**`, `tests/support/{fakes,wiring}.py` | Create | 2 |
+| `src/rain_alert/adapters/{http,open_meteo,senamhi_scraper,console_notifier}.py` | Create | 3 |
+| `src/rain_alert/adapters/local/*.py` | Create | 3 |
+| `src/rain_alert/entrypoints/{wiring,cli}.py` | Create | 3 |
+| `tests/unit/adapters/**`, `tests/fixtures/senamhi/**`, `tests/integration/**` | Create | 3 |
+
+No file is modified or deleted outside this change's own slices; `openspec/` and `docs/` are untouched.
+
+---
+
+## 13. PR Slice Boundaries
+
+Matches the proposal's estimate. Dependencies are strictly linear (3 → 2 → 1), which favours a chain where each child PR targets its parent. `sdd-tasks` owns the final forecast and the chain-strategy decision.
+
+| Slice | Content | Est. lines | Autonomous verification | Rollback |
+|---|---|---|---|---|
+| 1 | uv/pytest/ruff/mypy scaffold, package skeleton, LICENSE, README disclaimers, `.gitignore`, `.env.example`, architecture boundary test (passes trivially on an empty domain) | ~150 | `uv run pytest`, `uv run ruff check`, `uv run mypy src`, hygiene `git grep` | revert; nothing depends on it |
+| 2 | Domain types, seven ports, `RiskEvaluator`, `AlertPolicy`, outage rule, template composer, `RunAlertCycle`, `CycleDependencies`, spies, full offline unit suite | ~400 | all four design-spec 6.3 named scenarios, all dedup scenarios, all eight outage transitions green; domain purity test green | revert; slice 1 stands |
+| 3 | Open-Meteo adapter, SENAMHI scraper + four fixtures, console notifier, local repositories/config, CLI + wiring, adapter tests, opt-in integration tests | ~450 | `uv run pytest`; `uv run pytest -m integration` run manually; CLI prints a real cycle sending nothing | revert only the adapter layer — domain, ports and use case survive, which is the proposal's stated rollback posture |
+
+---
+
+## 14. Migration / Rollout
+
+No migration. Greenfield, no existing consumers, no external state written: the CLI writes only a gitignored local JSON file and never calls a notification channel. Rollout is `git revert` per slice.
+
+---
+
+## 15. Open Questions
+
+- [ ] **Exact Ferreñafe coordinates** (design spec §12, `state.yaml → open_decisions.ferrenafe-coordinates`). Handled by an approximate placeholder + `coordinates_are_placeholder=True` + CLI marker + env override. Must be closed before change 3 writes SSM parameters.
+- [ ] **D9: add `mypy` to the tooling list?** This exceeds the proposal's stated tooling (`uv`, `pytest`, `ruff`). Design position: yes — without a static checker the Protocol ports that changes 2 and 3 depend on are unenforced. Needs owner confirmation; if declined, record the unenforced-port risk explicitly.
+- [ ] **D10: probability aggregation = `max` over the horizon.** A domain-level interpretation of an underspecified threshold. Revisit after the first rainy season's calibration data.
+- [ ] *To verify at apply* — Open-Meteo endpoint path and exact query-parameter names (`forecast_days`, `timezone`); the hourly variable names are confirmed by design spec §5.2. No network tool was available to this phase.
+- [ ] *To verify at apply* — the exact SENAMHI table header labels, from a live page snapshot, before the header-signature check is written.
+- [ ] *To verify at change 3 apply* — the set of AWS Lambda managed Python runtimes then available (D8), and whether the runtime ships the system tz database or `tzdata` must be added as a dependency (D7).
+- [ ] **Deferred to change 3 by design**: retry/backoff policy (D12), once the Lambda timeout budget is known.
