@@ -3,7 +3,7 @@ RiskAssessment (risk-evaluation spec; design.md section 5). Zero
 AWS/HTTP/HTML/LLM imports.
 
 Deliberately not built as a rule registry, predicate table or threshold DSL:
-two levels and five branches do not clear the rule of three; explicit
+two levels and six branches do not clear the rule of three; explicit
 ordered branches are the readable, debuggable form. Each branch's condition
 lives in a small named helper returning a verdict or `None`, so the reasons
 tuple is produced by the same code that made the decision — the audit trail
@@ -20,6 +20,7 @@ from rain_alert.domain.config import RiskThresholds
 from rain_alert.domain.entities import Forecast, RiskAssessment, Warning
 from rain_alert.domain.reasons import (
     ForecastThresholdReason,
+    NoQualifyingWarningReason,
     Reason,
     SenamhiUnavailableReason,
     WarningReason,
@@ -93,6 +94,7 @@ class RiskEvaluator:
             self._imminent_from_official,
             self._imminent_from_forecast,
             self._prepare_combined,
+            self._prepare_forecast_only,
             self._prepare_degraded,
         ):
             verdict = branch(warnings, forecast)
@@ -156,6 +158,46 @@ class RiskEvaluator:
             _forecast_reason(accumulated, hours, probability),
         )
         return Level.PREPARE, window, combined_reasons
+
+    def _prepare_forecast_only(
+        self,
+        warnings: SourceResult[tuple[Warning, ...]],
+        forecast: SourceResult[Forecast],
+    ) -> _Verdict | None:
+        """Branch 5: SENAMHI is available but published no qualifying warning.
+
+        Without this branch, breaking the SENAMHI scraper made the system more
+        likely to warn than a healthy one: the same forecast yielded `none`
+        with a healthy, silent SENAMHI but `prepare` with an unavailable one
+        (branch 4). A broken source must never buy extra sensitivity, so the
+        forecast alone may fire `prepare` here too — at the same stricter
+        probability threshold branch 4 uses, never at the combined-rule 60%,
+        because there is no official confirmation to combine with.
+        """
+        if not isinstance(warnings, Available) or not isinstance(forecast, Available):
+            return None
+        if any(w.level in self.thresholds.prepare_warning_levels for w in warnings.data):
+            return None  # a qualifying warning exists: branch 3 owns that case
+        data = forecast.data
+        hours = evaluated_horizon(data, PREPARE_HORIZON_HOURS)
+        accumulated = data.accumulated_mm(hours)
+        probability = data.max_probability_pct(hours)
+        if (
+            accumulated < self.thresholds.prepare_mm_48h
+            or probability < self.thresholds.prepare_probability_pct_degraded
+        ):
+            return None
+        window = data.precipitation_window(hours)
+        reasons: tuple[Reason, ...] = (
+            NoQualifyingWarningReason(),
+            _forecast_reason(
+                accumulated,
+                hours,
+                probability,
+                probability_threshold=self.thresholds.prepare_probability_pct_degraded,
+            ),
+        )
+        return Level.PREPARE, window, reasons
 
     def _prepare_degraded(
         self,

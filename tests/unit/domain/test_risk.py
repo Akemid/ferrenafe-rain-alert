@@ -14,7 +14,15 @@ from rain_alert.domain.entities import Forecast, HourlyPoint, Warning
 from rain_alert.domain.reasons import ForecastThresholdReason, ReasonKind, render_reasons_en
 from rain_alert.domain.risk import RiskEvaluator
 from rain_alert.domain.sources import Available, SourceResult, Unavailable
-from rain_alert.domain.values import Coordinates, Level, SourceName, TimeWindow, UnavailableReason, WarningLevel
+from rain_alert.domain.values import (
+    LEVEL_RANK,
+    Coordinates,
+    Level,
+    SourceName,
+    TimeWindow,
+    UnavailableReason,
+    WarningLevel,
+)
 
 NOW = datetime(2026, 9, 3, 12, tzinfo=UTC)
 COORDS = Coordinates(latitude=-6.64, longitude=-79.79)
@@ -170,6 +178,80 @@ def test_risk_evaluation_scenarios(case: Case) -> None:
     assert assessment.degraded is case.expected_degraded
     if case.expected_reason_kinds is not None:
         assert tuple(reason.kind for reason in assessment.reasons) == case.expected_reason_kinds
+
+
+class TestForecastOnlyPrepareWithASilentButHealthySenamhi:
+    """The fifth branch (owner-approved 2026-09-04).
+
+    Without it, breaking the SENAMHI scraper made the system *more* likely to
+    warn: 24 mm / 48 h at 95% yielded `none` when SENAMHI was available and
+    silent, but `prepare` when SENAMHI was unavailable. A broken source must
+    never buy extra sensitivity.
+    """
+
+    def test_qualifying_forecast_at_the_stricter_threshold_prepares(self) -> None:
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+
+        assessment = evaluator.evaluate(_no_warnings(), _forecast(48, mm_total=24.0, probability_pct=95), NOW)
+
+        assert assessment.level == Level.PREPARE
+        assert assessment.degraded is False
+        assert tuple(reason.kind for reason in assessment.reasons) == (
+            ReasonKind.NO_QUALIFYING_WARNING,
+            ReasonKind.FORECAST_THRESHOLD,
+        )
+
+    def test_reasons_state_there_is_no_official_warning_and_the_trigger_was_forecast_only(self) -> None:
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+
+        assessment = evaluator.evaluate(_no_warnings(), _forecast(48, mm_total=24.0, probability_pct=95), NOW)
+        rendered = render_reasons_en(assessment.reasons)
+
+        assert any("no qualifying official SENAMHI warning" in line for line in rendered)
+        assert any("forecast-only" in line for line in rendered)
+        assert any(
+            f"required threshold {DEFAULT_THRESHOLDS.prepare_probability_pct_degraded}%" in line for line in rendered
+        )
+
+    def test_the_same_forecast_below_the_stricter_threshold_stays_none(self) -> None:
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+
+        assessment = evaluator.evaluate(_no_warnings(), _forecast(48, mm_total=24.0, probability_pct=65), NOW)
+
+        assert assessment.level == Level.NONE
+
+    @pytest.mark.parametrize(
+        ("mm_total", "probability_pct"),
+        [
+            (0.0, 0),
+            (9.0, 65),
+            (9.5, 60),
+            (15.0, 65),
+            (15.0, 70),
+            (24.0, 95),
+            (30.0, 100),
+        ],
+        ids=[
+            "calm",
+            "below-mm-and-below-70",
+            "at-mm-below-70",
+            "above-mm-below-70",
+            "above-mm-at-70",
+            "well-above-both",
+            "extreme",
+        ],
+    )
+    def test_a_healthy_silent_senamhi_is_never_less_sensitive_than_an_unavailable_one(
+        self, mm_total: float, probability_pct: int
+    ) -> None:
+        """Monotonicity guard: breaking the scraper must never raise the level."""
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+        forecast = _forecast(48, mm_total=mm_total, probability_pct=probability_pct)
+
+        healthy_and_silent = evaluator.evaluate(_no_warnings(), forecast, NOW)
+        senamhi_unavailable = evaluator.evaluate(_unavailable_warnings(), forecast, NOW)
+
+        assert LEVEL_RANK[healthy_and_silent.level] >= LEVEL_RANK[senamhi_unavailable.level]
 
 
 class TestShortHorizonForecast:
