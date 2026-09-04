@@ -35,25 +35,47 @@ DOMAIN_FORBIDDEN_PREFIXES = ("rain_alert.adapters", "rain_alert.entrypoints", "r
 PORTS_ALLOWED_ROOTS = ("typing", "collections.abc", "rain_alert.domain")
 
 
-def _imported_roots(tree: ast.AST) -> set[str]:
-    """Every dotted import root in a module, wherever it appears."""
+def _module_package(package: str, relative_path: Path) -> str:
+    """Absolute package that owns `relative_path` (a .py file under the scanned package)."""
+    parts = list(relative_path.parent.parts)
+    return ".".join([package, *parts]) if parts else package
+
+
+def _resolve_relative(node: ast.ImportFrom, module_package: str) -> set[str]:
+    """Absolute dotted names for `from .x import y` / `from .. import z`."""
+    base_parts = module_package.split(".")
+    if node.level > 1:
+        base_parts = base_parts[: -(node.level - 1)] or base_parts[:1]
+    base = ".".join(base_parts)
+    if node.module:
+        return {f"{base}.{node.module}"}
+    return {f"{base}.{alias.name}" for alias in node.names}
+
+
+def _imported_roots(tree: ast.AST, module_package: str) -> set[str]:
+    """Every dotted import root in a module, wherever it appears, relative imports resolved."""
     roots: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             roots.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            roots.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                roots.update(_resolve_relative(node, module_package))
+            elif node.module:
+                roots.add(node.module)
     return roots
 
 
-def _violations(package_dir: Path, is_forbidden: Callable[[str], bool]) -> dict[str, set[str]]:
+def _violations(package_dir: Path, is_forbidden: Callable[[str], bool], *, package: str) -> dict[str, set[str]]:
     """{relative_file: forbidden_roots_found} for every .py file under package_dir."""
     found: dict[str, set[str]] = {}
     for path in sorted(package_dir.rglob("*.py")):
+        relative = path.relative_to(package_dir)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        bad = {root for root in _imported_roots(tree) if is_forbidden(root)}
+        roots = _imported_roots(tree, _module_package(package, relative))
+        bad = {root for root in roots if is_forbidden(root)}
         if bad:
-            found[str(path.relative_to(package_dir))] = bad
+            found[str(relative)] = bad
     return found
 
 
@@ -68,11 +90,11 @@ def _ports_import_is_forbidden(root: str) -> bool:
 
 
 def test_domain_package_has_no_forbidden_imports() -> None:
-    assert _violations(SRC_ROOT / "domain", _domain_import_is_forbidden) == {}
+    assert _violations(SRC_ROOT / "domain", _domain_import_is_forbidden, package="rain_alert.domain") == {}
 
 
 def test_ports_package_imports_only_typing_and_domain() -> None:
-    assert _violations(SRC_ROOT / "ports", _ports_import_is_forbidden) == {}
+    assert _violations(SRC_ROOT / "ports", _ports_import_is_forbidden, package="rain_alert.ports") == {}
 
 
 def test_scanner_flags_a_forbidden_import_hidden_inside_a_function(tmp_path: Path) -> None:
@@ -84,6 +106,24 @@ def test_scanner_flags_a_forbidden_import_hidden_inside_a_function(tmp_path: Pat
     (fake_domain / "leaky.py").write_text("def do_it():\n    import httpx\n    return httpx\n", encoding="utf-8")
     (fake_domain / "clean.py").write_text("x = 1\n", encoding="utf-8")
 
-    result = _violations(fake_domain, _domain_import_is_forbidden)
+    result = _violations(fake_domain, _domain_import_is_forbidden, package="rain_alert.domain")
 
     assert result == {"leaky.py": {"httpx"}}
+
+
+def test_scanner_resolves_relative_imports_before_checking_them(tmp_path: Path) -> None:
+    """Triangulation: `from ..adapters import x` and `from .. import adapters`
+    inside the domain must resolve to `rain_alert.adapters` and be flagged,
+    while intra-package relative imports stay allowed."""
+    fake_domain = tmp_path / "domain"
+    (fake_domain / "rules").mkdir(parents=True)
+    (fake_domain / "sneaky.py").write_text("from ..adapters import thing\n", encoding="utf-8")
+    (fake_domain / "rules" / "deeper.py").write_text("from ... import adapters\n", encoding="utf-8")
+    (fake_domain / "clean.py").write_text("from .entities import Warning\nfrom . import rules\n", encoding="utf-8")
+
+    result = _violations(fake_domain, _domain_import_is_forbidden, package="rain_alert.domain")
+
+    assert result == {
+        "sneaky.py": {"rain_alert.adapters"},
+        "rules/deeper.py": {"rain_alert.adapters"},
+    }
