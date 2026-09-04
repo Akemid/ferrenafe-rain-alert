@@ -95,21 +95,52 @@ phases:
         name: domain-ports-use-case
         branch: feat/core-alert-cycle-2-domain
         tasks: 2.1-2.22
-        status: apply_complete_pending_review
-        review: not yet run — fresh-context review required before PR-2, per
-          this session's interactive execution mode
-        gate: pytest 98 passed, ruff check, ruff format --check, mypy all exit 0
+        status: apply_complete_review_remediated_pending_pr
+        review: >-
+          Fresh-context adversarial review run 2026-09-04. Returned 2 CRITICAL,
+          6 WARNING and 3 suggestions; all fixed on the same branch under
+          strict TDD, plus two owner decisions taken after the review (the
+          fifth risk branch and pruning tautological tests). See
+          apply-progress.md "Phase 2 Review Remediation (2026-09-04)" for the
+          per-finding disposition and evidence.
+        gate: >-
+          pytest 149 passed, ruff check, ruff format --check, mypy all exit 0
+          (re-run after remediation; was 98 passed before it, and 165 before
+          the owner-approved pruning of 16 tautological tests)
         line_budget_risk: >-
-          High. Actual diff since main: 2356 changed lines (1021 src, 1335
-          tests) against the tasks.md ~400 (source) / ~800 (with tests)
-          estimate. Flagged for an ask-on-risk decision before PR-2 opens:
-          accept size:exception, or split further.
+          High, still unresolved. Diff since main after remediation: 3151
+          insertions across 35 src/tests files, against the tasks.md ~400
+          (source) / ~800 (with tests) estimate. Pruning 16 tautological tests
+          removed some of it; the remediation added structured reasons, a
+          boundary table, a monotonicity guard and a new policies test file.
+          Still needs an ask-on-risk decision before PR-2 opens: accept
+          size:exception, or split further.
         open_items_resolved:
           - AlertPolicy port-bound shell placed in application/policies.py
           - OutageNoticePolicy is naming shorthand for the pure
             evaluate_outage() function; no such class exists
           - "ports/ architecture allow-list extended with \"datetime\" (design
             section 10 listed only typing/collections.abc/rain_alert.domain)"
+          - >-
+            Owner-approved fifth prepare branch added to the evaluation order
+            (design section 5 is now six branches): a healthy but silent
+            SENAMHI must never be less sensitive than an unavailable one.
+          - >-
+            Reasons are structured Reason values with an English operator
+            renderer and a Spanish recipient renderer (design section 3.1),
+            resolving the alert-cycle / risk-evaluation wording conflict.
+          - >-
+            OutageRecord.notified_at now has a reader: an unchanged set with
+            notified_at None is still owed its notice (design section 6).
+        deviations_recorded:
+          - >-
+            domain/reasons.py is an addition to design section 12's file table,
+            recorded in tasks.md Open Items like application/policies.py.
+          - >-
+            pythonpath = ["."] replaced by tests/__init__.py packages, but a
+            probe showed the repo root is on sys.path either way because
+            uv run puts the working directory there. Recorded rather than
+            implied in apply-progress.md.
       - id: 3
         name: adapters-and-cli
         tasks: 3.1-3.16
@@ -118,9 +149,11 @@ phases:
       Slice 1 of 3 complete on branch feat/core-alert-cycle-1-tooling
       (chain strategy stacked-to-main, so PR-1 targets main). Slice 2
       (domain, ports, RunAlertCycle) implemented on
-      feat/core-alert-cycle-2-domain, all Phase 2 tasks (2.1-2.22) complete
-      and the verification gate green; awaiting the fresh-context review
-      required before PR-2 opens, including a line-budget decision.
+      feat/core-alert-cycle-2-domain, all Phase 2 tasks (2.1-2.22) complete,
+      fresh-context review run 2026-09-04 and every confirmed finding
+      remediated on the same branch with the gate green. PR-2 is not open:
+      the line-budget decision is still outstanding, and no push or PR was
+      made by the remediation run.
   verify:
     status: pending
     depends_on: [apply]
