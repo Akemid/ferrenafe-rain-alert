@@ -23,6 +23,10 @@ packages = ["src/rain_alert"]
 testpaths = ["tests"]
 addopts = "-q -m 'not integration'"
 markers = ["integration: hits real network sources (opt-in)"]
+# No `pythonpath` entry: `tests/` and every sub-directory carry an
+# `__init__.py`, so `tests.support.*` (the recording spies shared across unit
+# and application tests, design.md section 10) resolves as a real dotted
+# import with canonical module names, rather than through a `sys.path` knob.
 
 [tool.ruff]
 line-length = 120

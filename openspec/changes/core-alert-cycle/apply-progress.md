@@ -173,10 +173,220 @@ so it ships as one PR with the exception recorded rather than being re-cut.
 
 None. All Phase 1 tasks are complete and the gate is green.
 
-## Next Recommended
+## Next Recommended (as of slice 1)
 
 Open PR-1 to `main` (chain strategy `stacked-to-main`), then `sdd-apply` for
 Phase 2 (tasks 2.x: domain, ports, `RunAlertCycle` with fakes). Phase 2 must
 first settle the two Open Items from `tasks.md`: the `AlertPolicy` port-bound
 shell goes in `application/policies.py`, and `OutageNoticePolicy` is naming
 shorthand for the pure `evaluate_outage` function.
+
+---
+
+# Apply Progress: Core Alert Cycle — Slice 2 (Domain, Ports, RunAlertCycle)
+
+**Branch**: `feat/core-alert-cycle-2-domain` (from `main`, slice 1 already merged)
+**Batch**: 2 of N (previous apply-progress for slice 1 read and merged above, not overwritten)
+**Mode**: Strict TDD (test runner: `uv run pytest`)
+**Status**: Complete — all 22 Phase 2 tasks (2.1–2.22) done, verification gate green, one spec/design inconsistency resolved during apply, one task-ordering resequencing.
+
+## Completed Tasks
+
+- [x] 2.1 [RED] `tests/unit/domain/test_values.py`, `test_sources.py`
+- [x] 2.2 [GREEN] `domain/values.py`, `domain/sources.py`
+- [x] 2.3 [RED] `tests/unit/domain/test_entities.py`
+- [x] 2.4 [GREEN] `domain/entities.py`
+- [x] 2.5 [RED] `tests/unit/domain/test_messages.py`
+- [x] 2.6 [GREEN] `domain/messages.py`
+- [x] 2.7 [RED] `tests/unit/domain/test_config.py`
+- [x] 2.8 [GREEN] `domain/config.py`
+- [x] 2.9 `ports/__init__.py` (seven Protocols)
+- [x] 2.10 [RED] `tests/unit/domain/test_risk.py` (10 named scenarios)
+- [x] 2.11 [GREEN] `domain/risk.py` (`RiskEvaluator`, 5-branch order)
+- [x] 2.12 [RED] `tests/unit/domain/test_dedup.py`
+- [x] 2.13 [GREEN] `domain/dedup.py` (`should_send`) + `application/policies.py` (`AlertPolicy`)
+- [x] 2.14 [RED] `tests/unit/domain/test_outage.py` (8-row table)
+- [x] 2.15 [GREEN] `domain/outage.py` (`evaluate_outage`, `OutageDecision`)
+- [x] 2.16 [RED] `tests/unit/domain/test_template.py`
+- [x] 2.17 [GREEN] `domain/template.py` (deterministic `MessageComposer`)
+- [x] 2.18 `tests/support/fakes.py`, `tests/support/wiring.py` (+ `application/dependencies.py`, resequenced — see Deviations)
+- [x] 2.19 [RED] `tests/unit/application/test_run_alert_cycle.py`
+- [x] 2.20 [GREEN] `application/run_alert_cycle.py` (`RunAlertCycle`, `CycleResult`)
+- [x] 2.21 [REFACTOR] extracted `_forecast_reason()` in `risk.py`
+- [x] 2.22 PR-2 verification gate — all green
+
+## TDD Cycle Evidence
+
+| Task pair | Test file | RED confirmed (exact failure) | GREEN | REFACTOR |
+|---|---|---|---|---|
+| 2.1/2.2 | `test_values.py`, `test_sources.py` | `ModuleNotFoundError: No module named 'rain_alert.domain.values'` (and `.sources`) | 30 tests passed on first implementation | n/a |
+| 2.3/2.4 | `test_entities.py` | `ModuleNotFoundError: ...domain.entities` | 1 test failure on first pass (test helper bug: `datetime(2026,9,3,48,...)` — hour must be 0-23), fixed with `timedelta`; then 9/9 passed | n/a |
+| 2.5/2.6 | `test_messages.py` | `ModuleNotFoundError: ...domain.messages` | same test-helper hour-overflow bug, same `timedelta` fix; then 8/8 passed | n/a |
+| 2.7/2.8 | `test_config.py` | `ModuleNotFoundError: ...domain.config` | 2/2 passed on first implementation | n/a |
+| 2.10/2.11 | `test_risk.py` | `ModuleNotFoundError: ...domain.risk` | 10/10 passed on first implementation (5-branch short-circuit logic) | folded into 2.21 |
+| 2.12/2.13 | `test_dedup.py` | `ModuleNotFoundError: ...domain.dedup` | 6/6 passed on first implementation | n/a |
+| 2.14/2.15 | `test_outage.py` | `ModuleNotFoundError: ...domain.outage` | 10/10 passed on first implementation (all 8 table rows + 2 extra) | n/a |
+| 2.16/2.17 | `test_template.py` | `ModuleNotFoundError: ...domain.template` | 5/5 passed on first implementation | n/a |
+| 2.19/2.20 | `test_run_alert_cycle.py` | `ModuleNotFoundError: ...application.run_alert_cycle` | 1 test failure on first pass (test's own assumption about outage-recovery notice count was wrong — see Learned); fixed the test, then 8/8 passed | n/a |
+| 2.21 | (existing suites) | n/a — refactor task | n/a | extracted `_forecast_reason()`; full suite + mypy + ruff re-verified green, no behavior change |
+
+### Test Summary
+- **Total tests added this slice**: 90 (30 values/sources + 9 entities + 8 messages + 2 config + 10 risk + 6 dedup + 10 outage + 5 template + 8 run_alert_cycle + 2 architecture allow-list additions folded into existing file)
+- **Total tests passing repo-wide**: 98/98
+- **Layers used**: Unit (98), Integration (0), E2E (0)
+- **Pure functions added**: `is_escalation`, `status_of`, `Forecast.accumulated_mm/max_probability_pct/peak_hour/precipitation_window`, `should_send`, `evaluate_outage`, `RiskEvaluator.evaluate` (+ 4 private branch helpers + `_forecast_reason`)
+
+## Files Changed
+
+| File | Action | What Was Done |
+|---|---|---|
+| `src/rain_alert/domain/values.py` | Created | Enums (`Level`, `WarningLevel`, `SourceName`, `NoticeKind`, `UnavailableReason`), `LEVEL_RANK`, `is_escalation`, `Coordinates`, `TimeWindow` |
+| `src/rain_alert/domain/sources.py` | Created | `Available[T]`/`Unavailable`/`SourceResult[T]` (PEP 695), `status_of` |
+| `src/rain_alert/domain/entities.py` | Created | `Warning`, `HourlyPoint`, `Forecast` (contiguity-checked), `RiskAssessment`, `Contact` |
+| `src/rain_alert/domain/messages.py` | Created | `ForecastSummary`, `WarningSummary`, `MessageRequest`, `AlertMessage`, `AlertRecord`, `OutageRecord`, `OperatorNotice` |
+| `src/rain_alert/domain/config.py` | Created | `RiskThresholds`, `AlertConfig` |
+| `src/rain_alert/ports/__init__.py` | Modified | Seven `Protocol`s: `ConfigRepository`, `WarningProvider`, `ForecastProvider`, `MessageComposer`, `ContactRepository`, `Notifier`, `AlertRepository` |
+| `src/rain_alert/domain/risk.py` | Created | `RiskEvaluator` — 5-branch short-circuit evaluation, `_forecast_reason` helper |
+| `src/rain_alert/domain/dedup.py` | Created | Pure `should_send`, `SendDecision` |
+| `src/rain_alert/application/policies.py` | Created | `AlertPolicy` — port-bound shell over `should_send` |
+| `src/rain_alert/domain/outage.py` | Created | Pure `evaluate_outage`, `OutageDecision` — 8-row state machine |
+| `src/rain_alert/domain/template.py` | Created | Deterministic `MessageComposer` (Spanish recipient-facing text) |
+| `src/rain_alert/application/dependencies.py` | Created | `CycleDependencies` (D6, D7) |
+| `src/rain_alert/application/run_alert_cycle.py` | Created | `RunAlertCycle`, `CycleResult`, `_build_message_request` |
+| `tests/support/fakes.py` | Created | Hand-written recording spies for all seven ports, no `unittest.mock` |
+| `tests/support/wiring.py` | Created | `build_fake_deps()` with calm defaults |
+| `tests/unit/domain/test_{values,sources,entities,messages,config,risk,dedup,outage,template}.py` | Created | Table-driven unit tests, `ids=` naming spec scenarios where applicable |
+| `tests/unit/application/test_run_alert_cycle.py` | Created | Full-chain, dedup short-circuit, record-after-notify, 3-cycle dual-outage suppression, degraded wiring |
+| `tests/architecture/test_layer_boundaries.py` | Modified | `PORTS_ALLOWED_ROOTS` extended with `"datetime"` |
+| `pyproject.toml` | Modified | Added `pythonpath = ["."]` so `tests.support.*` resolves as a dotted import |
+| `openspec/changes/core-alert-cycle/tasks.md` | Modified | Checked off 2.1–2.22; updated Open Items and Review Workload Forecast |
+| `openspec/changes/core-alert-cycle/state.yaml` | Modified | Slice 2 status, gate result, line-budget flag |
+
+## Spec/Design Inconsistency Found and Resolved
+
+**The ports architecture allow-list did not include `datetime`.** `tests/architecture/test_layer_boundaries.py` (written in slice 1, merged to `main`) restricts `ports/` to `{typing, collections.abc, rain_alert.domain}`. But design.md section 4's own `ports/__init__.py` code block uses `datetime` in every port signature that carries `now` or a timestamp (`WarningProvider.fetch_current_warnings(self, region: str, now: datetime)`, etc.). Writing the seven ports exactly as designed failed `test_ports_package_imports_only_typing_and_domain` immediately.
+
+**Resolution**: extended `PORTS_ALLOWED_ROOTS` with `"datetime"` (a stdlib type with no I/O or third-party surface) rather than reopening design.md section 10 mid-slice, and dropped `from __future__ import annotations` from `ports/__init__.py` (not needed once `datetime` is a normal import, and avoids also having to allow-list `"__future__"`). Documented in a comment on `PORTS_ALLOWED_ROOTS` and in `tasks.md`'s Open Items section.
+
+## Deviations from Design
+
+1. **Task resequencing (2.18/2.20 split)**: `tasks.md` lists `application/dependencies.py` (`CycleDependencies`) as part of task 2.20's GREEN step (paired with `run_alert_cycle.py`), but task 2.18 (`tests/support/wiring.py`) needs the `CycleDependencies` type to type-check `build_fake_deps()`'s return value. `CycleDependencies` is a plain frozen dataclass with no business logic, so it was implemented as part of 2.18's work instead of deferred to 2.20. Task 2.20's remaining scope was `run_alert_cycle.py` itself. No test coverage was skipped — `CycleDependencies` has no behavior to test on its own; it is exercised end-to-end by every `RunAlertCycle` test.
+2. **`tests.support.*` import path**: design.md section 10 refers to `tests.support.wiring.build_fake_deps()` using dotted notation. Verifying this resolves as a real Python import (rather than relying on an incidental `sys.path` side effect of `tests/conftest.py`'s own import) required adding pytest's built-in `pythonpath = ["."]` option to `[tool.pytest.ini_options]`. This is additive, standard pytest configuration, not a third-party dependency.
+3. **`OutageDecision` narrow-with-recovery emits two notices, not one** (design.md section 6, row 7, and confirmed by the section 7.2 mermaid diagram cycle 5): when a dual outage narrows to a single still-down source, both a `SOURCES_RECOVERED` notice and a fresh `SOURCE_UNAVAILABLE` notice for the still-down source are emitted in the same cycle. My first draft of `test_run_alert_cycle.py`'s recovery test wrongly asserted exactly 2 total notices across the whole scenario; the actual (and design-correct) count is 3 (1 initial dual-outage notice + 2 from the narrow-with-recovery cycle). Fixed the test assertion, not the implementation — this is design's own literal behavior, not a bug.
+
+## Issues Found
+
+None blocking. See "Spec/Design Inconsistency Found and Resolved" above for the one issue that required a code-level decision.
+
+## Review Workload / Line Budget
+
+Actual diff since branching from `main` (`git diff main...HEAD --stat`):
+
+- **src/**: 13 files changed, 1021 insertions
+- **tests/**: 13 files changed, 1335 insertions
+- **other** (`pyproject.toml`): 4 insertions
+- **Total**: 2356 changed lines
+
+The task/design estimate for slice 2 was ~400 authored lines, with tests expected to "roughly double that" (~800 total per the orchestrator's own framing). The actual 2356-line diff is roughly 3x that combined estimate. This was not driven by scope creep — task 2.1 through 2.22 map 1:1 to what was implemented, no extra files, no gold-plating — but by the sheer number of table-driven scenario tests the specs explicitly require (10 risk-evaluation scenarios, 8 outage-transition rows, 6 dedup scenarios, plus entity/value/message/config coverage) combined with sizeable domain type surfaces (nine dataclasses in `entities.py`+`messages.py`, seven ports, a five-branch evaluator).
+
+**This is flagged, not silently absorbed**, per `ask-on-risk`: the fresh-context reviewer and/or owner should decide whether to accept `size:exception` for PR-2 as a single stacked PR (all 12 work-unit commits are independently reviewable and revertable), or request a further split (e.g., domain types in one PR, evaluator+dedup+outage+template in a second, use case+wiring in a third) before PR-2 opens. No PR was opened by this apply run per the orchestrator's instructions.
+
+## Learned / Gotchas
+
+- **A recurring test-helper bug**: several early test files defined `_utc(hour: int) -> datetime` as `datetime(2026, 9, 3, hour, tzinfo=UTC)`, which raises `ValueError: hour must be in 0..23` the moment a test passes `hour=48` (needed for a 48-hour window). Fixed by rebasing the helper on `datetime(2026, 9, 3, 0, tzinfo=UTC) + timedelta(hours=hour)` in each affected file. Not a domain bug — a test-fixture-construction bug caught immediately by the RED/GREEN cycle itself (the "RED" was for the wrong reason on the first run, which is exactly what strict TDD is supposed to surface).
+- **`ports/` needs `datetime`, but the slice-1 architecture test didn't allow it.** See "Spec/Design Inconsistency" above — worth flagging for change 3's own port additions, in case a similar gap appears there.
+- **PEP 695 generic syntax (`class Available[T]:`, `type SourceResult[T] = ...`) works cleanly under `mypy --strict` on Python 3.12** with no extra configuration — D8's floor was already the exact requirement for this.
+- **`FakeMessageComposer` delegates to the real `MessageComposer` template** rather than returning a canned message. This means `test_run_alert_cycle.py`'s degraded-mode wiring test exercises the *actual* Spanish disclosure text end-to-end (not a stub), catching real integration bugs between `RunAlertCycle`'s `_build_message_request` and the template's disclosure logic for free.
+
+## Remaining Tasks (this slice)
+
+None. All Phase 2 tasks are complete and the verification gate is green.
+
+## Next Recommended
+
+Fresh-context adversarial review of `feat/core-alert-cycle-2-domain` before
+opening PR-2 (interactive execution mode requires this). The review should
+explicitly weigh in on the line-budget flag above before a PR is opened.
+After review and any fixes, `sdd-apply` for Phase 3 (tasks 3.x: adapters,
+local repositories, CLI) remains, depending on PR-2 merging first per the
+`stacked-to-main` chain strategy.
+
+## Phase 2 Review Remediation (2026-09-04)
+
+A fresh-context adversarial review of `feat/core-alert-cycle-2-domain` returned
+two CRITICAL findings, six WARNINGs and three suggestions, plus two owner
+decisions taken after the review. All were fixed on the same branch under
+strict TDD (failing test first, confirmed failing for the intended reason,
+then implementation). No test was weakened and no type annotation was relaxed
+to reach green. This subsection is appended to the slice-2 record above, not a
+replacement for it.
+
+### Disposition per finding
+
+| Finding | Disposition | What changed | Evidence |
+|---|---|---|---|
+| **Owner decision 1** — fifth risk branch | Fixed | `_prepare_forecast_only` added to `domain/risk.py` between `_prepare_combined` and `_prepare_degraded`: SENAMHI available with no qualifying warning + forecast clears `prepare_mm_48h` at `prepare_probability_pct_degraded` → `PREPARE`. Reasons are `NoQualifyingWarningReason` + a `ForecastThresholdReason` carrying that threshold. Branches 3 and 4 untouched. | Monotonicity test failed `assert 0 >= 1` before the fix. 24 mm at 95 % with a healthy silent SENAMHI → prepare; the same at 65 % → none; 7-case parametrized monotonicity guard. Commit `6ae7a90`. |
+| **Owner decision 2** — prune tautological tests | Fixed | 16 tests removed: 3 in `test_entities.py`, all 6 `*_carries_expected_fields` in `test_messages.py`, both in `test_config.py` (file deleted), 5 enum-literal tests in `test_values.py`. Each was read before deletion; every behavioural test was kept (`Forecast` accessors and invariants, `OutageRecord.is_dual`, `is_escalation`, `Coordinates` range checks, `TimeWindow` invariants/overlap/key). | Suite 165 → 149 tests, still green. Commit `bb1dbcc`. |
+| **C1** — English audit strings and a duplicated bilingual outage statement in the Spanish body | Fixed | New `domain/reasons.py`: tagged union of `Reason` variants carrying the numbers, `ReasonKind` serialization tag, and `render_reason_en`/`render_reasons_en` for the operator and CLI path (slice 3 reuses it). `RiskAssessment.reasons`, `MessageRequest.reasons` and `AlertRecord.reasons` retyped. `domain/template.py` renders neutral Spanish, drops `(degraded threshold 70%)`, drops the duplicated degraded reason, and converts the window to `AlertConfig.timezone` via `zoneinfo` per D7. | `TestNoOperatorAuditTextReachesRecipients` asserts the body contains none of `max probability`, `unavailable`, `warning`, `threshold`, `forecast-only`, `mm / ` — for both the normal and degraded paths. `test_the_outage_is_stated_exactly_once` pins the count at 1. `test_window_is_rendered_in_the_configured_timezone_not_raw_utc` asserts no `+00:00` and no raw ISO string. Commit `337757c`. |
+| **C2** — `ValueError` crashed the cycle on a single-hour cloudburst or an empty forecast | Fixed | `Forecast.__post_init__` rejects empty `points`. `precipitation_window` ends at the last point + 1 h, so a one-point forecast yields a valid one-hour window. All accessors route through `_slice`, which refuses a horizon outside `1..horizon_hours`. `risk.evaluated_horizon` clamps requested horizons; `_build_message_request` tolerates a short series. | RED was reproduced through the real use case: `ValueError: TimeWindow.end must be strictly after start` from `RunAlertCycle.execute()`. Post-fix, one point at 25 mm / 80 % reaches `IMMINENT` and sends. Commit `0f09dd1`. |
+| **W1** — 24-point forecast answered as a 48-hour reading, `default=0` read as "0 % chance" | Fixed alongside C2 | Accessors raise outside `1..horizon_hours`; `max_probability_pct` no longer needs a default because the slice is guaranteed non-empty; `risk.py` clamps and reports the clamped `hours` in the reason, so the horizon is truthful. Clamping (rather than rejecting) is conservative and is what lets the cloudburst case work — documented in `evaluated_horizon`'s docstring and design §3.2. | `test_reason_reports_the_horizon_actually_evaluated` asserts `hours == 24` and that no rendered reason says `48 h`. Commit `0f09dd1`. |
+| **W2** — long aviso hid the prior alert, re-alerting every 6 h | Fixed | `AlertPolicy.decide` queries from `min(now - lookback, assessment.window.start)`. | New `tests/unit/application/test_policies.py`: a window starting 100 h before `now` with a 72 h lookback is not re-alerted; the query range is asserted directly; a short window still uses the full lookback. RED showed `2026-08-31 <= 2026-08-30` failing. Commit `32ecedf`. |
+| **W3** — redundant `clear_active_outage` every healthy cycle | Fixed | The persist block is gated on `OutageDecision.state_changed`, giving the field its first production reader. | `test_a_healthy_cycle_performs_no_outage_writes`; RED showed `assert 3 == 1` save calls across three unchanged cycles. Commit `61fbc81`. |
+| **W4** — `notified_at` never read, so a `None` notice was lost forever | Fixed (preferred option: treat `None` as "must notify") | `evaluate_outage` emits the notice and stamps `notified_at` when the set is unchanged but `notified_at is None`; `state_changed` is `True`. The `notified=False` helper keyword is now exercised. design §6 gained the ninth table row. | RED showed `notices=()` for an un-notified record. Row-7 test tightened to `len(decision.notices) == 2`. Commit `41c471c`. |
+| **W5** — every window under-reported coverage by one hour | Fixed by C2's window change | Documented in design §3.2. | `test_precipitation_window_over_48_points_covers_48_hours` pins a 48-point forecast to a 48-hour window. Commit `0f09dd1`. |
+| **W6** — no boundary regression guard | Fixed | 16-case parametrized boundary table, one case exactly at and one just below each numeric threshold, using a burst forecast so an on-boundary accumulation is exact rather than the sum of 48 divisions. Combined-case `reasons` are now asserted by kind; the row-7 outage test asserts the notice count. | Mutation evidence, one `<` → `<=` flip per site, `with boundary table` vs `without`: imminent FAIL/FAIL · combined FAIL/FAIL · forecast-only mm FAIL/**PASS** · forecast-only prob FAIL/**PASS** · degraded mm FAIL/**PASS** · degraded prob FAIL/**PASS**. Four of six flips were previously undetected. Commit `50d1528`. |
+| **Suggestion** — `TimeWindow` should require UTC, not any tz-aware offset | Applied (assert, not normalize) | `__post_init__` rejects a non-zero `utcoffset()` on either bound, naming which bound was wrong. Normalizing was rejected: a frozen dataclass would need `object.__setattr__`, and a non-UTC input is a caller bug worth failing on. | Test per bound plus `test_key_sorts_lexicographically_in_chronological_order`, which is the property the DynamoDB range query depends on. Commit `34143fc`. |
+| **Suggestion** — `_build_message_request` hardcoded 48 and 24 | Applied | Reads `config.forecast_hours` and the new public `risk.IMMINENT_HORIZON_HOURS`, both clamped through `evaluated_horizon`. | Commit `0f09dd1`. |
+| **Suggestion** — prefer `tests/__init__.py` over `pythonpath = ["."]` | Applied, with a measured caveat | `__init__.py` added to `tests/` and all six sub-directories; `pythonpath` removed from `pyproject.toml`. | **The suggestion's stated benefit does not hold and is recorded rather than implied.** A probe test showed the repository root at `sys.path[0]` and `import openspec` succeeding both before and after the change, because `uv run pytest` puts the working directory on `sys.path` itself, outside any pytest setting; `importmode`/`consider_namespace_packages` changed nothing. The real gain is canonical dotted module names, no basename collisions, and one less config knob. Commit `96f6e30`. |
+
+### Design/spec artifacts touched
+
+- `design.md` — new §3.1 (reasons as structured values with a renderer per audience) and §3.2 (forecast horizon and window semantics); §3 type block updated (`Reason` types, `Forecast.horizon_hours` and accessor contract, `TimeWindow` UTC, the three retyped `reasons` fields); §5 evaluation order now six rows with the new branch 4 and its rationale; §6 outage table gained the `notified_at is None` row and the `state_changed` persist rule; §6 `AlertPolicy` lookback clamp; §9 CLI sample wording; §11 layout and tooling table; §12 file table. Everything else left alone.
+- `tasks.md` — scope-change notes on tasks 2.4, 2.6, 2.11, 2.13, 2.15, 2.17, 2.20 and 2.22, plus two new Open Items (the fifth branch resolution, and a Phase 3 note that the CLI must call `render_reasons_en` rather than printing `Reason` values).
+- `state.yaml` — slice-2 entry updated; `apply.engram_saved: false`.
+
+### Verification gate after remediation
+
+Run from the repository root:
+
+```
+$ uv run pytest
+........................................................................ [ 96%]
+.....                                                                    [100%]
+149 passed in 0.09s
+exit=0
+
+$ uv run ruff check .
+All checks passed!
+exit=0
+
+$ uv run ruff format --check .
+44 files already formatted
+exit=0
+
+$ uv run mypy
+Success: no issues found in 19 source files
+exit=0
+```
+
+### Remediation commits
+
+`0f09dd1` fix(domain): defend Forecast arity and cover the sampled period ·
+`337757c` feat(domain): separate operator audit reasons from the Spanish alert body ·
+`6ae7a90` feat(domain): add a forecast-only prepare branch for a silent SENAMHI ·
+`32ecedf` fix(application): clamp the dedup lookback to the assessment window start ·
+`61fbc81` fix(application): persist outage state only when it changed ·
+`41c471c` fix(domain): re-notify an outage record persisted without a notice ·
+`50d1528` test(domain): pin every numeric risk threshold at and just below boundary ·
+`34143fc` refactor(domain): enforce the UTC requirement in TimeWindow ·
+`96f6e30` test: make tests a real package instead of a sys.path knob ·
+`bb1dbcc` test: prune tautological frozen-dataclass field tests
+
+### Learned / Gotchas from the remediation
+
+- **A "reason" that serves two audiences is two different values, not one string.** The bilingual leak was not a wording slip: it was the predictable outcome of one `tuple[str, ...]` field being consumed by an English operator CLI and a Spanish community message. Structuring the value and rendering per audience is what actually resolved the cross-spec conflict.
+- **An hourly sample is an interval, not an instant.** Treating `HourlyPoint.at` as the whole sample made every window an hour short and made a one-point forecast unrepresentable. Both bugs came from the same modelling slip.
+- **Defending an invariant is not enough if callers cannot tolerate the refusal.** Rejecting `hours > horizon_hours` in `Forecast` would have crashed the cycle on a short series, which is the very failure mode C2 reports. The rule had to be paired with an explicit clamp at the call site plus a truthful report of what was evaluated — and the clamp is only safe because it is provably conservative.
+- **A degraded source must never buy sensitivity.** The missing fifth branch was invisible to nine scenario tests and only surfaced as a monotonicity property. Property-style tests across a grid of inputs catch a class of bug that named scenarios cannot.
+- **Boundary tests need exact arithmetic.** Spreading 9.5 mm across 48 points and summing does not necessarily equal 9.5. The boundary table puts all the rain in the first hour so the assertion tests the threshold rule, not floating-point summation.
+- **`uv run` puts the working directory on `sys.path` before pytest gets a say.** No pytest import-mode or `pythonpath` setting can keep the repository root off `sys.path` under `uv run pytest`; do not assume `__init__.py` files buy isolation they cannot buy.

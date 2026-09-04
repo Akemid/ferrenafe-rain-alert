@@ -32,7 +32,12 @@ DOMAIN_FORBIDDEN_ROOTS = {
 }
 DOMAIN_FORBIDDEN_PREFIXES = ("rain_alert.adapters", "rain_alert.entrypoints", "rain_alert.application")
 
-PORTS_ALLOWED_ROOTS = ("typing", "collections.abc", "rain_alert.domain")
+# "datetime" added in change 2: every port signature that carries a `now` or
+# a timestamp needs it (design.md section 4). design.md section 10 describes
+# this list as {typing, collections.abc, rain_alert.domain}; datetime is a
+# stdlib type carrying no I/O or third-party surface, so it is added here
+# rather than reopened as a design question.
+PORTS_ALLOWED_ROOTS = ("typing", "collections.abc", "datetime", "rain_alert.domain")
 
 
 def _module_package(package: str, relative_path: Path) -> str:

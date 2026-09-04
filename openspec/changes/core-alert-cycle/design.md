@@ -19,7 +19,7 @@ Hexagonal, domain-first, strict TDD. Three rings:
 Two structural rules carry most of the design's weight:
 
 1. **Every rule is a pure function; every port-bound object is a thin shell over one.** `AlertPolicy` and `OutageNoticePolicy` hold a port reference so they can satisfy the specs literally ("MUST query `AlertRepository`"), but each delegates to a module-level pure function that takes state in and returns a decision out. All rule tests are table-driven with no fakes at all.
-2. **Availability is a value, not an exception.** Source outage is reasoned about in four rule branches and three notice branches, so it travels as data.
+2. **Availability is a value, not an exception.** Source outage is reasoned about in five rule branches and three notice branches, so it travels as data.
 
 The LLM composer invariant (design spec 3.2) is preserved structurally: `MessageComposer` is invoked by `RunAlertCycle` **after** `AlertPolicy` has already authorized the send, receives a `MessageRequest` that already contains the decided level, and its return value never feeds back into any decision.
 
@@ -122,10 +122,30 @@ def is_escalation(previous: Level, candidate: Level) -> bool: ...
 class Coordinates:      latitude: float; longitude: float   # range-checked in __post_init__
 
 @dataclass(frozen=True, slots=True)
-class TimeWindow:                                            # both UTC-aware; end > start
+class TimeWindow:                                            # both UTC (zero offset, enforced); end > start
     start: datetime; end: datetime
     def overlaps(self, other: TimeWindow) -> bool: ...
     def key(self) -> str: ...                                # "<start ISO8601 UTC>" — the dedup sort key
+
+# domain/reasons.py — the audit trail as data, not as prose (see 3.1)
+class ReasonKind(StrEnum):
+    OFFICIAL_WARNING = "official_warning"; FORECAST_THRESHOLD = "forecast_threshold"
+    SENAMHI_UNAVAILABLE = "senamhi_unavailable"; NO_QUALIFYING_WARNING = "no_qualifying_warning"
+
+@dataclass(frozen=True, slots=True)
+class WarningReason:              level: WarningLevel; title: str
+@dataclass(frozen=True, slots=True)
+class ForecastThresholdReason:                               # `hours` = horizon actually evaluated
+    accumulated_mm: float; hours: int; probability_pct: int
+    probability_threshold_pct: int | None = None             # operator-only detail
+@dataclass(frozen=True, slots=True)
+class SenamhiUnavailableReason: ...
+@dataclass(frozen=True, slots=True)
+class NoQualifyingWarningReason: ...
+
+type Reason = WarningReason | ForecastThresholdReason | SenamhiUnavailableReason | NoQualifyingWarningReason
+def render_reason_en(reason: Reason) -> str: ...              # operator / CLI audit line
+def render_reasons_en(reasons: tuple[Reason, ...]) -> tuple[str, ...]: ...
 
 # domain/sources.py
 @dataclass(frozen=True, slots=True)
@@ -144,16 +164,18 @@ class Warning:
 class HourlyPoint: at: datetime; precipitation_mm: float; probability_pct: int
 
 @dataclass(frozen=True, slots=True)
-class Forecast:                                              # 48 contiguous hourly points
+class Forecast:                        # non-empty, contiguous hourly points; both enforced
     location: Coordinates; points: tuple[HourlyPoint, ...]
-    def accumulated_mm(self, hours: int) -> float: ...
-    def max_probability_pct(self, hours: int) -> int: ...     # D10
+    @property
+    def horizon_hours(self) -> int: ...                       # == len(points)
+    def accumulated_mm(self, hours: int) -> float: ...        # every accessor raises unless
+    def max_probability_pct(self, hours: int) -> int: ...     # 1 <= hours <= horizon_hours (D10)
     def peak_hour(self, hours: int) -> HourlyPoint: ...
-    def precipitation_window(self, hours: int) -> TimeWindow: ...
+    def precipitation_window(self, hours: int) -> TimeWindow: ...   # ends at last point + 1 h
 
 @dataclass(frozen=True, slots=True)
 class RiskAssessment:
-    level: Level; window: TimeWindow; reasons: tuple[str, ...]
+    level: Level; window: TimeWindow; reasons: tuple[Reason, ...]
     senamhi_status: str; open_meteo_status: str; degraded: bool
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +189,7 @@ class WarningSummary:  source_id: str; level: WarningLevel; title: str; window: 
 
 @dataclass(frozen=True, slots=True)
 class MessageRequest:                                        # the composer's ONLY input; never raw series
-    city: str; timezone: str; level: Level; window: TimeWindow; reasons: tuple[str, ...]
+    city: str; timezone: str; level: Level; window: TimeWindow; reasons: tuple[Reason, ...]
     forecast: ForecastSummary | None; warning: WarningSummary | None
     senamhi_status: str; open_meteo_status: str; checklist: tuple[str, ...]
 
@@ -177,7 +199,7 @@ class AlertMessage: title: str; body: str; level: Level; valid_until: datetime  
 @dataclass(frozen=True, slots=True)
 class AlertRecord:
     city_slug: str; level: Level; window: TimeWindow; sent_at: datetime
-    message: AlertMessage; reasons: tuple[str, ...]
+    message: AlertMessage; reasons: tuple[Reason, ...]
     senamhi_status: str; open_meteo_status: str; composer: str   # "template" | "agent"
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +212,30 @@ class OutageRecord:                                          # at most one activ
 class OperatorNotice:
     kind: NoticeKind; subject: str; body: str; sources: frozenset[SourceName]; occurred_at: datetime
 ```
+
+### 3.1 Reasons are structured values with a renderer per audience
+
+*Added 2026-09-04, from the slice-2 fresh-context review (finding C1).*
+
+Originally `RiskAssessment.reasons` was `tuple[str, ...]` holding pre-formatted English. That made a genuine cross-spec conflict unresolvable: `alert-cycle` requires the composed body to include each reason, while `risk-evaluation`'s reasons are the **operator** audit trail the CLI prints in English (§9). The community body therefore rendered English audit strings — including an internal `(degraded threshold 70%)` fragment — under a Spanish `Motivos:` header, and stated the SENAMHI outage twice in two languages. Design spec 7.4 requires recipient-facing text in neutral Spanish.
+
+**Resolution**: the evaluator emits `Reason` values carrying the numbers it decided on (mm, evaluated hours, probability, the stricter threshold when one applied, warning level and title). Two renderers consume them:
+
+| Audience | Renderer | Contents |
+|---|---|---|
+| Operator, CLI (§9), `AlertRecord` audit trail, change 3 `--json` | `domain/reasons.render_reasons_en` | English, with every number and the threshold that applied |
+| Community recipients | `domain/template.MessageComposer` | Neutral Spanish prose; no threshold values; window converted to `AlertConfig.timezone` per D7; the outage stated once |
+
+The property that mattered is preserved: the branch that made the decision still builds the reason, so the audit trail cannot drift from the verdict. `Reason` is a tagged union rather than one record with optional fields, for the same reason as D2 — a `WarningReason` has no millimetre reading to misread, and `match` narrows.
+
+### 3.2 Forecast horizon and window semantics
+
+*Added 2026-09-04, from the slice-2 fresh-context review (findings C2, W1, W5).*
+
+- `Forecast.__post_init__` rejects an empty `points` tuple. The "48 contiguous hourly points" invariant is now defended where it is claimed, instead of surfacing as a `max()` error inside `peak_hour`.
+- Every accessor refuses a horizon outside `1..horizon_hours`. A 24-point forecast must not answer a 48-hour question, because the answer would be reported under an untruthful horizon.
+- Callers that tolerate a short series clamp first, via `risk.evaluated_horizon(forecast, requested_hours)`, and report the clamped value. Clamping is conservative: an accumulation reached in fewer hours also clears the same threshold over a longer horizon, and max probability over fewer hours can only be lower or equal — so a truncated forecast can never make the system warn where a full one would not.
+- `precipitation_window(hours)` ends **one hour after the last sample's timestamp**, because an hourly sample stamped 14:00 describes 14:00–15:00. The previous end-at-last-timestamp form under-reported coverage by an hour, so `AlertMessage.valid_until` declared expiry before the data ran out. A 48-point forecast now yields a 48-hour window, and a one-point cloudburst yields a valid one-hour window instead of aborting the cycle on `TimeWindow.end must be strictly after start`.
 
 ---
 
@@ -284,12 +330,17 @@ Evaluation order (short-circuit, most severe first):
 | 1 | Imminent / official | SENAMHI available **and** any current warning level ∈ `imminent_warning_levels` | warning window (union if several) |
 | 2 | Imminent / forecast | Open-Meteo available **and** `accumulated_mm(24) >= imminent_mm_24h` **and** `max_probability_pct(24) >= imminent_probability_pct` | `precipitation_window(24)` |
 | 3 | Prepare / combined | both available, warning level ∈ `prepare_warning_levels`, `accumulated_mm(48) >= prepare_mm_48h`, `max_probability_pct(48) >= prepare_probability_pct` | union(warning window, `precipitation_window(48)`) |
-| 4 | Prepare / degraded | SENAMHI **unavailable**, Open-Meteo available, `accumulated_mm(48) >= prepare_mm_48h`, `max_probability_pct(48) >= prepare_probability_pct_degraded` | `precipitation_window(48)` |
-| 5 | None | anything else, including both sources unavailable | the evaluated horizon from `now` |
+| 4 | Prepare / forecast-only | SENAMHI **available** with **no** warning level ∈ `prepare_warning_levels`, Open-Meteo available, `accumulated_mm(48) >= prepare_mm_48h`, `max_probability_pct(48) >= prepare_probability_pct_degraded` | `precipitation_window(48)` |
+| 5 | Prepare / degraded | SENAMHI **unavailable**, Open-Meteo available, `accumulated_mm(48) >= prepare_mm_48h`, `max_probability_pct(48) >= prepare_probability_pct_degraded` | `precipitation_window(48)` |
+| 6 | None | anything else, including both sources unavailable | the evaluated horizon from `now` |
 
-Branches 1 and 2 are independent, so `imminent` still fires when the other source is down (spec 6.3). `prepare` cannot fire without forecast data. Both unavailable falls through to 5 by construction — there is no branch that can be reached without at least one `Available`. `degraded=True` whenever either status is `unavailable`; in branch 4 the reasons tuple always includes the explicit "official SENAMHI source unavailable" reason, which the template then surfaces in the body.
+Every `48` and `24` above is the **requested** horizon; the evaluator clamps it to `forecast.horizon_hours` first and reports the clamped value (§3.2).
 
-Deliberately **not** built: a rule registry, predicate table or threshold DSL. Two levels and five branches do not clear the rule of three; explicit ordered branches are the readable, debuggable form. Each branch's condition lives in a small named helper returning `(matched, reason)` so the reasons tuple is produced by the same code that made the decision — the audit trail cannot drift from the verdict.
+Branches 1 and 2 are independent, so `imminent` still fires when the other source is down (spec 6.3). `prepare` cannot fire without forecast data. Both unavailable falls through to 6 by construction — there is no branch that can be reached without at least one `Available`. `degraded=True` whenever either status is `unavailable`; in branch 5 the reasons tuple always includes the explicit `SenamhiUnavailableReason`, which the template surfaces in the body as one Spanish sentence.
+
+**Branch 4 was added 2026-09-04** (owner-approved, from the slice-2 fresh-context review). Without it a healthy SENAMHI with zero warnings was strictly *less* sensitive than a broken one: 24 mm / 48 h at 95 % yielded `none` when SENAMHI was available and silent, but `prepare` when SENAMHI was unavailable via branch 5. Breaking the scraper must never make the system more likely to warn. Branch 4 fires at the same stricter probability threshold branch 5 uses — never at the combined-rule 60 %, because there is no official confirmation to combine with — and its reasons (`NoQualifyingWarningReason` + a `ForecastThresholdReason` carrying that threshold) state that there is no official warning and that the trigger was forecast-only. It is unreachable when a qualifying warning exists, because branch 3 owns that case. A parametrized monotonicity test asserts that for identical forecast data a healthy silent SENAMHI is never less sensitive than an unavailable one.
+
+Deliberately **not** built: a rule registry, predicate table or threshold DSL. Two levels and six branches do not clear the rule of three; explicit ordered branches are the readable, debuggable form. Each branch's condition lives in a small named helper returning a verdict or `None`, so the reasons tuple is produced by the same code that made the decision — the audit trail cannot drift from the verdict. Every numeric threshold is pinned by a boundary table (one case exactly at the value, one just below), because a `<` → `<=` flip previously kept the suite green for four of the six comparisons.
 
 ---
 
@@ -304,7 +355,7 @@ class AlertPolicy:
     def decide(self, city_slug: str, assessment: RiskAssessment, now: datetime) -> SendDecision: ...
 ```
 
-`decide` reads `alerts_with_window_start_between(city_slug, now - lookback, assessment.window.end)`, then calls `should_send`. Rules: `level == NONE` → no; no overlapping prior record → yes (new); overlapping prior with `is_escalation(prior_max_level, level)` → yes; equal level → no; lower level → no. `SendDecision(send: bool, reason: str)` — the reason is printed by the CLI and logged in change 3.
+`decide` reads `alerts_with_window_start_between(city_slug, min(now - lookback, assessment.window.start), assessment.window.end)`, then calls `should_send`. The range start is clamped to the assessment window's own start (**added 2026-09-04**, slice-2 review finding W2): an imminent window is the union of the current SENAMHI warning windows and can begin well before the lookback, so a long-duration aviso would otherwise hide the alert already sent for it and the community would be re-alerted every cycle. Clamping only widens the range, so the lookback still governs windows that start inside it. Rules: `level == NONE` → no; no overlapping prior record → yes (new); overlapping prior with `is_escalation(prior_max_level, level)` → yes; equal level → no; lower level → no. `SendDecision(send: bool, reason: str)` — the reason is printed by the CLI and logged in change 3.
 
 ```python
 # domain/outage.py  — pure
@@ -333,6 +384,11 @@ State transition table — this is the whole rule:
 | {A, B} | `{A, B}`, already notified | — (dedup) | unchanged |
 | {A} | `{A, B}` | one `SOURCES_RECOVERED` naming B **and** one `SOURCE_UNAVAILABLE` for the still-down A | narrowed to `{A}`, `notified_at = now` |
 | {A, B} | `{A}` | one `SOURCE_UNAVAILABLE` naming the newly-down B | widened to `{A, B}` |
+| any | **same set, `notified_at is None`** | one `SOURCE_UNAVAILABLE` naming the still-down set | unchanged set, `notified_at = now` |
+
+The last row was **added 2026-09-04** (slice-2 fresh-context review, finding W4). `OutageRecord.notified_at` previously had no reader anywhere: rows 4 and 6 deduplicated on unavailable-set equality alone, so a record persisted with `notified_at=None` lost its notice forever — and change 3's adapter can produce exactly that state, because writing outage state and sending the notice are separate steps. An un-notified record means "still owed a notice", not "already told the operator". `state_changed` is `True` for this row.
+
+`state_changed` is also the **only** gate `RunAlertCycle` uses to persist outage state (finding W3). Branching on `next_state is None` instead made every healthy cycle issue a redundant `clear_active_outage` and every unchanged ongoing outage re-save an identical record — a DynamoDB call every six hours, forever, for nothing.
 
 **Where the state lives**: nowhere in the domain. `OutageRecord` is read from and written to `AlertRepository` by `RunAlertCycle` (`get_active_outage` / `save_active_outage` / `clear_active_outage`), which is why three consecutive dual-outage cycles emit exactly one notice even though each cycle is a fresh process. In this change the durable store is `JsonFileAlertRepository`; in change 3 it is the `OUTAGE#<slug>` / `CURRENT` item. The contract is identical, and the eight-row table above is the test matrix.
 
@@ -525,7 +581,7 @@ Sources    senamhi: unavailable (structure_unrecognized: header signature not ma
 Level      none   [degraded]
 Window     2026-09-03T14:00Z → 2026-09-05T14:00Z
 Reasons    - official SENAMHI source unavailable; forecast-only evaluation
-           - 15.0 mm / 48 h at 65% max probability (degraded threshold 70%)
+           - 15.0 mm / 48 h at 65% max probability (required threshold 70%)
 Decision   NOT SENT — level none
 Message    PREVIEW (NOT SENT)
            title: ...
@@ -568,7 +624,7 @@ pyproject.toml            uv project, hatchling backend, requires-python >= 3.12
 uv.lock                   committed
 .python-version           3.12
 src/rain_alert/
-  domain/     values.py entities.py sources.py messages.py config.py risk.py dedup.py outage.py template.py
+  domain/     values.py entities.py sources.py messages.py reasons.py config.py risk.py dedup.py outage.py template.py
   ports/      __init__.py            (the seven Protocols)
   application/run_alert_cycle.py dependencies.py
   adapters/   open_meteo.py senamhi_scraper.py console_notifier.py http.py local/
@@ -584,6 +640,7 @@ LICENSE  README.md  .gitignore  .env.example
 | Runtime deps | `httpx`, `beautifulsoup4` | D4, D5 — two packages, chosen for the change-3 Lambda bundle |
 | Dev deps | `pytest`, `ruff`, `mypy` | D9; `pytest-cov` omitted (`coverage_threshold: 0`), `freezegun` omitted (D7) |
 | `[tool.pytest.ini_options]` | `testpaths=["tests"]`, `addopts="-q -m 'not integration'"`, `markers=["integration: hits real network sources (opt-in)"]` | the default suite is offline and fast, which is what strict TDD needs |
+| Test packaging | `tests/` and every sub-directory carry an `__init__.py` | so `tests.support.*` (§10) resolves as a real dotted import with canonical module names, rather than through a `pythonpath` `sys.path` knob |
 | `[tool.ruff]` | `line-length=120`, `target-version="py312"`, `select=["E","W","F","I","B","C4","UP","SIM"]`, `ignore=["E501"]`, formatter double quotes | project style skill |
 | `[tool.mypy]` | `strict=true` on `src/`, relaxed `disallow_untyped_defs` for `tests.*` | D9 |
 | Commands | `uv run pytest`, `uv run ruff check`, `uv run mypy src` | matches `openspec/config.yaml` (`mypy` is the added command per D9) |
@@ -600,7 +657,7 @@ LICENSE  README.md  .gitignore  .env.example
 | `LICENSE`, `README.md`, `.gitignore`, `.env.example` | Create | 1 |
 | `src/rain_alert/{__init__,domain/__init__,ports/__init__,application/__init__,adapters/__init__,entrypoints/__init__}.py` | Create | 1 |
 | `tests/architecture/test_layer_boundaries.py`, `tests/conftest.py` | Create | 1 |
-| `src/rain_alert/domain/{values,entities,sources,messages,config}.py` | Create | 2 |
+| `src/rain_alert/domain/{values,entities,sources,messages,reasons,config}.py` | Create | 2 |
 | `src/rain_alert/domain/{risk,dedup,outage,template}.py` | Create | 2 |
 | `src/rain_alert/ports/__init__.py` (seven Protocols) | Modify | 2 |
 | `src/rain_alert/application/{dependencies,run_alert_cycle}.py` | Create | 2 |
