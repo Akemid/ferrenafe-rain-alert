@@ -16,6 +16,11 @@ this function's behaviour:
 | {A, B}  | same set, notified    | — (dedup)                                | unchanged            |
 | {A}     | {A, B}                | SOURCES_RECOVERED(B) + SOURCE_UNAVAILABLE(A) | narrowed to {A}  |
 | {A, B}  | {A}                   | one SOURCE_UNAVAILABLE naming the newly-down B | widened to {A, B} |
+
+Plus one row the eight-row table left implicit: an active record whose set is
+unchanged but whose `notified_at` is `None` is still owed its notice, so it is
+notified now and stamped. Dedup on set equality alone would have lost that
+notice forever.
 """
 
 from __future__ import annotations
@@ -90,6 +95,23 @@ def evaluate_outage(
         return OutageDecision(notices=(notice,), next_state=None, state_changed=True, suppress_community_alert=False)
 
     if not recovered and not newly_down:
+        if active is not None and active.notified_at is None:
+            # The set is unchanged, so this is the dedup branch — but dedup on
+            # set equality alone would drop this outage's notice forever. A
+            # record can be persisted with `notified_at=None` (change 3's
+            # adapter writes state and sends notices as separate steps), so an
+            # un-notified record means "still owed a notice", not "already
+            # told the operator".
+            notice = _unavailable_notice(unavailable_now, now)
+            notified = OutageRecord(
+                city_slug=active.city_slug,
+                unavailable_sources=active.unavailable_sources,
+                opened_at=active.opened_at,
+                notified_at=now,
+            )
+            return OutageDecision(
+                notices=(notice,), next_state=notified, state_changed=True, suppress_community_alert=suppress
+            )
         return OutageDecision(notices=(), next_state=active, state_changed=False, suppress_community_alert=suppress)
 
     notices: list[OperatorNotice] = []

@@ -77,6 +77,39 @@ def test_no_duplicate_notice_while_still_down_with_the_same_single_source() -> N
     assert decision.state_changed is False
 
 
+def test_an_unchanged_outage_that_was_never_notified_is_notified_now() -> None:
+    """Row 4 variant: dedup keyed on set equality alone lost the notice for
+    any record persisted with `notified_at=None`, forever. `notified_at` had
+    no reader at all, so the field could only ever be written."""
+    active = _active(frozenset({SourceName.SENAMHI}), notified=False)
+
+    decision = evaluate_outage(_unavailable(SourceName.SENAMHI), _available(), active, CITY_SLUG, NOW)
+
+    assert len(decision.notices) == 1
+    assert decision.notices[0].kind == NoticeKind.SOURCE_UNAVAILABLE
+    assert decision.notices[0].sources == frozenset({SourceName.SENAMHI})
+    assert decision.next_state == OutageRecord(
+        city_slug=CITY_SLUG, unavailable_sources=frozenset({SourceName.SENAMHI}), opened_at=NOW, notified_at=NOW
+    )
+    assert decision.state_changed is True
+
+
+def test_an_unchanged_dual_outage_that_was_never_notified_is_notified_now() -> None:
+    """Row 6 variant, same defect."""
+    active = _active(frozenset({SourceName.SENAMHI, SourceName.OPEN_METEO}), notified=False)
+
+    decision = evaluate_outage(
+        _unavailable(SourceName.SENAMHI), _unavailable(SourceName.OPEN_METEO), active, CITY_SLUG, NOW
+    )
+
+    assert len(decision.notices) == 1
+    assert decision.notices[0].sources == frozenset({SourceName.SENAMHI, SourceName.OPEN_METEO})
+    assert decision.next_state is not None
+    assert decision.next_state.notified_at == NOW
+    assert decision.state_changed is True
+    assert decision.suppress_community_alert is True
+
+
 def test_dual_outage_with_no_active_record_triggers_one_notice_naming_both() -> None:
     """Row 5: {A, B} unavailable, no active record."""
     decision = evaluate_outage(
@@ -110,6 +143,7 @@ def test_dual_outage_narrows_to_single_source_recovery_and_still_down() -> None:
 
     decision = evaluate_outage(_unavailable(SourceName.SENAMHI), _available(), active, CITY_SLUG, NOW)
 
+    assert len(decision.notices) == 2
     kinds = {notice.kind for notice in decision.notices}
     assert kinds == {NoticeKind.SOURCES_RECOVERED, NoticeKind.SOURCE_UNAVAILABLE}
     recovered_notice = next(n for n in decision.notices if n.kind == NoticeKind.SOURCES_RECOVERED)
