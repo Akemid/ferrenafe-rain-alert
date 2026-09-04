@@ -3,15 +3,57 @@
 **Branch**: `feat/core-alert-cycle-1-tooling` (from `main`)
 **Batch**: 1 of N (first batch — no previous apply-progress existed)
 **Mode**: Strict TDD (test runner: `uv run pytest`)
-**Status**: Partial — 4/5 tasks fully done, 1 task (1.4) partially done, blocked on a single file by a sandbox permission restriction.
+**Status**: Complete — all 5 Phase 1 tasks done, verification gate green, one review finding fixed.
 
 ## Completed Tasks
 
 - [x] 1.1 Scaffold `pyproject.toml`, `uv.lock`, `.python-version`
 - [x] 1.2 Package skeleton (`src/rain_alert/{domain,ports,application,adapters,entrypoints}/__init__.py`, `tests/conftest.py`)
 - [x] 1.3 `tests/architecture/test_layer_boundaries.py` (AST-based forbidden-import scan + triangulation)
-- [~] 1.4 `LICENSE`, `README.md`, `.gitignore` done; `.env.example` **blocked** (see below)
+- [x] 1.4 `LICENSE`, `README.md`, `.gitignore`, environment example file with its hygiene test
 - [x] 1.5 PR-1 verification gate — all green
+
+## Post-Review Addendum (2026-09-04)
+
+A fresh-context adversarial review of the branch returned one CRITICAL code
+finding, now fixed, plus confirmation that the rest of the slice is sound.
+
+**Finding: the architecture scanner ignored relative imports.** `_imported_roots`
+read only `node.module`, never `node.level`, so `from ..adapters import thing`
+resolved to the bare root `adapters` (matching no forbidden entry) and
+`from .. import adapters` was dropped entirely because `node.module` is `None`.
+Ruff's selected rule set does not include `TID252`, so nothing else in the
+toolchain caught relative imports either. The domain-purity invariant that
+changes 2 and 3 depend on therefore had a silent bypass.
+
+**Fix** (commit `c06a1a6`, RED first): `_module_package` derives the absolute
+package that owns each scanned file, `_resolve_relative` resolves `level` and
+`module` (or the imported aliases when `module` is `None`) into absolute dotted
+names, and `_violations` now takes the scanned package as a keyword argument.
+A new triangulation test asserts that both bypass shapes are flagged as
+`rain_alert.adapters` while intra-package relative imports stay allowed.
+
+**Environment example file resolved.** The owner created it by hand; the
+sandbox block described below applies to agents, not to the human operator.
+Its hygiene test now passes, so task 1.4 is complete and the note in
+`tests/hygiene/test_repo_hygiene.py` about the deferred scenario is gone.
+
+**Verification gate re-run after both changes** (repo root, exit codes shown):
+
+```
+$ uv run pytest             -> .......... [100%] 10 passed    exit=0
+$ uv run ruff check .       -> All checks passed!             exit=0
+$ uv run ruff format --check . -> 11 files already formatted  exit=0
+$ uv run mypy               -> Success: no issues found in 6 source files  exit=0
+```
+
+Review items accepted without code change: the `[[tool.mypy.overrides]]`
+block for `tests.*` is inert while `files = ["src"]` (kept, matches design
+D9); the line-budget overage is an owner decision, recorded below.
+
+**Commits added after the original batch**: `c06a1a6` test: resolve relative
+imports in the architecture boundary scanner · `e1e742c` docs: add environment
+variable example and its hygiene test.
 
 ## Files Changed
 
@@ -111,7 +153,14 @@ Actual diff since branching from `main` (`git diff main...HEAD --stat`):
 
 The task/design estimate for slice 1 was ~150 lines. The 270-line "authored" figure exceeds both that estimate and the session's stated 250-line hard cap — discovered only after all three work-unit commits were already made (all green; nothing was left mid-state). Breakdown of the 270: 152 lines are test code (89 architecture + 33 hygiene + 25 smoke + 5 conftest), which is the direct cost of doing this hygiene/scaffolding slice under strict TDD with real triangulation rather than trivial checks; the remaining 118 lines are `pyproject.toml` (58), `README.md` (49), `.gitignore` (4), `.python-version` (1), and six 1-line `__init__.py` files (6).
 
-**Flagging per `ask-on-risk`**: recommend the orchestrator confirm with the user whether to (a) accept `size:exception` for this already-committed, self-contained PR-1 (all green, matches the design's own slice-1 boundary, and the overage is almost entirely test code plus two vendor/boilerplate files most review conventions don't line-count), or (b) request changes before opening the PR. No further code was written pending that confirmation.
+**Resolved 2026-09-04 per `ask-on-risk`**: the owner accepted `size:exception`
+for PR-1. Final measured diff after the review fix and the environment example
+file: 1134 insertions across 20 files, or **324 authored insertions** excluding
+`LICENSE` (202 lines of Apache 2.0 boilerplate), `uv.lock` (458 machine-generated
+lines) and the `openspec/` planning artifacts. Roughly 200 of those 324 are test
+code, which is the cost of doing a scaffolding slice under strict TDD with real
+triangulation. The slice matches the design's own slice-1 boundary and is green,
+so it ships as one PR with the exception recorded rather than being re-cut.
 
 ## Learned / Gotchas
 
@@ -122,8 +171,12 @@ The task/design estimate for slice 1 was ~150 lines. The 270-line "authored" fig
 
 ## Remaining Tasks (this slice)
 
-- [ ] Create `.env.example` (content given above) and its hygiene test — requires human/orchestrator action, not blocked on any other Phase 1 work.
+None. All Phase 1 tasks are complete and the gate is green.
 
 ## Next Recommended
 
-`sdd-verify` can run against everything except the `.env.example` scenario, OR a short follow-up `sdd-apply` batch once `.env.example` exists (orchestrator/human creates the file; agent adds the one test and re-runs the gate). Phase 2 (`sdd-apply` for tasks 2.1–2.22) depends only on the tooling scaffold (1.1–1.3), which is fully done, so Phase 2 is not blocked by the `.env.example` gap.
+Open PR-1 to `main` (chain strategy `stacked-to-main`), then `sdd-apply` for
+Phase 2 (tasks 2.x: domain, ports, `RunAlertCycle` with fakes). Phase 2 must
+first settle the two Open Items from `tasks.md`: the `AlertPolicy` port-bound
+shell goes in `application/policies.py`, and `OutageNoticePolicy` is naming
+shorthand for the pure `evaluate_outage` function.

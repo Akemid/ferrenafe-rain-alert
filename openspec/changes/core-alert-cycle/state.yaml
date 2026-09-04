@@ -77,19 +77,35 @@ phases:
     depends_on: [tasks]
     artifact: openspec/changes/core-alert-cycle/apply-progress.md
     engram_topic_key: sdd/core-alert-cycle/apply-progress
-    engram_saved: false
+    engram_saved: true
+    slices:
+      - id: 1
+        name: tooling-and-hygiene
+        branch: feat/core-alert-cycle-1-tooling
+        tasks: 1.1-1.5
+        status: complete
+        review: fresh-context review passed after one CRITICAL fix
+          (architecture scanner ignored relative imports, fixed in c06a1a6)
+        gate: pytest 10 passed, ruff check, ruff format --check, mypy all exit 0
+        size_exception: >-
+          Accepted by the owner on 2026-09-04. 324 authored insertions
+          (1134 total including LICENSE, uv.lock and planning artifacts)
+          against a 250-line cap; ~200 of the 324 are test code.
+      - id: 2
+        name: domain-ports-use-case
+        tasks: 2.1-2.22
+        status: pending
+      - id: 3
+        name: adapters-and-cli
+        tasks: 3.1-3.16
+        status: pending
     note: >-
-      Slice 1 of 3 (PR-1: tooling scaffold + repo hygiene) on branch
-      feat/core-alert-cycle-1-tooling. Tasks 1.1, 1.2, 1.3, 1.5 done; task
-      1.4 partial (.env.example blocked by the apply sandbox's permission
-      system — every attempted write/move to a .env-pattern path was
-      denied). Verification gate (pytest, ruff check, ruff format --check,
-      mypy) all green. Line budget: 270 authored lines (930 total including
-      LICENSE + uv.lock boilerplate) against a 250-line hard cap and ~150
-      estimate — flagged for ask-on-risk confirmation, not yet resolved.
-      Not pushed; no PR opened. engram_saved is false because this executor
-      has no mem_save tool — the orchestrator persists
-      sdd/core-alert-cycle/apply-progress.
+      Slice 1 of 3 complete on branch feat/core-alert-cycle-1-tooling
+      (chain strategy stacked-to-main, so PR-1 targets main). Phase 2 must
+      settle the two Open Items from tasks.md first: the AlertPolicy
+      port-bound shell goes in application/policies.py, and
+      OutageNoticePolicy is naming shorthand for the pure evaluate_outage
+      function.
   verify:
     status: pending
     depends_on: [apply]
