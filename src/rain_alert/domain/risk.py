@@ -36,6 +36,16 @@ def _warning_reason(warning: Warning) -> str:
     return f"official SENAMHI warning: {warning.level.value} — {warning.title}"
 
 
+def _forecast_reason(accumulated: float, hours: int, probability: int, *, degraded_threshold: int | None = None) -> str:
+    """One reason string shared by all three branches that cite an
+    accumulated-mm/max-probability forecast reading, so the wording (and any
+    future change to it) cannot drift between branches."""
+    reason = f"{accumulated:.1f} mm / {hours} h at {probability}% max probability"
+    if degraded_threshold is not None:
+        reason += f" (degraded threshold {degraded_threshold}%)"
+    return reason
+
+
 @dataclass(frozen=True, slots=True)
 class RiskEvaluator:
     """Constructor-injected with `RiskThresholds` loaded from `ConfigRepository`
@@ -96,7 +106,7 @@ class RiskEvaluator:
         if accumulated < self.thresholds.imminent_mm_24h or probability < self.thresholds.imminent_probability_pct:
             return None
         window = data.precipitation_window(_IMMINENT_HOURS)
-        reason = f"{accumulated:.1f} mm / 24 h at {probability}% max probability"
+        reason = _forecast_reason(accumulated, _IMMINENT_HOURS, probability)
         return Level.IMMINENT, window, (reason,)
 
     def _prepare_combined(
@@ -117,7 +127,7 @@ class RiskEvaluator:
         window = _union_window([*(w.window for w in matches), data.precipitation_window(_PREPARE_HOURS)])
         reasons = (
             *(_warning_reason(w) for w in matches),
-            f"{accumulated:.1f} mm / 48 h at {probability}% max probability",
+            _forecast_reason(accumulated, _PREPARE_HOURS, probability),
         )
         return Level.PREPARE, window, reasons
 
@@ -139,7 +149,11 @@ class RiskEvaluator:
         window = data.precipitation_window(_PREPARE_HOURS)
         reasons = (
             "official SENAMHI source unavailable; forecast-only evaluation",
-            f"{accumulated:.1f} mm / 48 h at {probability}% max probability "
-            f"(degraded threshold {self.thresholds.prepare_probability_pct_degraded}%)",
+            _forecast_reason(
+                accumulated,
+                _PREPARE_HOURS,
+                probability,
+                degraded_threshold=self.thresholds.prepare_probability_pct_degraded,
+            ),
         )
         return Level.PREPARE, window, reasons
