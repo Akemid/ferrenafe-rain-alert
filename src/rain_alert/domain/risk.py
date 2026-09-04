@@ -21,8 +21,8 @@ from rain_alert.domain.entities import Forecast, RiskAssessment, Warning
 from rain_alert.domain.sources import Available, SourceResult, status_of
 from rain_alert.domain.values import Level, TimeWindow
 
-_IMMINENT_HOURS = 24
-_PREPARE_HOURS = 48
+IMMINENT_HORIZON_HOURS = 24
+PREPARE_HORIZON_HOURS = 48
 
 _Verdict = tuple[Level, TimeWindow, tuple[str, ...]]
 
@@ -30,6 +30,19 @@ _Verdict = tuple[Level, TimeWindow, tuple[str, ...]]
 def _union_window(windows: Sequence[TimeWindow]) -> TimeWindow:
     """The smallest window covering every window in `windows`."""
     return TimeWindow(start=min(w.start for w in windows), end=max(w.end for w in windows))
+
+
+def evaluated_horizon(forecast: Forecast, requested_hours: int) -> int:
+    """The horizon actually evaluated: never more hours than the data covers.
+
+    A short forecast is answered over the hours it does carry rather than
+    rejected, and the reported horizon says so. Doing this is conservative in
+    the safe direction: an accumulation reached within fewer hours also
+    satisfies the same threshold over a longer horizon, and the maximum
+    probability over fewer hours can only be lower or equal. So a truncated
+    forecast can never make the system warn where a full one would not.
+    """
+    return min(requested_hours, forecast.horizon_hours)
 
 
 def _warning_reason(warning: Warning) -> str:
@@ -76,7 +89,7 @@ class RiskEvaluator:
                 level, window, reasons = verdict
                 return RiskAssessment(level, window, reasons, senamhi_status, open_meteo_status, degraded)
 
-        window = TimeWindow(start=now, end=now + timedelta(hours=_PREPARE_HOURS))
+        window = TimeWindow(start=now, end=now + timedelta(hours=PREPARE_HORIZON_HOURS))
         return RiskAssessment(Level.NONE, window, (), senamhi_status, open_meteo_status, degraded)
 
     def _imminent_from_official(
@@ -101,12 +114,13 @@ class RiskEvaluator:
         if not isinstance(forecast, Available):
             return None
         data = forecast.data
-        accumulated = data.accumulated_mm(_IMMINENT_HOURS)
-        probability = data.max_probability_pct(_IMMINENT_HOURS)
+        hours = evaluated_horizon(data, IMMINENT_HORIZON_HOURS)
+        accumulated = data.accumulated_mm(hours)
+        probability = data.max_probability_pct(hours)
         if accumulated < self.thresholds.imminent_mm_24h or probability < self.thresholds.imminent_probability_pct:
             return None
-        window = data.precipitation_window(_IMMINENT_HOURS)
-        reason = _forecast_reason(accumulated, _IMMINENT_HOURS, probability)
+        window = data.precipitation_window(hours)
+        reason = _forecast_reason(accumulated, hours, probability)
         return Level.IMMINENT, window, (reason,)
 
     def _prepare_combined(
@@ -120,14 +134,15 @@ class RiskEvaluator:
         if not matches:
             return None
         data = forecast.data
-        accumulated = data.accumulated_mm(_PREPARE_HOURS)
-        probability = data.max_probability_pct(_PREPARE_HOURS)
+        hours = evaluated_horizon(data, PREPARE_HORIZON_HOURS)
+        accumulated = data.accumulated_mm(hours)
+        probability = data.max_probability_pct(hours)
         if accumulated < self.thresholds.prepare_mm_48h or probability < self.thresholds.prepare_probability_pct:
             return None
-        window = _union_window([*(w.window for w in matches), data.precipitation_window(_PREPARE_HOURS)])
+        window = _union_window([*(w.window for w in matches), data.precipitation_window(hours)])
         reasons = (
             *(_warning_reason(w) for w in matches),
-            _forecast_reason(accumulated, _PREPARE_HOURS, probability),
+            _forecast_reason(accumulated, hours, probability),
         )
         return Level.PREPARE, window, reasons
 
@@ -139,19 +154,20 @@ class RiskEvaluator:
         if isinstance(warnings, Available) or not isinstance(forecast, Available):
             return None
         data = forecast.data
-        accumulated = data.accumulated_mm(_PREPARE_HOURS)
-        probability = data.max_probability_pct(_PREPARE_HOURS)
+        hours = evaluated_horizon(data, PREPARE_HORIZON_HOURS)
+        accumulated = data.accumulated_mm(hours)
+        probability = data.max_probability_pct(hours)
         if (
             accumulated < self.thresholds.prepare_mm_48h
             or probability < self.thresholds.prepare_probability_pct_degraded
         ):
             return None
-        window = data.precipitation_window(_PREPARE_HOURS)
+        window = data.precipitation_window(hours)
         reasons = (
             "official SENAMHI source unavailable; forecast-only evaluation",
             _forecast_reason(
                 accumulated,
-                _PREPARE_HOURS,
+                hours,
                 probability,
                 degraded_threshold=self.thresholds.prepare_probability_pct_degraded,
             ),

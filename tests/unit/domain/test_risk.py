@@ -166,6 +166,30 @@ def test_risk_evaluation_scenarios(case: Case) -> None:
         assert any(case.reason_substring in reason for reason in assessment.reasons)
 
 
+class TestShortHorizonForecast:
+    def test_reason_reports_the_horizon_actually_evaluated(self) -> None:
+        """W1: a 24-point forecast must not be reported as a 48-hour reading."""
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+
+        assessment = evaluator.evaluate(
+            _warnings(WarningLevel.YELLOW), _forecast(24, mm_total=12.0, probability_pct=80), NOW
+        )
+
+        assert assessment.level == Level.PREPARE
+        assert any("24 h" in reason for reason in assessment.reasons)
+        assert not any("48 h" in reason for reason in assessment.reasons)
+
+    def test_single_hour_cloudburst_reaches_imminent(self) -> None:
+        """C2: a one-point forecast used to abort evaluation with
+        `TimeWindow.end must be strictly after start`."""
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+
+        assessment = evaluator.evaluate(_no_warnings(), _forecast(1, mm_total=25.0, probability_pct=80), NOW)
+
+        assert assessment.level == Level.IMMINENT
+        assert assessment.window.end == NOW + timedelta(hours=1)
+
+
 def test_threshold_source_reflects_the_injected_config_not_a_literal() -> None:
     """A forecast that clears neither production threshold clears a
     deliberately lenient fake threshold set — proving the level came from

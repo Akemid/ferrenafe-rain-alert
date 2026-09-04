@@ -28,6 +28,7 @@ from rain_alert.domain.messages import (
     WarningSummary,
 )
 from rain_alert.domain.outage import evaluate_outage
+from rain_alert.domain.risk import IMMINENT_HORIZON_HOURS, evaluated_horizon
 from rain_alert.domain.sources import Available, SourceResult
 from rain_alert.domain.values import WarningLevel
 
@@ -70,10 +71,15 @@ def _build_message_request(
     forecast_summary: ForecastSummary | None = None
     if isinstance(forecast, Available):
         data = forecast.data
-        peak = data.peak_hour(min(48, len(data.points)))
+        # Horizons come from the config knob and the domain constant, and are
+        # clamped to what the forecast actually covers so a short series
+        # summarizes truthfully instead of raising (C2/W1).
+        short_hours = evaluated_horizon(data, IMMINENT_HORIZON_HOURS)
+        full_hours = evaluated_horizon(data, config.forecast_hours)
+        peak = data.peak_hour(full_hours)
         forecast_summary = ForecastSummary(
-            mm_24h=data.accumulated_mm(24),
-            mm_48h=data.accumulated_mm(48),
+            mm_24h=data.accumulated_mm(short_hours),
+            mm_48h=data.accumulated_mm(full_hours),
             peak_at=peak.at,
             peak_probability_pct=peak.probability_pct,
         )

@@ -83,6 +83,21 @@ class TestRecordAfterNotify:
         assert recorded.message == result.message
 
 
+class TestShortHorizonForecastsDoNotCrashTheCycle:
+    def test_single_hour_cloudburst_reaches_imminent(self) -> None:
+        """C2: one point at 25 mm / 80% used to abort the cycle with
+        `TimeWindow.end must be strictly after start`. A cloudburst is the
+        exact event this system exists to warn about."""
+        points = (HourlyPoint(at=NOW, precipitation_mm=25.0, probability_pct=80),)
+        forecast = Available(data=Forecast(location=DEFAULT_CONFIG.coordinates, points=points), fetched_at=NOW)
+        deps = build_fake_deps(forecast=forecast)
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.assessment.level == Level.IMMINENT
+        assert result.sent is True
+
+
 class TestDedupShortCircuitsTheCycle:
     def test_neither_composer_nor_notifier_is_invoked_and_nothing_is_recorded(self) -> None:
         forecast = _forecast(24, mm_total=29.8, probability_pct=70)
