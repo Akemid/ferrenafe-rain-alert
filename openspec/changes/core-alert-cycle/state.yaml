@@ -73,9 +73,23 @@ phases:
       shell location, OutageNoticePolicy naming) recorded under "Open Items
       for Apply" rather than resolved.
   apply:
-    status: pending
+    status: in_progress
     depends_on: [tasks]
-    artifact: null
+    artifact: openspec/changes/core-alert-cycle/apply-progress.md
+    engram_topic_key: sdd/core-alert-cycle/apply-progress
+    engram_saved: false
+    note: >-
+      Slice 1 of 3 (PR-1: tooling scaffold + repo hygiene) on branch
+      feat/core-alert-cycle-1-tooling. Tasks 1.1, 1.2, 1.3, 1.5 done; task
+      1.4 partial (.env.example blocked by the apply sandbox's permission
+      system — every attempted write/move to a .env-pattern path was
+      denied). Verification gate (pytest, ruff check, ruff format --check,
+      mypy) all green. Line budget: 270 authored lines (930 total including
+      LICENSE + uv.lock boilerplate) against a 250-line hard cap and ~150
+      estimate — flagged for ask-on-risk confirmation, not yet resolved.
+      Not pushed; no PR opened. engram_saved is false because this executor
+      has no mem_save tool — the orchestrator persists
+      sdd/core-alert-cycle/apply-progress.
   verify:
     status: pending
     depends_on: [apply]
