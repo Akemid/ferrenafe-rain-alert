@@ -30,6 +30,28 @@ When both SENAMHI and Open-Meteo report `available`, the evaluator MUST derive t
 - WHEN the evaluator runs
 - THEN the level is `none`
 
+### Requirement: Forecast-only prepare when SENAMHI is available but silent
+
+When SENAMHI reports `available` with no warning at or above the `prepare` level, the evaluator MUST still raise `prepare` if Open-Meteo alone meets the accumulation threshold with a max probability at or above the degraded probability threshold (70%). A healthy official source that is merely silent MUST NOT make the system less sensitive than an unavailable one, because breaking the scraper would otherwise increase the chance of an alert.
+
+The reasons MUST state that no official warning is in force and that the assessment rests on the forecast alone.
+
+#### Scenario: Forecast-only prepare fires at the stricter threshold
+- GIVEN SENAMHI is available and reports no qualifying warning AND Open-Meteo forecasts 24 mm in 48 h at 95% probability
+- WHEN the evaluator runs
+- THEN the level is `prepare`
+- AND the reasons state that no official warning is in force
+
+#### Scenario: Forecast-only prepare respects the 70% floor
+- GIVEN SENAMHI is available and reports no qualifying warning AND Open-Meteo forecasts 24 mm in 48 h at 65% probability
+- WHEN the evaluator runs
+- THEN the level is `none`
+
+#### Scenario: A healthy silent source is never less sensitive than an outage
+- GIVEN identical Open-Meteo forecast data
+- WHEN the evaluator runs once with SENAMHI available and silent, and once with SENAMHI unavailable
+- THEN the level derived with the healthy source is at least as severe as the level derived during the outage
+
 ### Requirement: Degraded evaluation when SENAMHI is unavailable
 
 When SENAMHI status is `unavailable`, the evaluator MUST require probability >= 70% (instead of 60%) for `prepare` to fire from Open-Meteo alone, and MUST leave `imminent` conditions unchanged.
