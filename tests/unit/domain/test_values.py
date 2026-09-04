@@ -1,0 +1,151 @@
+"""Domain value objects and enums (design.md section 3, D1)."""
+
+from datetime import UTC, datetime
+
+import pytest
+
+from rain_alert.domain.values import (
+    Coordinates,
+    Level,
+    NoticeKind,
+    SourceName,
+    TimeWindow,
+    UnavailableReason,
+    WarningLevel,
+    is_escalation,
+)
+
+
+def _utc(hour: int) -> datetime:
+    return datetime(2026, 9, 3, hour, tzinfo=UTC)
+
+
+class TestLevelEnum:
+    def test_level_values(self) -> None:
+        assert Level.NONE == "none"
+        assert Level.PREPARE == "prepare"
+        assert Level.IMMINENT == "imminent"
+
+
+class TestWarningLevelEnum:
+    def test_warning_level_values(self) -> None:
+        assert WarningLevel.YELLOW == "yellow"
+        assert WarningLevel.ORANGE == "orange"
+        assert WarningLevel.RED == "red"
+
+
+class TestSourceNameEnum:
+    def test_source_name_values(self) -> None:
+        assert SourceName.SENAMHI == "senamhi"
+        assert SourceName.OPEN_METEO == "open_meteo"
+
+
+class TestNoticeKindEnum:
+    def test_notice_kind_values(self) -> None:
+        assert NoticeKind.SOURCE_UNAVAILABLE == "source_unavailable"
+        assert NoticeKind.SOURCES_RECOVERED == "sources_recovered"
+
+
+class TestUnavailableReasonEnum:
+    def test_unavailable_reason_values(self) -> None:
+        assert UnavailableReason.TRANSPORT_ERROR == "transport_error"
+        assert UnavailableReason.TIMEOUT == "timeout"
+        assert UnavailableReason.BAD_STATUS == "bad_status"
+        assert UnavailableReason.MALFORMED_PAYLOAD == "malformed_payload"
+        assert UnavailableReason.STRUCTURE_UNRECOGNIZED == "structure_unrecognized"
+        assert UnavailableReason.NO_ROWS_EXTRACTED == "no_rows_extracted"
+        assert UnavailableReason.INSUFFICIENT_HORIZON == "insufficient_horizon"
+
+
+class TestIsEscalation:
+    @pytest.mark.parametrize(
+        ("previous", "candidate", "expected"),
+        [
+            (Level.NONE, Level.PREPARE, True),
+            (Level.NONE, Level.IMMINENT, True),
+            (Level.PREPARE, Level.IMMINENT, True),
+            (Level.PREPARE, Level.PREPARE, False),
+            (Level.IMMINENT, Level.PREPARE, False),
+            (Level.IMMINENT, Level.NONE, False),
+            (Level.NONE, Level.NONE, False),
+        ],
+        ids=[
+            "none-to-prepare-is-escalation",
+            "none-to-imminent-is-escalation",
+            "prepare-to-imminent-is-escalation",
+            "same-level-prepare-is-not-escalation",
+            "imminent-to-prepare-is-not-escalation",
+            "imminent-to-none-is-not-escalation",
+            "same-level-none-is-not-escalation",
+        ],
+    )
+    def test_is_escalation(self, previous: Level, candidate: Level, expected: bool) -> None:
+        assert is_escalation(previous, candidate) is expected
+
+
+class TestCoordinates:
+    def test_valid_coordinates_construct(self) -> None:
+        coords = Coordinates(latitude=-6.64, longitude=-79.79)
+        assert coords.latitude == -6.64
+        assert coords.longitude == -79.79
+
+    @pytest.mark.parametrize(
+        "latitude",
+        [90.1, -90.1],
+        ids=["latitude-above-90", "latitude-below-minus-90"],
+    )
+    def test_out_of_range_latitude_raises(self, latitude: float) -> None:
+        with pytest.raises(ValueError, match="latitude"):
+            Coordinates(latitude=latitude, longitude=0.0)
+
+    @pytest.mark.parametrize(
+        "longitude",
+        [180.1, -180.1],
+        ids=["longitude-above-180", "longitude-below-minus-180"],
+    )
+    def test_out_of_range_longitude_raises(self, longitude: float) -> None:
+        with pytest.raises(ValueError, match="longitude"):
+            Coordinates(latitude=0.0, longitude=longitude)
+
+
+class TestTimeWindow:
+    def test_valid_window_constructs(self) -> None:
+        window = TimeWindow(start=_utc(0), end=_utc(1))
+        assert window.start == _utc(0)
+        assert window.end == _utc(1)
+
+    def test_end_before_start_raises(self) -> None:
+        with pytest.raises(ValueError, match="end"):
+            TimeWindow(start=_utc(1), end=_utc(0))
+
+    def test_equal_start_and_end_raises(self) -> None:
+        with pytest.raises(ValueError, match="end"):
+            TimeWindow(start=_utc(0), end=_utc(0))
+
+    def test_naive_start_raises(self) -> None:
+        with pytest.raises(ValueError, match="timezone"):
+            TimeWindow(start=datetime(2026, 9, 3, 0), end=_utc(1))
+
+    def test_naive_end_raises(self) -> None:
+        with pytest.raises(ValueError, match="timezone"):
+            TimeWindow(start=_utc(0), end=datetime(2026, 9, 3, 1))
+
+    def test_overlapping_windows_overlap(self) -> None:
+        a = TimeWindow(start=_utc(0), end=_utc(2))
+        b = TimeWindow(start=_utc(1), end=_utc(3))
+        assert a.overlaps(b)
+        assert b.overlaps(a)
+
+    def test_adjacent_windows_do_not_overlap(self) -> None:
+        a = TimeWindow(start=_utc(0), end=_utc(1))
+        b = TimeWindow(start=_utc(1), end=_utc(2))
+        assert not a.overlaps(b)
+
+    def test_disjoint_windows_do_not_overlap(self) -> None:
+        a = TimeWindow(start=_utc(0), end=_utc(1))
+        b = TimeWindow(start=_utc(5), end=_utc(6))
+        assert not a.overlaps(b)
+
+    def test_key_is_start_iso8601(self) -> None:
+        window = TimeWindow(start=_utc(0), end=_utc(1))
+        assert window.key() == _utc(0).isoformat()
