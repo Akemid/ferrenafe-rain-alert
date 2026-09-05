@@ -149,7 +149,7 @@ def render_reasons_en(reasons: tuple[Reason, ...]) -> tuple[str, ...]: ...
 
 # domain/sources.py
 @dataclass(frozen=True, slots=True)
-class Available[T]:    data: T; fetched_at: datetime
+class Available[T]:    data: T; fetched_at: datetime; notes: tuple[str, ...] = ()   # §5.1.2
 @dataclass(frozen=True, slots=True)
 class Unavailable:     source: SourceName; reason: UnavailableReason; detail: str; observed_at: datetime
 type SourceResult[T] = Available[T] | Unavailable
@@ -327,7 +327,7 @@ Evaluation order (short-circuit, most severe first):
 
 | # | Branch | Condition | Window |
 |---|---|---|---|
-| 1 | Imminent / official | SENAMHI available **and** any current warning level ∈ `imminent_warning_levels` | warning window (union if several) |
+| 1 | Imminent / official | SENAMHI available **and** any current warning level ∈ `imminent_warning_levels` **and** that warning `may_raise_imminent` (§5.1.1 — a highlands-only warning does not) | warning window (union if several) |
 | 2 | Imminent / forecast | Open-Meteo available **and** `accumulated_mm(24) >= imminent_mm_24h` **and** `max_probability_pct(24) >= imminent_probability_pct` | `precipitation_window(24)` |
 | 3 | Prepare / combined | both available, warning level ∈ `prepare_warning_levels`, `accumulated_mm(48) >= prepare_mm_48h`, `max_probability_pct(48) >= prepare_probability_pct` | union(warning window, `precipitation_window(48)`) |
 | 4 | Prepare / forecast-only | SENAMHI **available** with **no** warning level ∈ `prepare_warning_levels`, Open-Meteo available, `accumulated_mm(48) >= prepare_mm_48h`, `max_probability_pct(48) >= prepare_probability_pct_degraded` | `precipitation_window(48)` |
@@ -339,6 +339,73 @@ Every `48` and `24` above is the **requested** horizon; the evaluator clamps it 
 Branches 1 and 2 are independent, so `imminent` still fires when the other source is down (spec 6.3). `prepare` cannot fire without forecast data. Both unavailable falls through to 6 by construction — there is no branch that can be reached without at least one `Available`. `degraded=True` whenever either status is `unavailable`; in branch 5 the reasons tuple always includes the explicit `SenamhiUnavailableReason`, which the template surfaces in the body as one Spanish sentence.
 
 **Branch 4 was added 2026-09-04** (owner-approved, from the slice-2 fresh-context review). Without it a healthy SENAMHI with zero warnings was strictly *less* sensitive than a broken one: 24 mm / 48 h at 95 % yielded `none` when SENAMHI was available and silent, but `prepare` when SENAMHI was unavailable via branch 5. Breaking the scraper must never make the system more likely to warn. Branch 4 fires at the same stricter probability threshold branch 5 uses — never at the combined-rule 60 %, because there is no official confirmation to combine with — and its reasons (`NoQualifyingWarningReason` + a `ForecastThresholdReason` carrying that threshold) state that there is no official warning and that the trigger was forecast-only. It is unreachable when a qualifying warning exists, because branch 3 owns that case. A parametrized monotonicity test asserts that for identical forecast data a healthy silent SENAMHI is never less sensitive than an unavailable one.
+
+### 5.1 Only flood-relevant official warnings reach the evaluator
+
+*Added 2026-09-04, owner-approved, from the live page inspected during slice-3 apply.*
+
+**The design assumed the Lambayeque warnings page is a rain-warning feed. It is not.** It is a multi-hazard feed. Of the 788 rows live on 2026-09-04: ~233 wind, ~131 daytime/nighttime temperature, ~137 precipitation, plus others. The single warning **in force** that day was a **RED `INCREMENTO DE TEMPERATURA DIURNA EN LA COSTA Y SIERRA`** — a heat warning.
+
+Branch 1 above raises `imminent` on *any* current warning whose level is in `imminent_warning_levels`. So with the scraper wired up exactly as §8.2 specified, the first live cycle would have told the entire Ferreñafe community that flooding was imminent because of a heat wave. This is the highest-severity failure mode the whole system has: a false alarm destroys the credibility the design's own §11 disclaimer depends on.
+
+Two owner-approved rules therefore stand between the page and the evaluator. They answer **different questions**, which is the correction made on 2026-09-04 (see 5.1.1):
+
+| # | Rule | Question | Keeps | Bars |
+|---|---|---|---|---|
+| 1 | `is_flood_relevant(phenomenon)` | may this warning drive a flood alert **at all**? | `PRECIPITACIONES ...`, `LLUVIA ...`, `LLOVIZNA ...`, `GARÚA ...` | `INCREMENTO DE VIENTO ...`, `INCREMENTO DE [LA] TEMPERATURA ...`, `DESCENSO DE [LA] TEMPERATURA ...`, `... FRIAJE ...`, `NEVADA ...`, `GRANIZO ...` |
+| 2 | `may_raise_imminent(phenomenon, zone)` | may it, **on its own**, claim flooding is imminent? | titles naming the coast (`EN LA COSTA`, `EN LA COSTA NORTE Y SIERRA`, `EN COSTA NORTE Y SIERRA`), and titles naming no zone | titles exclusively about the highlands (`EN LA SIERRA`, `EN LA SIERRA NORTE Y CENTRO`) |
+
+**Where the rule lives.** Split across two modules, on the layer boundary:
+
+| Concern | Home | Why |
+|---|---|---|
+| `Phenomenon` / `Zone` enums, `is_flood_relevant(phenomenon)` and `may_raise_imminent(phenomenon, zone)` | `domain/hazards.py` | These are *rules* about which hazards can flood this city and how fast. Pure, table-testable, reviewable in one screen. |
+| `classify_phenomenon(title)` / `classify_zone(title)` | `adapters/senamhi_classification.py` | Spanish aviso wording is the *source's* vocabulary, not the domain's. Adapters translate external vocabulary into domain terms. |
+
+`Warning` gained `phenomenon: Phenomenon = UNKNOWN` and `zone: Zone = UNKNOWN` plus `is_flood_relevant` and `may_raise_imminent` properties, so the classification travels with the value and the decision is inspectable rather than hidden inside whichever code filtered it. The classification module is deliberately *not* a private helper inside the scraper: this filter decides what the community is ever told, so it needs a first-class test seam and a diff a reviewer can read.
+
+**Every family SENAMHI publishes is classified.** `UNKNOWN` is treated as flood-relevant, so an unclassified family is a hole rather than a neutral gap: `NEVADA` and `GRANIZO` would reach the evaluator as if they were rain. A harvest of 12 399 rows across the 12 regional pages on 2026-09-04 leaves zero titles unclassified. `GRANIZO` carried no live row that day and is classified anyway, because one pattern is cheaper than the hole.
+
+**Markers are patterns, not phrases.** The first implementation tested fixed phrases with a plain `in`. SENAMHI publishes the same aviso family both as `INCREMENTO DE TEMPERATURA DIURNA ...` and as `INCREMENTO DE LA TEMPERATURA DIURNA ...` — 56 rows across 9 of the 12 regional pages used the article form — and the second is not a substring of the first, so it classified as `UNKNOWN` and the heat aviso the filter exists to stop reached the evaluator. Markers now honour word boundaries and the optional article. Word-boundary matching also means `COSTADO` is not read as `COSTA` and `TEMPERATURAS` in prose is not read as the aviso family.
+
+**Where the filter is applied.** At the adapter boundary — the scraper returns only warnings that are both in force and flood-relevant. Considered and rejected: filtering inside the evaluator instead. That would require branches 1, 3 and 4 *and* `_build_message_request`'s `_most_severe_warning` to each remember to filter — four sites, any one of which could forget and put a heat warning in front of a recipient. Filtering once, where irrelevant data enters the system, is fail-safe by construction, and matches §8.2's existing posture that a source adapter never hands the domain something it must re-validate.
+
+**Conservative on the unknown, deliberately asymmetric.** `UNKNOWN` phenomenon is treated as *relevant*, and `UNKNOWN` zone as *reaching the coast*. A `HIGHLANDS` classification is a positive statement that the coast is not covered; `UNKNOWN` only means the title did not say. Missing a real flood warning is far worse than raising one extra alert, so the unknown case fails towards alerting. The default field values are `UNKNOWN` for the same reason: a caller that forgets to classify over-alerts, it does not go silent.
+
+**Matching is normalized, never exact.** Accent-stripped, upper-cased, whitespace-collapsed, word-boundary matching. An exact-string or substring map silently drops real warnings, which is the worst possible failure for this filter — and did, until 2026-09-04.
+
+**Residual risk, accepted:** any mention of the coast qualifies, including `COSTA SUR` (1 row of 789). Narrowing to the north coast would add a way to miss a real warning, which the conservative posture above rules out.
+
+Behaviour is pinned by requirements in `specs/weather-sources/spec.md` ("Only flood-relevant official warnings may drive an alert", "Only warnings currently in force may drive an alert", "An unparseable row in force is a structural failure") and in `specs/risk-evaluation/spec.md` ("A highlands-only official warning is an early signal"). §8.2's scraper contract is unchanged except that its "current" filter is now `in force AND flood-relevant`.
+
+### 5.1.1 Highlands rain is an early signal, not an imminence claim
+
+*Added 2026-09-04, owner-approved, from the slice-3 fresh-context review.*
+
+The geography rule above originally discarded highlands-only rainfall outright. Measured against the live page that removes **144 of the 243 precipitation rows**, and `PRECIPITACIONES EN LA SIERRA` is the single most common precipitation title on the page at **78 rows**. The hydrology says that is the wrong call:
+
+- The Río La Leche rises at 4 230 m on Mount Choicopico, **inside Ferreñafe province**, and flows west through Ferreñafe and Lambayeque provinces.
+- SENAMHI measures its critical level at the **Puchaca station in Incahuasi**, a sierra district *of Ferreñafe province*, and explicitly attributes rises there to intense rain in the basin headwaters.
+- Riverside defence works protect Pítipo and Incahuasi (Ferreñafe province) plus Pacora, Íllimo and Jayanca.
+- This river routing is the mechanism behind the 2017 flooding of Ferreñafe.
+
+Sierra rain is therefore upstream of the city with hours of lead time — the earliest signal this system can get — and discarding it threw that signal away.
+
+**The corrected rule**: highlands-only precipitation warnings are flood-relevant again, but as an **early** signal. They MAY contribute to `prepare` (branch 3, the combined rule, still counts them) and MUST NOT raise `imminent` on their own (branch 1 skips them, at any level). Coast and coast-plus-highlands warnings keep full weight including `imminent`. Ferreñafe city is coastal, so sierra rain reaches it by river routing rather than by falling overhead; claiming imminence on rain that has not yet run down the basin is the kind of false alarm that costs the credibility every future real warning depends on.
+
+**Where it is enforced**: `_imminent_from_official` filters on `Warning.may_raise_imminent`; `_prepare_combined` does not. Two branches, one rule, and a cross-product test asserts `may_raise_imminent` can never exceed `is_flood_relevant`. The zone stays on the `Warning` value, so the decision is inspectable rather than implied by whichever code filtered it.
+
+### 5.1.2 A broken parse of the row in force is an outage, not a calm
+
+*Added 2026-09-04, from the slice-3 fresh-context review (finding C2).*
+
+§8.2's structural guard is share-based: more than half the rows unparseable means the structure changed. That cannot defend the row that decides the cycle. Breakage confined to the single `(vigente)` row is 1 of 789 rows — 0.13% — so the guard waves it through and the adapter reports `Available(())`: a **silent false calm** while a red aviso is in force. The reviewer reproduced it by changing one cell, a start date becoming `2026-09-04 08:00`.
+
+It is worse than a declared outage. Because `senamhi_status == "available"`, the evaluator routes to branch 4 at the stricter degraded probability threshold, so a broken parse leaves the system *less* sensitive than a source known to be down — and emits no operator notice at all.
+
+**Rule**: an anomaly on a row carrying the in-force marker raises `FetchError(STRUCTURE_UNRECOGNIZED)`. Anomalies on rows not in force stay skippable, because a historical row cannot change the verdict. The marker is detected from the whole row's text when the cells cannot be trusted, which errs towards declaring failure — the safe direction.
+
+**`Available` gained `notes: tuple[str, ...] = ()`.** The slice-3 record listed the discard audit as unsurfaceable because `WarningProvider` returns `SourceResult[tuple[Warning, ...]]`. That premise was wrong: `Available` is a plain frozen dataclass, so a defaulted field is purely additive, breaks no merged call site and keeps `mypy --strict` green. The scraper carries its discard reasons and a parse-anomaly summary through it, and §9's CLI prints them under a `Notes` block and in `--json`. With 5.1.2 in place this is not a nicety: it is where a partial parse failure becomes visible to a human.
 
 Deliberately **not** built: a rule registry, predicate table or threshold DSL. Two levels and six branches do not clear the rule of three; explicit ordered branches are the readable, debuggable form. Each branch's condition lives in a small named helper returning a verdict or `None`, so the reasons tuple is produced by the same code that made the decision — the audit trail cannot drift from the verdict. Every numeric threshold is pinned by a boundary table (one case exactly at the value, one just below), because a `<` → `<=` flip previously kept the suite green for four of the six comparisons.
 
@@ -525,8 +592,8 @@ sequenceDiagram
 | Aspect | Decision |
 |---|---|
 | Endpoint | `GET https://api.open-meteo.com/v1/forecast` — *to verify at apply; the hourly variable names are confirmed by design spec 5.2* |
-| Query params | `latitude`, `longitude`, `hourly=precipitation,precipitation_probability`, `forecast_days=3`, `timezone=UTC` |
-| Why `forecast_days=3` | the API returns whole days from today, so 3 days guarantees a full 48 h **forward** horizon from the current hour; the adapter slices `[now_hour, now_hour + forecast_hours)` |
+| Query params | `latitude`, `longitude`, `hourly=precipitation,precipitation_probability`, `forecast_days=4`, `timezone=UTC` |
+| Why `forecast_days=4` | the API returns whole days from today, so `2` leaves only 34 forward hours at 12:41 UTC. `3` clears 48 forward hours but has a **cliff at the end of the day**: at 23:00 UTC it yields exactly 49 points for a 48-hour need, so any clock skew or late publication drops the cycle to `insufficient_horizon`. `4` leaves a whole spare day at every hour, costs nothing, and removes the cliff. Raised from `3` on 2026-09-04 (slice-3 review, W4). The adapter still slices `[now_hour, now_hour + forecast_hours)`, so the extra day is never evaluated |
 | Why `timezone=UTC` | slicing and window arithmetic stay unambiguous; local time is a display concern only (D7) |
 | Timeouts | `httpx.Timeout(connect=3.0, read=5.0, write=3.0, pool=3.0)`; no retries (D12) |
 | `Unavailable` when | transport error → `TRANSPORT_ERROR`; timeout → `TIMEOUT`; status ≠ 200 → `BAD_STATUS`; non-JSON body, missing `hourly.time` / `precipitation` / `precipitation_probability`, or unequal array lengths → `MALFORMED_PAYLOAD`; fewer than `forecast_hours` points at or after `now` → `INSUFFICIENT_HORIZON` |
@@ -578,6 +645,8 @@ Output on **every** run, sent or not:
 Ferreñafe  (-6.6400, -79.7900)  (PLACEHOLDER — pending confirmation)
 Sources    senamhi: unavailable (structure_unrecognized: header signature not matched)
            open_meteo: available (fetched 2026-09-03T14:00:00Z)
+Notes      - senamhi: discarded warning 345 (INCREMENTO DE TEMPERATURA DIURNA EN LA
+             COSTA Y SIERRA): phenomenon high_temperature cannot cause flooding
 Level      none   [degraded]
 Window     2026-09-03T14:00Z → 2026-09-05T14:00Z
 Reasons    - official SENAMHI source unavailable; forecast-only evaluation

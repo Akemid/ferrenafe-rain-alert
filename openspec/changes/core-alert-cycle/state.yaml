@@ -143,9 +143,139 @@ phases:
             implied in apply-progress.md.
       - id: 3
         name: adapters-and-cli
-        tasks: 3.1-3.16
-        status: pending
+        branch: feat/core-alert-cycle-3-adapters
+        tasks: 3.1-3.16 plus 3.5b
+        status: apply_complete_review_remediated_pending_pr
+        gate: >-
+          Re-run after the review remediation on 2026-09-04: pytest 455 passed
+          / 15 integration deselected, ruff check, ruff format --check, mypy
+          all exit 0. Opt-in suite run separately against the live sources: 10
+          passed, 5 skipped (hazard families with no row on today's Lambayeque
+          page). Live CLI smoke run clean, exit 0, nothing transmitted, no
+          state written — and the new Notes block now shows the RED heat
+          warning in force being discarded with its reason.
+        review: >-
+          Fresh-context adversarial review run 2026-09-04. Returned 2 CRITICAL,
+          3 WARNINGs, 3 suggestions and one owner decision; all fixed on the
+          same branch under strict TDD. See apply-progress.md "Phase 3 Review
+          Remediation (2026-09-04)" for the per-finding disposition and
+          evidence.
+        contract_change: >-
+          Owner-approved multi-hazard filter (design section 5.1). The SENAMHI
+          Lambayeque page is a multi-hazard feed, not a rain feed: of 788 rows
+          live on 2026-09-04, ~233 wind, ~131 temperature, ~137
+          precipitation, and the single warning IN FORCE was a RED daytime
+          temperature warning. Branch 1 of the evaluator raises imminent on
+          any current orange/red warning, so the first live cycle would have
+          announced imminent flooding because of a heat wave. Warnings are now
+          filtered by phenomenon before reaching the evaluator. New
+          domain/hazards.py and adapters/senamhi_classification.py; Warning
+          gained phenomenon and zone. New requirements and scenarios in
+          specs/weather-sources/spec.md.
+        contract_change_2: >-
+          Owner-approved correction to the geography half of the filter, taken
+          at the 2026-09-04 review (design section 5.1.1). The coast-only rule
+          was too blunt: it dropped 144 of the 243 live precipitation rows,
+          and PRECIPITACIONES EN LA SIERRA is the page's most common
+          precipitation title at 78 rows. The Rio La Leche rises at 4230 m on
+          Mount Choicopico inside Ferrenafe province and flows west through
+          the city; SENAMHI gauges its critical level at Puchaca in Incahuasi,
+          also inside the province, and attributes rises to intense rain in
+          the basin headwaters. Sierra rain is therefore upstream with hours
+          of lead time, and is the mechanism behind the 2017 flooding.
+          Highlands-only rainfall is flood-relevant again as an EARLY signal:
+          it may contribute to prepare and may not raise imminent on its own.
+          is_flood_relevant(phenomenon) and may_raise_imminent(phenomenon,
+          zone) are now two rules answering two questions. New requirement
+          with five scenarios in specs/risk-evaluation/spec.md.
+        line_budget_risk: >-
+          High, unresolved, flagged not absorbed. Diff since main: 4507
+          insertions across 41 files (1739 src, 2639 tests including ~750
+          lines of captured fixtures, 129 openspec) against the tasks.md ~450
+          estimate. Drivers: the unplanned owner-approved filter (~500 lines
+          across source, tests and specs) and recorded fixture data. All eight
+          work-unit commits are independently reviewable and revertable, so a
+          further chained split is feasible instead of a third size:exception.
+        open_items_resolved:
+          - >-
+            Open-Meteo endpoint path and every query-parameter name in design
+            section 8.1 verified live and correct as written.
+          - >-
+            SENAMHI header labels verified live: Aviso, Nro., Emision, Inicio,
+            Fin, Duracion, Nivel. Table located by header signature,
+            tolerating duplicate labels.
+          - >-
+            forecast_days is 4, not 2 and not 3. Two days does return 48
+            points, but they start at today 00:00 UTC, so any run after
+            midnight has fewer than 48 forward hours. Three clears 48 forward
+            hours but leaves only one spare hour at 23:00 UTC, so clock skew
+            or a late publication drops the cycle to insufficient_horizon.
+            Raised to 4 at the 2026-09-04 review (W4); it costs nothing and
+            the forward slice never reads the extra day.
+          - >-
+            An anomaly on the row marked (vigente) is a structural failure,
+            not a skippable row. The share guard cannot see it: one bad row of
+            789 is 0.13 percent, so a single unparseable cell produced
+            available with an empty tuple while a red aviso was in force, and
+            the resulting available status routed the evaluator to the
+            stricter forecast-only threshold. Design section 5.1.2, new
+            requirement in specs/weather-sources/spec.md.
+          - >-
+            Phenomenon markers are word-boundary patterns, not fixed phrases.
+            SENAMHI publishes the same aviso family with and without the
+            article, and INCREMENTO DE LA TEMPERATURA DIURNA is not a
+            substring of INCREMENTO DE TEMPERATURA, so the article variant
+            classified as UNKNOWN, which the filter treats as flood-relevant.
+            56 rows across 9 of the 12 regional pages used the article form.
+            All 12399 harvested titles now classify into a named family.
+          - >-
+            Warnings currently in force are identified by the (vigente) marker
+            cross-checked against the row start/end dates; the marker alone is
+            not trusted.
+        deviations_recorded:
+          - >-
+            adapters/serialization.py and adapters/local/offline_sources.py are
+            additions to design section 12's file table, recorded in tasks.md
+            Open Items like domain/reasons.py before them.
+          - >-
+            Five SENAMHI fixtures instead of the four task 3.3 named. The real
+            capture's only in-force row is a heat warning, so
+            precipitation_coast_current.html was added to exercise the positive
+            path; its one synthetic row is labelled as such in the file header
+            and in the fixtures README.
+          - >-
+            RESOLVED at the 2026-09-04 review. The discard audit is surfaced
+            by the CLI after all. The premise that the port could not carry it
+            was wrong: Available is a plain frozen dataclass, so adding
+            notes tuple[str, ...] = () is purely additive, breaks no merged
+            call site and keeps mypy strict green. Discard reasons and a
+            parse-anomaly summary now reach the CLI Notes block and --json.
+          - >-
+            tests/support/fakes.FakeAlertRepository composes
+            InMemoryAlertRepository instead of reimplementing the window-start
+            query, and the port-contract test runs against it too. The third
+            copy had already diverged: clear_active_outage ignored city_slug.
+        open_items_carried:
+          - >-
+            The zone rule accepts any mention of COSTA, including COSTA SUR
+            (1 row of 789). With highlands-only rainfall now kept, the zone
+            can only limit severity and never removes a warning, so this is a
+            calibration question rather than a way to miss one.
+          - >-
+            JsonFileAlertRepository.alerts grows without bound and the whole
+            document is rewritten on every send. Not urgent — one send per
+            six-hour cycle, only on an escalation, gitignored and disposable.
+            Proposed retention rule recorded in tasks.md Open Items and in a
+            comment next to the code; deliberately not implemented, because it
+            needs a clock the port does not carry and change 3's DynamoDB
+            adapter wants a TTL attribute rather than a rewrite.
     note: >-
+      All three slices implemented as of 2026-09-04. Slice 3 (adapters, local
+      repositories, CLI) is complete on feat/core-alert-cycle-3-adapters with
+      the gate green and a clean live smoke run, and carries one
+      owner-approved contract change to the SENAMHI warning filter. PR-3 is
+      not open: fresh-context review and the line-budget decision are
+      outstanding, and no push or PR was made by this apply run.
       Slice 1 of 3 complete on branch feat/core-alert-cycle-1-tooling
       (chain strategy stacked-to-main, so PR-1 targets main). Slice 2
       (domain, ports, RunAlertCycle) implemented on
