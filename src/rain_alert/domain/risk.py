@@ -112,7 +112,13 @@ class RiskEvaluator:
     ) -> _Verdict | None:
         if not isinstance(warnings, Available):
             return None
-        matches = [w for w in warnings.data if w.level in self.thresholds.imminent_warning_levels]
+        # `may_raise_imminent` bars a highlands-only rainfall warning from
+        # this branch alone. It is upstream of Ferrenafe by hours of river
+        # routing, so it belongs in `_prepare_combined`, which still counts
+        # it. See `domain/hazards.may_raise_imminent` for the hydrology.
+        matches = [
+            w for w in warnings.data if w.level in self.thresholds.imminent_warning_levels and w.may_raise_imminent
+        ]
         if not matches:
             return None
         window = _union_window([w.window for w in matches])

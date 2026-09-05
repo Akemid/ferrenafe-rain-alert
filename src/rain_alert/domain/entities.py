@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from rain_alert.domain.hazards import Phenomenon, Zone, is_flood_relevant, may_raise_imminent
 from rain_alert.domain.reasons import Reason
 from rain_alert.domain.values import Coordinates, Level, TimeWindow, WarningLevel
 
@@ -14,7 +15,17 @@ _SAMPLE_DURATION = timedelta(hours=1)
 
 @dataclass(frozen=True, slots=True)
 class Warning:
-    """A normalized SENAMHI warning entry."""
+    """A normalized SENAMHI warning entry.
+
+    `phenomenon` and `zone` carry the classification the adapter inferred
+    from the title, so the flood-relevance decision (design.md section 5.1)
+    is inspectable on the value itself instead of being hidden inside
+    whichever code filtered it.
+
+    Both default to `UNKNOWN`, which both rules below treat as permissive.
+    The default therefore fails **safe**: a caller that forgets to classify
+    produces one extra alert, never a missed flood warning.
+    """
 
     source_id: str
     title: str
@@ -22,6 +33,22 @@ class Warning:
     region: str
     window: TimeWindow
     emitted_at: datetime
+    phenomenon: Phenomenon = Phenomenon.UNKNOWN
+    zone: Zone = Zone.UNKNOWN
+
+    @property
+    def is_flood_relevant(self) -> bool:
+        """Whether this warning may drive a flood alert for Ferrenafe."""
+        return is_flood_relevant(self.phenomenon)
+
+    @property
+    def may_raise_imminent(self) -> bool:
+        """Whether this warning may, on its own, raise `imminent`.
+
+        False for highlands-only rainfall: it is upstream of the city with
+        hours of lead time, so it prepares rather than declares.
+        """
+        return may_raise_imminent(self.phenomenon, self.zone)
 
 
 @dataclass(frozen=True, slots=True)

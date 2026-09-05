@@ -11,7 +11,13 @@ import pytest
 
 from rain_alert.domain.config import RiskThresholds
 from rain_alert.domain.entities import Forecast, HourlyPoint, Warning
-from rain_alert.domain.reasons import ForecastThresholdReason, ReasonKind, render_reasons_en
+from rain_alert.domain.hazards import Phenomenon, Zone
+from rain_alert.domain.reasons import (
+    ForecastThresholdReason,
+    ReasonKind,
+    WarningReason,
+    render_reasons_en,
+)
 from rain_alert.domain.risk import RiskEvaluator
 from rain_alert.domain.sources import Available, SourceResult, Unavailable
 from rain_alert.domain.values import (
@@ -68,6 +74,26 @@ def _warnings(*levels: WarningLevel) -> Available[tuple[Warning, ...]]:
             emitted_at=NOW,
         )
         for i, level in enumerate(levels)
+    )
+    return Available(data=warnings, fetched_at=NOW)
+
+
+def _zoned_warnings(*entries: tuple[WarningLevel, Zone]) -> Available[tuple[Warning, ...]]:
+    """Precipitation warnings whose geography is stated, for the rule that
+    decides how far a warning may take the level."""
+    window = TimeWindow(start=NOW, end=NOW + timedelta(hours=6))
+    warnings = tuple(
+        Warning(
+            source_id=f"senamhi-{i}",
+            title=f"Aviso {zone.value}",
+            level=level,
+            region="Lambayeque",
+            window=window,
+            emitted_at=NOW,
+            phenomenon=Phenomenon.PRECIPITATION,
+            zone=zone,
+        )
+        for i, (level, zone) in enumerate(entries)
     )
     return Available(data=warnings, fetched_at=NOW)
 
@@ -314,6 +340,71 @@ class TestForecastOnlyPrepareWithASilentButHealthySenamhi:
         senamhi_unavailable = evaluator.evaluate(_unavailable_warnings(), forecast, NOW)
 
         assert LEVEL_RANK[healthy_and_silent.level] >= LEVEL_RANK[senamhi_unavailable.level]
+
+
+class TestHighlandsRainIsAnEarlySignalNotAnImminentClaim:
+    """risk-evaluation: "A highlands-only official warning is an early signal".
+
+    The Rio La Leche rises inside Ferrenafe province and flows west through
+    the city, so sierra rain is upstream with hours of lead time. It must be
+    able to contribute to `prepare`. But Ferrenafe city itself is coastal, so
+    that rain reaches it by river routing rather than by falling overhead —
+    which is preparation, not a claim that flooding is imminent.
+    """
+
+    def test_a_highlands_only_red_warning_alone_does_not_raise_imminent(self) -> None:
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+
+        assessment = evaluator.evaluate(
+            _zoned_warnings((WarningLevel.RED, Zone.HIGHLANDS)), _unavailable_forecast(), NOW
+        )
+
+        assert assessment.level == Level.NONE
+
+    def test_a_highlands_only_orange_warning_with_a_qualifying_forecast_prepares(self) -> None:
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+
+        assessment = evaluator.evaluate(
+            _zoned_warnings((WarningLevel.ORANGE, Zone.HIGHLANDS)),
+            _forecast(48, mm_total=10.0, probability_pct=60),
+            NOW,
+        )
+
+        assert assessment.level == Level.PREPARE
+        assert any(reason.kind is ReasonKind.OFFICIAL_WARNING for reason in assessment.reasons)
+
+    def test_a_coastal_orange_warning_still_raises_imminent(self) -> None:
+        """The discrimination check: the rule must distinguish, not suppress."""
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+
+        assessment = evaluator.evaluate(
+            _zoned_warnings((WarningLevel.ORANGE, Zone.COAST)), _unavailable_forecast(), NOW
+        )
+
+        assert assessment.level == Level.IMMINENT
+
+    def test_a_coast_and_highlands_warning_behaves_as_coastal(self) -> None:
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+
+        assessment = evaluator.evaluate(
+            _zoned_warnings((WarningLevel.ORANGE, Zone.COAST_AND_HIGHLANDS)), _unavailable_forecast(), NOW
+        )
+
+        assert assessment.level == Level.IMMINENT
+
+    def test_a_coastal_warning_still_raises_imminent_beside_a_highlands_one(self) -> None:
+        """One barred warning must not bar the whole tuple, and the imminent
+        window must come from the coastal warning that earned it."""
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+
+        assessment = evaluator.evaluate(
+            _zoned_warnings((WarningLevel.RED, Zone.HIGHLANDS), (WarningLevel.ORANGE, Zone.COAST)),
+            _unavailable_forecast(),
+            NOW,
+        )
+
+        assert assessment.level == Level.IMMINENT
+        assert [reason.title for reason in assessment.reasons if isinstance(reason, WarningReason)] == ["Aviso coast"]
 
 
 class TestShortHorizonForecast:

@@ -13,6 +13,25 @@ def test_available_carries_data_and_fetched_at() -> None:
     assert result.fetched_at == fetched_at
 
 
+def test_available_carries_no_notes_by_default() -> None:
+    """`notes` is additive: every existing construction site keeps working,
+    and a source with nothing to report says nothing."""
+    result = Available(data=(), fetched_at=datetime(2026, 9, 3, 14, tzinfo=UTC))
+    assert result.notes == ()
+
+
+def test_available_carries_operator_notes_about_what_was_set_aside() -> None:
+    """A source can succeed *and* have something the operator must know: rows
+    it could not parse, warnings it filtered out. Without this, a partial
+    parse failure and a genuinely calm page are indistinguishable."""
+    result = Available(
+        data=(),
+        fetched_at=datetime(2026, 9, 3, 14, tzinfo=UTC),
+        notes=("discarded warning 345: phenomenon high_temperature cannot cause flooding",),
+    )
+    assert result.notes == ("discarded warning 345: phenomenon high_temperature cannot cause flooding",)
+
+
 def test_unavailable_has_no_data_attribute() -> None:
     result = Unavailable(
         source=SourceName.SENAMHI,
