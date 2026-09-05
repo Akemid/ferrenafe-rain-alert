@@ -8,6 +8,7 @@ point of D6: the graph the CLI runs is the graph these tests exercise.
 
 from __future__ import annotations
 
+import io
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,6 +19,8 @@ from rain_alert.adapters.console_notifier import ALERT_PREFIX, NOTICE_PREFIX
 from rain_alert.adapters.local.json_alert_repository import JsonFileAlertRepository
 from rain_alert.adapters.open_meteo import OpenMeteoForecastProvider
 from rain_alert.adapters.senamhi_scraper import SenamhiWarningScraper
+from rain_alert.domain.messages import OperatorNotice
+from rain_alert.domain.values import NoticeKind, SourceName
 from rain_alert.entrypoints.cli import (
     OPEN_METEO_FIXTURE_NAME,
     SENAMHI_FIXTURE_NAME,
@@ -82,7 +85,7 @@ def _fixtures(
     return directory
 
 
-def _run(capsys, tmp_path: Path, *extra: str, **fixture_kwargs) -> tuple[int, str]:
+def _run_streams(capsys, tmp_path: Path, *extra: str, **fixture_kwargs) -> tuple[int, str, str]:
     code = main(
         [
             "--now",
@@ -94,7 +97,13 @@ def _run(capsys, tmp_path: Path, *extra: str, **fixture_kwargs) -> tuple[int, st
             *extra,
         ]
     )
-    return code, capsys.readouterr().out
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def _run(capsys, tmp_path: Path, *extra: str, **fixture_kwargs) -> tuple[int, str]:
+    code, out, _ = _run_streams(capsys, tmp_path, *extra, **fixture_kwargs)
+    return code, out
 
 
 class TestOutputOnEveryRun:
@@ -270,7 +279,7 @@ class TestJsonOutput:
     def test_json_mode_emits_a_parseable_document(self, capsys, tmp_path: Path) -> None:
         _, output = _run(capsys, tmp_path, "--json", mm=30.0, probability=90)
 
-        document = json.loads(output[output.index("{") :])
+        document = json.loads(output)
 
         assert document["level"] == "imminent"
         assert document["sent"] is True
@@ -282,7 +291,7 @@ class TestJsonOutput:
         output keeps the tagged reasons alongside the rendered lines."""
         _, output = _run(capsys, tmp_path, "--json", mm=30.0, probability=90)
 
-        document = json.loads(output[output.index("{") :])
+        document = json.loads(output)
 
         kinds = [reason["kind"] for reason in document["reasons"]]
         assert "forecast_threshold" in kinds
@@ -291,9 +300,59 @@ class TestJsonOutput:
     def test_json_mode_reports_the_placeholder_flag(self, capsys, tmp_path: Path) -> None:
         _, output = _run(capsys, tmp_path, "--json")
 
-        document = json.loads(output[output.index("{") :])
+        document = json.loads(output)
 
         assert document["coordinates_are_placeholder"] is True
+
+
+class TestTheJsonDocumentOwnsStandardOutputAlone:
+    """`--json` is documented as machine-readable output for calibration
+    logging, and `ConsoleNotifier` defaulted to stdout too. So on any run that
+    sent an alert or emitted an operator notice, the document was preceded by
+    the notifier's block and `json.loads` failed — the flag broke on exactly
+    the runs worth logging.
+    """
+
+    def test_the_document_parses_on_a_run_that_also_sends(self, capsys, tmp_path: Path) -> None:
+        code, out, _ = _run_streams(capsys, tmp_path, "--json", mm=30.0, probability=90)
+
+        document = json.loads(out)
+
+        assert code == 0
+        assert document["sent"] is True
+        assert document["recipients_count"] == 1
+
+    def test_the_document_parses_on_a_run_that_emits_an_operator_notice(self, capsys, tmp_path: Path) -> None:
+        """The other stdout writer. A degraded cycle is the commonest reason
+        to be reading a calibration log in the first place."""
+        _, out, _ = _run_streams(capsys, tmp_path, "--json", senamhi=SENAMHI_BROKEN_STRUCTURE)
+
+        document = json.loads(out)
+
+        assert document["senamhi_status"] == "unavailable"
+        assert document["notices"]
+
+    def test_the_notifier_blocks_are_still_emitted_on_standard_error(self, capsys, tmp_path: Path) -> None:
+        """Redirected, not silenced. The dry-run block is the operator's proof
+        of what would have been delivered, so `--json` must not cost it."""
+        _, out, err = _run_streams(capsys, tmp_path, "--json", mm=30.0, probability=90)
+
+        assert ALERT_PREFIX in err
+        assert ALERT_PREFIX not in out
+
+    def test_stdout_holds_the_document_and_nothing_else(self, capsys, tmp_path: Path) -> None:
+        _, out, _ = _run_streams(capsys, tmp_path, "--json", mm=30.0, probability=90)
+
+        assert out.lstrip().startswith("{")
+        assert out.rstrip().endswith("}")
+
+    def test_the_human_readable_run_still_prints_the_notifier_block_on_stdout(self, capsys, tmp_path: Path) -> None:
+        """Triangulation: the split is scoped to `--json`. Without `--json`
+        the whole operator view belongs on stdout, block included."""
+        _, out, err = _run_streams(capsys, tmp_path, mm=30.0, probability=90)
+
+        assert ALERT_PREFIX in out
+        assert ALERT_PREFIX not in err
 
 
 class TestTheCliCannotSend:
@@ -337,6 +396,25 @@ class TestWiring:
         assert isinstance(deps.warnings, SenamhiWarningScraper)
         result = deps.forecast.fetch_forecast(deps.config.load().coordinates, 48, NOW_DT)
         assert result.__class__.__name__ == "Available"
+
+    def test_the_notifier_stream_is_injectable_so_the_caller_owns_the_split(self, tmp_path: Path) -> None:
+        """The wiring, not the notifier's default, decides where blocks go.
+        `ConsoleNotifier()` fell back to `sys.stdout` and so ignored even an
+        explicitly injected CLI stream."""
+        stream = io.StringIO()
+
+        deps = build_local_deps(state_file=tmp_path / "state.json", now=lambda: NOW_DT, notifier_stream=stream)
+        deps.notifier.send_operator_notice(
+            OperatorNotice(
+                kind=NoticeKind.SOURCE_UNAVAILABLE,
+                subject="subject",
+                body="body",
+                sources=frozenset({SourceName.SENAMHI}),
+                occurred_at=NOW_DT,
+            )
+        )
+
+        assert NOTICE_PREFIX in stream.getvalue()
 
     def test_a_missing_offline_fixture_directory_is_reported_clearly(self, capsys, tmp_path: Path) -> None:
         code = main(

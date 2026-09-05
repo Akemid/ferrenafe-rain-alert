@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 from rain_alert.adapters.console_notifier import ConsoleNotifier
 from rain_alert.adapters.http import HtmlFetcher, HttpxHtmlFetcher
@@ -43,6 +44,7 @@ def build_local_deps(
     state_file: Path,
     now: Callable[[], datetime],
     offline_fixtures: Path | None = None,
+    notifier_stream: TextIO | None = None,
 ) -> CycleDependencies:
     """The full dependency graph for a local cycle.
 
@@ -52,6 +54,17 @@ def build_local_deps(
         offline_fixtures: When given, a directory holding
             `senamhi.html` and `open_meteo.json`; the cycle then makes no
             network call at all.
+        notifier_stream: Where `ConsoleNotifier` writes its blocks. `None`
+            keeps the notifier's own default of standard output.
+
+            This is a parameter because the caller, not the notifier, knows
+            what else is going to standard output. The CLI's `--json` mode
+            emits one machine-readable document for calibration logging, and
+            the notifier defaulting to the same stream meant every run that
+            actually sent or emitted a notice prefixed that document with a
+            dry-run block and broke `json.loads` — on exactly the runs worth
+            logging. It stays a stream rather than a boolean because the
+            notifier's job is to write somewhere, not to know about `--json`.
     """
     fetcher: HtmlFetcher
     forecast: ForecastProvider
@@ -68,7 +81,7 @@ def build_local_deps(
         forecast=forecast,
         composer=MessageComposer(),
         contacts=StaticContactRepository(),
-        notifier=ConsoleNotifier(),
+        notifier=ConsoleNotifier(notifier_stream),
         alerts=JsonFileAlertRepository(state_file),
         evaluator_factory=RiskEvaluator,
         now=now,

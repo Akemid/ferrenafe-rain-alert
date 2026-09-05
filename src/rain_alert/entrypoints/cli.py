@@ -21,6 +21,14 @@ Two output rules follow the specs rather than convenience:
   non-send the preview is rendered here from `CycleResult.message_request`
   by the deterministic template, labelled `PREVIEW (NOT SENT)`, so no
   composer is invoked and a deduplicated cycle costs nothing.
+- **Under `--json`, standard output carries the document and nothing else.**
+  The flag is documented as machine-readable output for calibration logging,
+  and `ConsoleNotifier` defaulted to standard output too, so on any run that
+  sent an alert or emitted an operator notice the document was preceded by
+  the notifier's block and `json.loads` failed — the flag broke on precisely
+  the runs worth logging. The notifier is therefore given standard error
+  under `--json`. The blocks are redirected, never suppressed: the dry-run
+  block is the operator's proof of what would have been delivered.
 
 **Exit code is 0 for any completed cycle**, including `none`, degraded and
 deduplicated outcomes. A degraded cycle is the system working as designed,
@@ -244,7 +252,18 @@ def main(argv: Sequence[str] | None = None, stdout: TextIO | None = None, stderr
         print(f"--now: {exc}", file=err)
         return EXIT_CANNOT_START
 
-    deps = build_local_deps(state_file=arguments.state_file, now=lambda: now, offline_fixtures=fixtures)
+    # `--json` promises one machine-readable document, so the document gets
+    # stdout to itself and the notifier's blocks go to stderr. Without this
+    # the blocks preceded the document and `json.loads` failed on every run
+    # that sent or emitted a notice — the runs a calibration log exists for.
+    # On the human-readable path the whole operator view belongs together, so
+    # the notifier writes to the same stream everything else does.
+    deps = build_local_deps(
+        state_file=arguments.state_file,
+        now=lambda: now,
+        offline_fixtures=fixtures,
+        notifier_stream=err if arguments.json else out,
+    )
     config = deps.config.load()
     result = RunAlertCycle(deps).execute()
 
