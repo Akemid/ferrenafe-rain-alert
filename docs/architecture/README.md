@@ -34,7 +34,7 @@ State this plainly before reading further, because the design documents describe
 
 Those arrive in changes 2 and 3 of the `core-alert-cycle` rollout. Everything in `src/` today is the decision engine and the calibration harness around it.
 
-Note that `README.md` at the repository root has not caught up with this branch. It says no decision logic, HTTP or HTML adapters, or CLI exist yet. All four exist, and this document describes them.
+The design documents under `docs/superpowers/` and the planning artifacts under `openspec/` describe the full three-change system. Where they and the code disagree, the code is what runs, and this guide follows the code.
 
 ## The cycle, in seven steps
 
