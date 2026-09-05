@@ -43,6 +43,160 @@ Because the SENAMHI page always lists warning history since 2024, the adapter MU
 - WHEN the warnings are fetched
 - THEN the result status is `unavailable`, not `available` with an empty list
 
+### Requirement: An unparseable row in force is a structural failure
+
+*Added 2026-09-04, from the slice-3 fresh-context review (finding C2).*
+
+A share-based structural guard cannot defend the row that decides the cycle.
+Breakage confined to the single row marked `(vigente)` is 1 of roughly 789
+rows — 0.13% — so a "more than half the rows unparseable" guard passes it, and
+the adapter reports `available` with an empty warning list while a red aviso is
+in force.
+
+That outcome is worse than a declared outage. With `senamhi_status` reported as
+`available`, `risk-evaluation` routes to the forecast-only branch at the
+stricter degraded probability threshold, so a broken parse leaves the system
+**less** sensitive than a source known to be down, and no operator notice is
+emitted.
+
+The adapter MUST therefore report `unavailable` with reason
+`structure_unrecognized` when a row carrying the in-force marker cannot be
+parsed — a missing cell, an unparseable date, or an unrecognized level token.
+Anomalies on rows NOT in force MUST remain skippable, because a historical row
+cannot change the verdict.
+
+#### Scenario: An unparseable date on the row in force
+- GIVEN a page whose row marked `(vigente)` carries a start date the adapter cannot parse
+- WHEN the warnings are fetched
+- THEN the result status is `unavailable` with reason `structure_unrecognized`
+
+#### Scenario: A missing cell on the row in force
+- GIVEN a page whose row marked `(vigente)` has fewer cells than the header defines
+- WHEN the warnings are fetched
+- THEN the result status is `unavailable` with reason `structure_unrecognized`
+
+#### Scenario: An unparseable historical row does not condemn the page
+- GIVEN a page whose row marked `(vigente)` parses cleanly and one historical row does not
+- WHEN the warnings are fetched
+- THEN the result status is `available` and the warning in force is returned
+- AND the result carries an operator-facing note that a row was unparseable and skipped
+
+### Requirement: Only flood-relevant official warnings may drive an alert
+
+*Added 2026-09-04, owner-approved, after the live page was inspected during
+apply. See design spec section 5.1.*
+
+The SENAMHI Lambayeque warnings page is a **multi-hazard** feed, not a rainfall
+feed: of the 788 rows live on 2026-09-04, roughly 233 were wind, 131 daytime or
+nighttime temperature and only 137 precipitation. The warning in force that day
+was a RED daytime-temperature warning, which the evaluator's first branch would
+have read as imminent flooding.
+
+`WarningProvider` MUST classify each parsed row's meteorological phenomenon and
+geographic zone, and MUST exclude from the returned tuple any warning whose
+**phenomenon cannot cause flooding**. Wind (`INCREMENTO DE VIENTO`), heat
+(`INCREMENTO DE [LA] TEMPERATURA`), cold (`DESCENSO DE [LA] TEMPERATURA`,
+`FRIAJE`), snow (`NEVADA`) and hail (`GRANIZO`) warnings MUST NOT reach the
+evaluator. Rainfall warnings — `PRECIPITACIONES`, `LLUVIA`, `LLOVIZNA`,
+`GARÚA` — MUST reach it.
+
+Geography MUST NOT exclude a rainfall warning from the returned tuple. It
+constrains only how severe a level that warning may drive, which is specified
+in `risk-evaluation` ("A highlands-only official warning is an early signal").
+
+Classification MUST match on normalized text (accent-insensitive,
+case-insensitive, **word-boundary**) rather than exact strings or substrings,
+because the titles vary: `PRECIPITACIONES EN LA COSTA NORTE Y SIERRA` and
+`PRECIPITACIONES EN COSTA NORTE Y SIERRA` both occur, `LLUVIA ...` titles and
+`(EXTENSIÓN DEL AVISO n)` suffixes occur, and the **same aviso family is
+published both with and without the article** (`INCREMENTO DE TEMPERATURA
+DIURNA ...` and `INCREMENTO DE LA TEMPERATURA DIURNA ...`; 56 rows across 9 of
+the 12 regional pages used the article form on 2026-09-04).
+
+Every hazard family SENAMHI publishes MUST have a classification. A family
+left unclassified is not a neutral gap: unknown is treated as flood-relevant,
+so an unclassified family reaches the evaluator as though it were rain.
+
+A warning whose phenomenon or zone CANNOT be classified MUST be treated as
+relevant, and an unclassifiable zone MUST be treated as reaching the coast.
+Missing a real flood warning is worse than one extra alert, so the unknown
+case MUST fail towards alerting. This is deliberately asymmetric: a highlands
+classification is a positive statement that the coast is not covered, whereas
+an unknown zone only means the title did not say.
+
+Every exclusion MUST be explainable **to the operator**, not only inside the
+adapter, so that a filtered page is distinguishable from a broken scraper.
+
+#### Scenario: A red heat warning in force does not raise the level
+- GIVEN the page's only warning in force is `INCREMENTO DE TEMPERATURA DIURNA EN LA COSTA Y SIERRA` at level `ROJO`
+- WHEN the warnings are fetched
+- THEN the result status is `available` with an empty warning list
+- AND the evaluator therefore does not raise `imminent` from an official warning
+
+#### Scenario: A coastal precipitation warning in force is returned
+- GIVEN the page has a warning in force whose title names precipitation and includes the coast
+- WHEN the warnings are fetched
+- THEN the result status is `available` and the warning is present with its normalized level and window
+
+#### Scenario: A highlands-only precipitation warning is returned as an early signal
+- GIVEN the page has a warning in force titled `PRECIPITACIONES EN LA SIERRA`
+- WHEN the warnings are fetched
+- THEN the warning is present in the returned warnings, classified as highlands
+- AND `risk-evaluation` decides how far it may take the level
+
+#### Scenario: The article variant of a temperature aviso is still excluded
+- GIVEN the page has a warning in force titled `INCREMENTO DE LA TEMPERATURA DIURNA EN LA COSTA` at level `ROJO`
+- WHEN the warnings are fetched
+- THEN the result status is `available` with an empty warning list
+
+#### Scenario: Wind, temperature, snow and hail warnings never reach the evaluator
+- GIVEN a page whose warnings in force are wind, daytime-temperature, nighttime-temperature, `NEVADA`, `GRANIZO` and `FRIAJE` warnings
+- WHEN the warnings are fetched
+- THEN none of them appear in the returned warnings
+
+#### Scenario: Drizzle is precipitation
+- GIVEN a warning in force titled `LLOVIZNA EN LA COSTA`
+- WHEN the warnings are fetched
+- THEN the warning is present in the returned warnings
+
+#### Scenario: An unclassifiable precipitation zone is kept
+- GIVEN a warning in force titled `PRECIPITACIONES INTENSAS`, naming neither the coast nor the highlands
+- WHEN the warnings are fetched
+- THEN the warning is present in the returned warnings
+
+#### Scenario: Exclusions are auditable by the operator
+- GIVEN a page whose rows include excluded hazards
+- WHEN the warnings are fetched
+- THEN the `available` result carries, for each excluded warning, an operator-facing note naming the warning and the reason it was excluded
+- AND the CLI prints those notes, so `level none` from a filtered page is distinguishable from `level none` from an idle page
+
+### Requirement: Only warnings currently in force may drive an alert
+
+The page lists warning history since 2024, so the adapter MUST return only the
+warnings currently in force. The page marks these with a `(vigente)` token in
+the warning-number cell and links them to a different detail page than
+historical rows.
+
+The marker MUST NOT be trusted on its own: the adapter MUST also verify that
+`now` falls inside the row's start/end dates, and MUST exclude a row that fails
+either check. A stale marker left on an expired row would otherwise alert the
+community about rain that has already passed.
+
+#### Scenario: A marked row whose window has passed is excluded
+- GIVEN a row marked `(vigente)` whose end date is before `now`
+- WHEN the warnings are fetched
+- THEN the row is not present in the returned warnings
+
+#### Scenario: An unmarked row inside its window is excluded
+- GIVEN a historical row with no `(vigente)` marker whose start/end dates happen to contain `now`
+- WHEN the warnings are fetched
+- THEN the row is not present in the returned warnings
+
+#### Scenario: Historical rows still prove the parse worked
+- GIVEN a well-formed page whose rows are all historical
+- WHEN the warnings are fetched
+- THEN the result status is `available` with an empty warning list, not `unavailable`
+
 ### Requirement: Coordinates come from configuration
 
 `ForecastProvider` MUST read the target latitude/longitude from `ConfigRepository` rather than a hard-coded value; the local fake MUST use a documented placeholder, not an unverified "real" coordinate.

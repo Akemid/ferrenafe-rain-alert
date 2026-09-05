@@ -11,8 +11,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from rain_alert.domain.entities import Forecast, HourlyPoint
-from rain_alert.domain.values import Coordinates
+from rain_alert.domain.entities import Forecast, HourlyPoint, Warning
+from rain_alert.domain.hazards import Phenomenon, Zone
+from rain_alert.domain.values import Coordinates, TimeWindow, WarningLevel
 
 
 def _utc(hour: int) -> datetime:
@@ -111,3 +112,72 @@ class TestForecast:
         )
         with pytest.raises(ValueError, match="contiguous"):
             Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
+
+
+class TestWarningFloodRelevance:
+    """`Warning` carries the phenomenon and zone the adapter inferred, so the
+    flood-relevance decision is inspectable on the value itself rather than
+    hidden in whichever code filtered it (design.md section 5.1)."""
+
+    def _warning(self, *, title: str, phenomenon: Phenomenon, zone: Zone) -> Warning:
+        return Warning(
+            source_id="28705",
+            title=title,
+            level=WarningLevel.RED,
+            region="Lambayeque",
+            window=TimeWindow(start=_utc(0), end=_utc(48)),
+            emitted_at=_utc(0),
+            phenomenon=phenomenon,
+            zone=zone,
+        )
+
+    def test_a_coastal_precipitation_warning_is_flood_relevant(self) -> None:
+        warning = self._warning(
+            title="PRECIPITACIONES EN LA COSTA NORTE Y SIERRA",
+            phenomenon=Phenomenon.PRECIPITATION,
+            zone=Zone.COAST_AND_HIGHLANDS,
+        )
+        assert warning.is_flood_relevant is True
+
+    def test_a_red_heat_warning_is_not_flood_relevant(self) -> None:
+        """The 2026-09-04 regression case: red, in force, and irrelevant."""
+        warning = self._warning(
+            title="INCREMENTO DE TEMPERATURA DIURNA EN LA COSTA Y SIERRA",
+            phenomenon=Phenomenon.HIGH_TEMPERATURE,
+            zone=Zone.COAST_AND_HIGHLANDS,
+        )
+        assert warning.is_flood_relevant is False
+
+    def test_an_unclassified_warning_defaults_to_relevant(self) -> None:
+        """The default must fail safe: a caller that forgets to classify
+        produces one extra alert, never a missed flood warning."""
+        warning = Warning(
+            source_id="28705",
+            title="PRECIPITACIONES EN LA COSTA",
+            level=WarningLevel.ORANGE,
+            region="Lambayeque",
+            window=TimeWindow(start=_utc(0), end=_utc(48)),
+            emitted_at=_utc(0),
+        )
+        assert (warning.phenomenon, warning.zone) == (Phenomenon.UNKNOWN, Zone.UNKNOWN)
+        assert warning.is_flood_relevant is True
+        assert warning.may_raise_imminent is True
+
+    def test_a_highlands_only_rainfall_warning_is_relevant_but_not_imminent_capable(self) -> None:
+        """The owner-approved correction: sierra rain is upstream of the city
+        in the Rio La Leche basin, so it prepares rather than declares."""
+        warning = self._warning(
+            title="PRECIPITACIONES EN LA SIERRA",
+            phenomenon=Phenomenon.PRECIPITATION,
+            zone=Zone.HIGHLANDS,
+        )
+        assert warning.is_flood_relevant is True
+        assert warning.may_raise_imminent is False
+
+    def test_a_coastal_rainfall_warning_is_imminent_capable(self) -> None:
+        warning = self._warning(
+            title="PRECIPITACIONES EN LA COSTA",
+            phenomenon=Phenomenon.PRECIPITATION,
+            zone=Zone.COAST,
+        )
+        assert warning.may_raise_imminent is True

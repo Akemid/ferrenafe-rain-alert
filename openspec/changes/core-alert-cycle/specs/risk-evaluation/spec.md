@@ -30,6 +30,56 @@ When both SENAMHI and Open-Meteo report `available`, the evaluator MUST derive t
 - WHEN the evaluator runs
 - THEN the level is `none`
 
+### Requirement: A highlands-only official warning is an early signal
+
+*Added 2026-09-04, owner-approved, from the slice-3 fresh-context review.*
+
+The Río La Leche rises at 4 230 m on Mount Choicopico, **inside Ferreñafe
+province**, and flows west through Ferreñafe and Lambayeque provinces. SENAMHI
+measures its critical level at the Puchaca station in Incahuasi — a sierra
+district of Ferreñafe province — and attributes rises there to intense rain in
+the basin headwaters. Riverside defence works protect Pítipo and Incahuasi in
+this province, plus Pacora, Íllimo and Jayanca. Sierra rain is therefore
+upstream of the city with hours of lead time, and it is the mechanism behind
+the 2017 flooding of Ferreñafe.
+
+A rainfall warning covering **only** the highlands (`EN LA SIERRA`, `EN LA
+SIERRA NORTE Y CENTRO`) MUST therefore be evaluated, and MAY contribute to
+`prepare` through the combined rule. It MUST NOT raise `imminent` on its own,
+at any warning level: Ferreñafe city is coastal, so sierra rain reaches it by
+river routing rather than by falling overhead, which warrants preparation
+rather than a claim that flooding is already under way.
+
+A warning covering the coast, or the coast and the highlands together, or whose
+zone is unstated, keeps full weight including `imminent`.
+
+#### Scenario: Highlands-only red alone does not raise imminent
+- GIVEN SENAMHI reports a red warning titled `PRECIPITACIONES EN LA SIERRA` and no other warning
+- WHEN the evaluator runs
+- THEN the level is not `imminent`
+
+#### Scenario: Highlands-only orange plus a qualifying forecast prepares
+- GIVEN SENAMHI reports an orange highlands-only precipitation warning AND Open-Meteo forecasts 10 mm in 48 h at 60% probability
+- WHEN the evaluator runs
+- THEN the level is `prepare`
+- AND the reasons include the official warning
+
+#### Scenario: A coastal orange warning still raises imminent
+- GIVEN SENAMHI reports an orange warning covering the coast
+- WHEN the evaluator runs
+- THEN the level is `imminent`
+
+#### Scenario: A coast-and-highlands warning behaves as coastal
+- GIVEN SENAMHI reports an orange warning titled `PRECIPITACIONES EN LA COSTA NORTE Y SIERRA`
+- WHEN the evaluator runs
+- THEN the level is `imminent`
+
+#### Scenario: One barred warning does not bar the others
+- GIVEN SENAMHI reports a highlands-only red warning AND a coastal orange warning
+- WHEN the evaluator runs
+- THEN the level is `imminent`
+- AND the reasons name the coastal warning
+
 ### Requirement: Forecast-only prepare when SENAMHI is available but silent
 
 When SENAMHI reports `available` with no warning at or above the `prepare` level, the evaluator MUST still raise `prepare` if Open-Meteo alone meets the accumulation threshold with a max probability at or above the degraded probability threshold (70%). A healthy official source that is merely silent MUST NOT make the system less sensitive than an unavailable one, because breaking the scraper would otherwise increase the chance of an alert.
