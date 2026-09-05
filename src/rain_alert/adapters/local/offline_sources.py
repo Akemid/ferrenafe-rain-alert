@@ -48,6 +48,17 @@ class OfflineOpenMeteoProvider:
         self._path = Path(path)
 
     def fetch_forecast(self, location: Coordinates, hours: int, now: datetime) -> SourceResult[Forecast]:
+        """Parse the recorded payload, reporting failure as `Unavailable`.
+
+        The same "no exception escapes" rule the live provider owes. A
+        recorded payload is a captured live response, so it carries the same
+        anomalies — including the bare `NaN` that `json.loads` accepts and
+        that used to abort the run — and `RunAlertCycle` has no handler.
+
+        `json.JSONDecodeError` is caught before the catch-all because it is a
+        `ValueError` subclass and deserves its own reason and its own detail
+        naming the file.
+        """
         try:
             payload: Any = json.loads(_read(self._path))
             return Available(data=parse_forecast_payload(payload, location, hours, now), fetched_at=now)
@@ -60,3 +71,10 @@ class OfflineOpenMeteoProvider:
             )
         except FetchError as exc:
             return Unavailable(source=SourceName.OPEN_METEO, reason=exc.reason, detail=exc.detail, observed_at=now)
+        except Exception as exc:  # noqa: BLE001 - a parser bug must degrade the cycle, not abort it
+            return Unavailable(
+                source=SourceName.OPEN_METEO,
+                reason=UnavailableReason.TRANSPORT_ERROR,
+                detail=f"unexpected {type(exc).__name__}: {exc}",
+                observed_at=now,
+            )

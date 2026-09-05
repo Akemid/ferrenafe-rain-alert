@@ -3,6 +3,7 @@ over the evaluated horizon, not the mean)."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -53,11 +54,33 @@ class Warning:
 
 @dataclass(frozen=True, slots=True)
 class HourlyPoint:
-    """One hourly forecast sample, describing the hour that starts at `at`."""
+    """One hourly forecast sample, describing the hour that starts at `at`.
+
+    The ranges are enforced here rather than only in the adapter, for the same
+    reason `Coordinates` and `TimeWindow` enforce theirs: this is where the
+    invariant is claimed, so this is where it has to hold. `precipitation_mm`
+    is millimetres of rain and `probability_pct` is a percentage, and both
+    feed a threshold comparison directly.
+
+    `Infinity` millimetres was not hypothetical. `json.loads` accepts bare
+    `NaN` and `Infinity`, so an anomalous upstream value parsed as a valid
+    reading, accumulated to an infinite rainfall total and cleared
+    `imminent_mm_24h` unconditionally — an upstream glitch deciding the alert
+    level for a real community, most likely during exactly the extreme
+    weather this system exists for.
+    """
 
     at: datetime
     precipitation_mm: float
     probability_pct: int
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.precipitation_mm):
+            raise ValueError(f"HourlyPoint.precipitation_mm must be a finite number, got {self.precipitation_mm!r}")
+        if self.precipitation_mm < 0:
+            raise ValueError(f"HourlyPoint.precipitation_mm must not be negative, got {self.precipitation_mm!r}")
+        if not 0 <= self.probability_pct <= 100:
+            raise ValueError(f"HourlyPoint.probability_pct must be in 0..100, got {self.probability_pct!r}")
 
 
 @dataclass(frozen=True, slots=True)
