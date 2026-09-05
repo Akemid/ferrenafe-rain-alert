@@ -15,6 +15,26 @@ Two consequences of that split are load-bearing here:
 - Timestamps are converted to the configured local timezone for display
   (D7). Domain datetimes are UTC, but a community reader must not be handed
   an ISO-8601 string with a `+00:00` offset.
+
+A third rule was added after the security review, and it is the one a new
+composer is most likely to drop: **every source-derived free text this module
+renders goes through `domain.sanitize.sanitize_source_text` first.** The body
+is assembled with `"\\n".join` into a line-oriented format whose grammar is
+`- ` bullets and `Motivos:` / `Recomendaciones:` headers, so any string the
+system did not write itself can write that grammar. The audit of what is
+source-derived, field by field:
+
+| Field reaching the body | Origin | Sanitized |
+|---|---|---|
+| `WarningReason.title` | scraped aviso title | **yes** |
+| `WarningReason.level` | `WarningLevel`, a fixed token map | not free text |
+| `ForecastThresholdReason.*` | numbers, rendered with format specifiers | not free text |
+| `SenamhiUnavailableReason`, `NoQualifyingWarningReason` | no fields | n/a |
+| `MessageRequest.city`, `.timezone`, `.checklist` | `ConfigRepository` | operator-owned |
+
+`MessageRequest.warning` and `.forecast` are not rendered by this composer,
+but `WarningSummary.title` is the same scraped string, so change 2's composer
+inherits the same obligation. It is stated on the port for that reason.
 """
 
 from __future__ import annotations
@@ -32,6 +52,7 @@ from rain_alert.domain.reasons import (
     SenamhiUnavailableReason,
     WarningReason,
 )
+from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.values import Level, WarningLevel
 
 _LEVEL_LABELS_ES: Mapping[Level, str] = {
@@ -59,7 +80,11 @@ def _reason_line_es(reason: Reason) -> str | None:
     states the same fact in its own dedicated sentence."""
     match reason:
         case WarningReason(level=level, title=title):
-            return f"Aviso oficial del SENAMHI, nivel {_WARNING_LEVEL_LABELS_ES[level]}: {title}."
+            # `title` is scraped free text. It is the only source-derived
+            # string this body interpolates, and it must not be able to write
+            # the body's own line grammar. See `domain/sanitize.py`.
+            clean_title = sanitize_source_text(title)
+            return f"Aviso oficial del SENAMHI, nivel {_WARNING_LEVEL_LABELS_ES[level]}: {clean_title}."
         case ForecastThresholdReason(accumulated_mm=accumulated, hours=hours, probability_pct=probability):
             # The internal threshold value is deliberately not mentioned: it is
             # operator detail, not information a recipient can act on.

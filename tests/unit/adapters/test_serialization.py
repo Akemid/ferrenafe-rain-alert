@@ -67,6 +67,18 @@ class TestReasonRoundTrip:
             "probability_threshold_pct": None,
         }
 
+    def test_a_source_derived_title_is_sanitized_before_it_is_stored(self) -> None:
+        """This document is the CLI's `--json` calibration log and change 3's
+        DynamoDB audit attribute. `json.dumps` escapes control characters, but
+        with `ensure_ascii=False` it writes a bidi override through verbatim,
+        and the operator reads the result in a terminal. Sanitizing here is
+        what makes the `--json` path moot rather than merely narrower."""
+        reason = WarningReason(level=WarningLevel.RED, title="Aviso\nde lluvias \x1b[31m‮rojo")
+
+        stored = reason_to_dict(reason)
+
+        assert stored["title"] == "Aviso de lluvias [31mrojo"
+
     def test_the_optional_threshold_is_preserved_rather_than_dropped(self) -> None:
         reason = ForecastThresholdReason(accumulated_mm=9.5, hours=48, probability_pct=70, probability_threshold_pct=70)
 

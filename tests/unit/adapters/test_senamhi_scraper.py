@@ -204,6 +204,30 @@ class TestTheMultiHazardFilter:
         assert result.data[0].is_flood_relevant is True
         assert result.data[0].may_raise_imminent is False
 
+    def test_a_hostile_title_cannot_forge_an_extra_operator_note(self) -> None:
+        """Same class of defect as the community body, one layer over: the CLI
+        prints notes as `- senamhi: <note>` bullets, so a title carrying a
+        newline writes that grammar itself, and a live escape sequence lands
+        in the operator's terminal.
+
+        The title is deliberately still stored raw on `Warning` — normalizing
+        it for storage is what once put `EXTENSION` in front of recipients.
+        Sanitizing happens where the text is rendered for a human."""
+        mutated = _html(SENAMHI_ACTIVE_WARNING).replace(
+            "INCREMENTO DE TEMPERATURA DIURNA EN LA COSTA Y SIERRA",
+            "INCREMENTO DE TEMPERATURA DIURNA\n- senamhi: FORGED \x1b[31mNOTE\x1b[0m ‮",
+        )
+
+        result = SenamhiWarningScraper(StubHtmlFetcher(mutated)).fetch_current_warnings(REGION, NOW)
+
+        assert isinstance(result, Available)
+        assert len(result.notes) == 1
+        note = result.notes[0]
+        assert len(note.splitlines()) == 1
+        assert "\x1b" not in note
+        assert "‮" not in note
+        assert "INCREMENTO DE TEMPERATURA DIURNA" in note
+
     def test_every_row_is_still_parsed_even_though_one_row_is_returned(self) -> None:
         """The row count is what proves the parse worked, so it must count
         every data row — including the historical and the filtered ones."""

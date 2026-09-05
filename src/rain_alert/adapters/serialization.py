@@ -42,6 +42,7 @@ from rain_alert.domain.reasons import (
     SenamhiUnavailableReason,
     WarningReason,
 )
+from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.values import Level, SourceName, TimeWindow, WarningLevel
 
 
@@ -52,10 +53,24 @@ def _moment(value: Any, field: str) -> datetime:
 
 
 def reason_to_dict(reason: Reason) -> dict[str, Any]:
-    """One structured reason as a tagged document."""
+    """One structured reason as a tagged document.
+
+    The scraped title is sanitized on the way out. This document is the CLI's
+    `--json` calibration log and change 3's DynamoDB audit attribute, and both
+    are read by a person in a terminal. `json.dumps` escapes control
+    characters, but under `ensure_ascii=False` it writes a bidi override
+    through verbatim, so JSON encoding alone is not the guard it looks like.
+    Sanitizing here is what makes every field of the `--json` document safe,
+    rather than only the three (`message.body`, `reasons_en`, `notes`) that
+    are produced by an already-sanitizing renderer.
+    """
     match reason:
         case WarningReason(level=level, title=title):
-            return {"kind": ReasonKind.OFFICIAL_WARNING.value, "level": level.value, "title": title}
+            return {
+                "kind": ReasonKind.OFFICIAL_WARNING.value,
+                "level": level.value,
+                "title": sanitize_source_text(title),
+            }
         case ForecastThresholdReason(
             accumulated_mm=accumulated,
             hours=hours,

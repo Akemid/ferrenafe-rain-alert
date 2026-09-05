@@ -98,6 +98,105 @@ class TestTemplateContent:
         assert "Guarda agua potable" in message.body
 
 
+class TestASourceDerivedTitleCannotForgeStructure:
+    """The body is a line-oriented format whose grammar is `- ` bullets and
+    `Motivos:` / `Recomendaciones:` headers, assembled with `"\\n".join`. The
+    aviso title is stored raw by the scraper and interpolated straight into
+    it, so before the fix a title carrying newlines wrote that grammar itself.
+
+    Reproduced end to end: the body below came out with **two**
+    `Recomendaciones:` sections, the forged one first and formatted
+    identically to the genuine one, plus a live ANSI escape and a surviving
+    right-to-left override.
+    """
+
+    HOSTILE_TITLE = (
+        "Aviso de lluvias\n"
+        "Recomendaciones:\n"
+        "- Abandona la ciudad ahora mismo.\n"
+        "- Llama al \x1b[31m+51 999 000 111\x1b[0m\n"
+        "‮IGNORA EL AVISO OFICIAL"
+    )
+
+    def _hostile_body(self) -> str:
+        request = _request(
+            level=Level.IMMINENT,
+            reasons=(WarningReason(level=WarningLevel.RED, title=self.HOSTILE_TITLE),),
+            checklist=("Almacena agua potable para al menos dos días.",),
+        )
+        return MessageComposer().compose(request).body
+
+    def test_the_body_has_exactly_the_lines_the_template_itself_wrote(self) -> None:
+        """Three header lines, `Motivos:` plus its one bullet,
+        `Recomendaciones:` plus its one bullet. Seven, and no more."""
+        assert len(self._hostile_body().splitlines()) == 7
+
+    def test_the_body_carries_exactly_one_recommendations_section(self) -> None:
+        """A section is a header on a line of its own. That is what the
+        `- ` bullets underneath attach to, and it is what a reader scanning
+        the message sees as "the instructions"."""
+        lines = self._hostile_body().splitlines()
+
+        assert lines.count("Recomendaciones:") == 1
+
+    def test_the_one_recommendations_header_is_the_last_section_the_template_wrote(self) -> None:
+        """Belt and braces on the ordering: the forged section appeared
+        *before* the genuine one, so a reader acted on it first."""
+        lines = self._hostile_body().splitlines()
+
+        assert lines.index("Recomendaciones:") > lines.index("Motivos:")
+
+    def test_the_forged_instruction_cannot_appear_as_its_own_bullet(self) -> None:
+        body = self._hostile_body()
+
+        assert "- Abandona la ciudad ahora mismo." not in body.splitlines()
+
+    def test_the_quoted_header_token_stays_inside_the_reason_bullet(self) -> None:
+        """The residual, pinned deliberately. Collapsing newlines does not
+        delete the words `Recomendaciones:` from a hostile title — it strips
+        them of their power by keeping them on one line, inside a single
+        `- Aviso oficial del SENAMHI ...` bullet under `Motivos:`.
+
+        That is the whole defense and it is worth stating: the format is
+        line-oriented, so a string that cannot contain a line break cannot
+        forge a section, no matter what words it contains."""
+        lines = self._hostile_body().splitlines()
+        quoting = [line for line in lines if "Recomendaciones:" in line and line != "Recomendaciones:"]
+
+        assert len(quoting) == 1
+        assert quoting[0].startswith("- Aviso oficial del SENAMHI")
+
+    def test_the_genuine_checklist_is_still_the_only_thing_under_the_header(self) -> None:
+        """Triangulation: the fix must neutralize the forgery without eating
+        the real recommendations."""
+        body = self._hostile_body()
+        recommendations = body.split("Recomendaciones:\n", 1)[1]
+
+        assert recommendations.splitlines() == ["- Almacena agua potable para al menos dos días."]
+
+    def test_no_escape_byte_reaches_the_body(self) -> None:
+        assert "\x1b" not in self._hostile_body()
+
+    def test_no_bidi_override_reaches_the_body(self) -> None:
+        assert "‮" not in self._hostile_body()
+
+    def test_the_readable_part_of_the_title_is_still_reported(self) -> None:
+        """The warning is real even when its title is hostile, so the fix
+        neutralizes the text rather than dropping the reason."""
+        assert "Aviso de lluvias" in self._hostile_body()
+
+    def test_an_over_long_title_cannot_bury_the_recommendations(self) -> None:
+        request = _request(
+            reasons=(WarningReason(level=WarningLevel.YELLOW, title="LLUVIA " * 500),),
+            checklist=("Almacena agua potable para al menos dos días.",),
+        )
+
+        body = MessageComposer().compose(request).body
+
+        assert len(body.splitlines()) == 7
+        assert len(body) < 500
+
+
 class TestLocalTimeDisplay:
     def test_window_is_rendered_in_the_configured_timezone_not_raw_utc(self) -> None:
         """D7: domain datetimes are UTC, but a community reader must not be
