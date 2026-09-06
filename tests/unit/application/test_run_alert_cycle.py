@@ -90,6 +90,56 @@ class TestAuthorizedSendRunsTheFullChain:
         assert result.message.level == Level.IMMINENT
 
 
+class TestTheCycleRunsItsStepsInTheSpecifiedOrder:
+    """The `alert-cycle` requirement says the steps run **in order**, and that
+    recording happens **only after** `Notifier` delivery (W2).
+
+    Neither was assertable before: every spy owned a private call list, so
+    cross-port order was invisible and moving `record_alert` above `send_alert`
+    left the whole suite green. A recorded-but-undelivered alert makes the next
+    cycle believe the community was told, so the genuine alert is deduplicated
+    away and never sent.
+    """
+
+    def test_an_authorized_send_calls_the_ports_in_the_order_the_spec_lists(self) -> None:
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70))
+
+        RunAlertCycle(deps).execute()
+
+        assert deps.notifier.log.steps == (
+            ("config", "load"),
+            ("warnings", "fetch_current_warnings"),
+            ("forecast", "fetch_forecast"),
+            ("alerts", "get_active_outage"),
+            ("evaluator", "evaluate"),
+            ("alerts", "alerts_with_window_start_between"),
+            ("composer", "compose"),
+            ("contacts", "list_active"),
+            ("notifier", "send_alert"),
+            ("alerts", "record_alert"),
+        )
+
+    def test_the_alert_is_recorded_only_after_the_notifier_delivered_it(self) -> None:
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70))
+
+        RunAlertCycle(deps).execute()
+
+        log = deps.notifier.log
+        assert log.position_of("notifier", "send_alert") < log.position_of("alerts", "record_alert")
+
+    def test_each_logged_call_carries_the_detail_that_identifies_it(self) -> None:
+        """Order alone would be satisfied by a log of bare port names. The
+        detail is what lets a reader of a failure see *which* alert was
+        delivered and *which* one was recorded."""
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70))
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.message is not None
+        assert ("notifier", "send_alert", result.message.title) in deps.notifier.log.entries
+        assert ("alerts", "record_alert", result.assessment.level.value) in deps.notifier.log.entries
+
+
 class TestRecordAfterNotify:
     def test_recorded_alert_carries_level_window_and_message(self) -> None:
         forecast = _forecast(24, mm_total=29.8, probability_pct=70)
@@ -119,9 +169,7 @@ class TestTheWarningSummaryAgreesWithTheVerdict:
         highlands = _precipitation_warning(
             WarningLevel.RED, Zone.HIGHLANDS, title="SIERRA-RED", source_id="senamhi-sierra"
         )
-        coast = _precipitation_warning(
-            WarningLevel.ORANGE, Zone.COAST, title="COSTA-ORANGE", source_id="senamhi-costa"
-        )
+        coast = _precipitation_warning(WarningLevel.ORANGE, Zone.COAST, title="COSTA-ORANGE", source_id="senamhi-costa")
         deps = build_fake_deps(warnings=Available(data=(highlands, coast), fetched_at=NOW))
 
         result = RunAlertCycle(deps).execute()
@@ -143,9 +191,7 @@ class TestTheWarningSummaryAgreesWithTheVerdict:
         highlands = _precipitation_warning(
             WarningLevel.RED, Zone.HIGHLANDS, title="SIERRA-RED", source_id="senamhi-sierra"
         )
-        coast = _precipitation_warning(
-            WarningLevel.YELLOW, Zone.COAST, title="COSTA-YELLOW", source_id="senamhi-costa"
-        )
+        coast = _precipitation_warning(WarningLevel.YELLOW, Zone.COAST, title="COSTA-YELLOW", source_id="senamhi-costa")
         deps = build_fake_deps(
             warnings=Available(data=(highlands, coast), fetched_at=NOW),
             forecast=_forecast(48, mm_total=10.0, probability_pct=60),
@@ -162,9 +208,7 @@ class TestTheWarningSummaryAgreesWithTheVerdict:
     def test_a_forecast_only_verdict_names_no_warning_at_all(self) -> None:
         """A yellow aviso is on the page but no branch used it. Naming it would
         hand the composer an aviso the reasons do not support."""
-        coast = _precipitation_warning(
-            WarningLevel.YELLOW, Zone.COAST, title="COSTA-YELLOW", source_id="senamhi-costa"
-        )
+        coast = _precipitation_warning(WarningLevel.YELLOW, Zone.COAST, title="COSTA-YELLOW", source_id="senamhi-costa")
         deps = build_fake_deps(
             warnings=Available(data=(coast,), fetched_at=NOW),
             forecast=_forecast(24, mm_total=29.8, probability_pct=70),

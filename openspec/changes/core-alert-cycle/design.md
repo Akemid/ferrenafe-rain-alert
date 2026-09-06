@@ -667,7 +667,7 @@ Notices    1 emitted — source_unavailable (senamhi)
 | Layer | What | How |
 |---|---|---|
 | Domain rules | evaluator branches, dedup rules, the eight outage transitions, template content | `@pytest.mark.parametrize` over frozen case dataclasses; `ids=` carry the **spec scenario names** so a failure names the requirement it broke. No fakes, no I/O, milliseconds |
-| Use case | order of steps, dedup short-circuit, degraded wiring, record-after-notify, dual-outage suppression | `build_fake_deps(**overrides)` + hand-written recording spies that append typed call records. `unittest.mock` deliberately avoided: `Mock` satisfies any Protocol and would hide exactly the drift we care about |
+| Use case | order of steps, dedup short-circuit, degraded wiring, record-after-notify, dual-outage suppression | `build_fake_deps(**overrides)` + hand-written recording spies that append typed call records **and share one ordered `CallLog`** (§10.1). `unittest.mock` deliberately avoided: `Mock` satisfies any Protocol and would hide exactly the drift we care about |
 | Open-Meteo adapter | success slice, timeout, bad status, malformed payload, short horizon | `httpx.MockTransport` — offline, no extra dependency (D4) |
 | SENAMHI parser | active warning, history-only, broken structure, empty table, unknown level token, unparseable dates | the four pinned fixtures + a stub `HtmlFetcher`. Parsing never touches the network |
 | Repositories | round-trip, outage upsert/clear, atomic write | `tmp_path` fixture for the JSON adapter; the in-memory one is exercised by every use-case test |
@@ -680,9 +680,21 @@ Notices    1 emitted — source_unavailable (senamhi)
 **Fake sharing between tests and the CLI** — two distinct categories, deliberately separated:
 
 - **Local adapters that ship in `src/`** (`adapters/local/*`, `console_notifier`): real, supported implementations the CLI depends on. Tested like any adapter.
-- **Recording spies that live in `tests/support/`** (`fakes.py`, `wiring.py`): test-only, they assert call order and arguments. Exposed through `conftest.py` fixtures.
+- **Recording spies that live in `tests/support/`** (`fakes.py`, `wiring.py`): test-only, they let tests assert call order and arguments. Exposed through `conftest.py` fixtures.
 
 Both `tests/support/wiring.build_fake_deps()` and `entrypoints/wiring.build_local_deps()` return the same `CycleDependencies` type, so the object graph the CLI runs is the object graph the tests exercise — only the leaves differ. This is the reason D6 exists.
+
+### 10.1 Cross-port call order is observable, not asserted by claim
+
+*Added 2026-09-06, from the `sdd-verify` findings (W2).*
+
+The original spies each owned a **private** call list. That is enough to answer "what was this port given" and not enough to answer "what happened before what", so the two ordering guarantees in `specs/alert-cycle/spec.md` — the steps run in the stated order, and an alert is recorded **only after** `Notifier` delivery — had no test that could fail. Verification proved it: moving `deps.alerts.record_alert(record)` above `deps.notifier.send_alert(...)` left all 537 tests green. That reordering is exactly the defect the requirement exists to prevent — an alert recorded but never delivered makes the next cycle believe the community was told, so the genuine alert is deduplicated away and never sent.
+
+**Rule**: `build_fake_deps` creates one `CallLog` and hands the same instance to every leaf. Each spy appends `(port, method, detail)` to it in addition to its own typed list; `detail` is a short identifying string (city slug, level, message title) so a failure names which call it was. `CallLog.steps` gives the whole `(port, method)` sequence for a full-order assertion and `CallLog.position_of(port, method)` gives a relative-order one. The log is reachable from any leaf, e.g. `deps.notifier.log`.
+
+The evaluator is part of the order the spec states, so `LoggingRiskEvaluator` **subclasses** `RiskEvaluator` and delegates the verdict to `super().evaluate(...)`. Subclassing rather than duck-typing keeps `CycleDependencies.evaluator_factory`'s declared return type honest, and delegating means the fake wiring never evaluates risk differently from production.
+
+The per-port lists are kept. The two answer different questions, and collapsing them into the shared log would make every existing argument assertion read through a filter.
 
 ---
 
