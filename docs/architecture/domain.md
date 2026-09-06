@@ -277,11 +277,11 @@ This is conservative in the safe direction, and the reasoning is worth keeping. 
 
 `_union_window` produces the smallest window covering a set of windows. Branch 1 unions the windows of the matching warnings. Branch 3 unions those with the forecast's precipitation window. The forecast-only branches use `Forecast.precipitation_window` directly.
 
-### A docstring that disagrees with the code
+### One numbering, stated in the module docstring
 
-The module docstring says "two levels and six branches". There are five branch methods in the tuple, plus the fallthrough to `none`.
+There is exactly one branch numbering in this codebase and it is design.md section 5's: 1 imminent/official, 2 imminent/forecast, 3 prepare/combined, 4 prepare/forecast-only, 5 prepare/degraded, 6 none. "Six branches" means five named helpers in the tuple plus the fallthrough to `none` at the end of `evaluate`.
 
-Inside `_prepare_forecast_only`, the docstring calls itself "Branch 5" and refers to `_prepare_degraded` as "branch 4". The evaluation order is the opposite: `_prepare_forecast_only` is fourth and `_prepare_degraded` is fifth. The numbering appears to be inherited from the design document. The code is correct. The prose is stale.
+The docstrings used to invert 4 and 5 — `_prepare_forecast_only` called itself "Branch 5" and referred to `_prepare_degraded` as "branch 4" — which left a reader of `risk.py` reconciling two schemes. Corrected 2026-09-06 (verify findings S1, S2); the code was always right.
 
 ## `dedup.py`
 
