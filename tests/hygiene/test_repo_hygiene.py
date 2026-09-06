@@ -6,6 +6,7 @@ design.md section 11.
 
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -45,8 +46,8 @@ def test_gitignore_excludes_local_secrets_and_state() -> None:
 
 
 #: The literal placeholder inside the deliberate hostile-title attack payload.
-#: An allow-listed file is forgiven only for lines carrying exactly this
-#: string, so a real number in the same file still fails the scan.
+#: An allow-listed file is forgiven for the *matches* this string produces and
+#: for nothing else, so a real number sharing the same line still fails.
 HOSTILE_TITLE_PLACEHOLDER = "+51 999 000 111"
 
 #: Where that placeholder legitimately appears, and why. The `repo-hygiene`
@@ -71,28 +72,128 @@ SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
     ("API secret key", r"\bsk-[A-Za-z0-9]{20,}"),
 )
 
+#: Per pattern, the exact substrings `HOSTILE_TITLE_PLACEHOLDER` produces under
+#: that pattern. Forgiveness is granted for these strings and for nothing else,
+#: so a pattern the placeholder never triggers — every shape that is not
+#: phone-shaped — has an empty entry here and is forgiven nowhere.
+FORGIVEN_MATCHES: dict[str, frozenset[str]] = {
+    label: frozenset(match.group() for match in re.finditer(pattern, HOSTILE_TITLE_PLACEHOLDER))
+    for label, pattern in SECRET_PATTERNS
+}
 
-def _grep(pattern: str) -> list[str]:
-    """Every tracked, non-binary line matching `pattern`, as `path:line:text`.
+
+@dataclass(frozen=True)
+class Hit:
+    """One `git grep` result line: where it was found, and what was found."""
+
+    path: str
+    number: str
+    text: str
+
+    def __str__(self) -> str:
+        return f"{self.path}:{self.number}: {self.text.strip()}"
+
+
+def _grep(repo_root: Path = REPO_ROOT) -> list[Hit]:
+    r"""Every tracked, non-binary line matching any secret pattern.
 
     `git grep` rather than a filesystem walk: the requirement is about what is
     *committed*, so the file set has to be git's, and `-I` skips binaries.
+
+    One pass with every pattern as its own `-e`, rather than one pass per
+    pattern: which pattern matched is decided afterwards in Python, which is
+    what makes per-pattern forgiveness possible. `-P` rather than `-E` because
+    each expression is applied twice — once by git to find the line, once by
+    `re` to find the matches inside it — and only PCRE agrees with `re` on
+    `\b` and on lookaround. Under `-E`, `\b[0-9]{12}\b` silently matched
+    nothing at all.
     """
-    result = subprocess.run(
-        ["git", "grep", "-nIE", pattern],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    args = ["git", "grep", "-nIP"]
+    for _, pattern in SECRET_PATTERNS:
+        args += ["-e", pattern]
+    result = subprocess.run(args, cwd=repo_root, capture_output=True, text=True, check=False)
     # `git grep` exits 1 when there is no match, which is the healthy case.
     assert result.returncode in (0, 1), result.stderr
-    return [line for line in result.stdout.splitlines() if line]
+    hits = []
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        path, number, text = line.split(":", 2)
+        hits.append(Hit(path, number, text))
+    return hits
 
 
-def _is_allowed(hit: str) -> bool:
-    path, _, rest = hit.partition(":")
-    return path in PLACEHOLDER_ALLOW_LIST and HOSTILE_TITLE_PLACEHOLDER in rest
+def _offending_labels(path: str, text: str) -> list[str]:
+    """The pattern labels `text` offends, given that it was found at `path`.
+
+    Forgiveness is per match and per pattern. An allow-listed file is excused
+    only for a pattern the placeholder itself triggers, and only when *every*
+    match that pattern makes on the line is one the placeholder produces.
+    Anything else sharing the line still offends, under its own label.
+    """
+    offended = []
+    for label, pattern in SECRET_PATTERNS:
+        matches = {match.group() for match in re.finditer(pattern, text)}
+        if not matches:
+            continue
+        if path in PLACEHOLDER_ALLOW_LIST and matches <= FORGIVEN_MATCHES[label]:
+            continue
+        offended.append(label)
+    return offended
+
+
+def _scan(repo_root: Path = REPO_ROOT) -> list[str]:
+    """Every offending `label: location: line` in the repository, sorted."""
+    return sorted({f"{label}: {hit}" for hit in _grep(repo_root) for label in _offending_labels(hit.path, hit.text)})
+
+
+def _sample(*fragments: str) -> str:
+    """One secret-shaped sample, assembled from fragments at run time.
+
+    This file is itself scanned by the check below, so a sample written whole
+    would be a committed secret shape. Each fragment is split so that no
+    pattern matches any fragment where it is written.
+    """
+    return "".join(fragments)
+
+
+SAMPLE_AWS_ACCESS_KEY_ID = _sample("AKIA", "IOSFODNN7EXAMPLE")
+SAMPLE_MOBILE_GROUPED = _sample("98", "7 654 321")
+SAMPLE_MOBILE_INTERNATIONAL = _sample("+51", " ", SAMPLE_MOBILE_GROUPED)
+
+
+class TestTheAllowListForgivesTheMatchNotTheLine:
+    """The allow-list exists for one phone-shaped placeholder, and must forgive
+    that match alone. A substring test over the whole matched line, consulted
+    identically for every pattern, excuses everything else sharing the line —
+    including shapes the allow-list was never granted for.
+    """
+
+    PLACEHOLDER_LINE = f'HOSTILE_TITLE = "{HOSTILE_TITLE_PLACEHOLDER}"'
+    ALLOW_LISTED = "tests/unit/domain/test_template.py"
+
+    def test_the_documented_placeholder_line_is_forgiven(self) -> None:
+        assert _offending_labels(self.ALLOW_LISTED, self.PLACEHOLDER_LINE) == []
+
+    def test_the_same_line_outside_the_allow_list_still_offends(self) -> None:
+        assert _offending_labels("src/rain_alert/domain/template.py", self.PLACEHOLDER_LINE) != []
+
+    def test_another_secret_shape_sharing_the_line_is_not_forgiven(self) -> None:
+        line = f"{self.PLACEHOLDER_LINE}  # {SAMPLE_AWS_ACCESS_KEY_ID}"
+        assert _offending_labels(self.ALLOW_LISTED, line) == ["AWS access key id"]
+
+    def test_a_real_number_sharing_the_line_is_not_forgiven(self) -> None:
+        line = f"{self.PLACEHOLDER_LINE}  # {SAMPLE_MOBILE_INTERNATIONAL}"
+        assert "Peruvian phone number" in _offending_labels(self.ALLOW_LISTED, line)
+
+
+def test_forgiveness_is_granted_only_for_the_shape_the_placeholder_has() -> None:
+    """The allow-list was granted for a phone-shaped placeholder. Any other
+    pattern must be unforgivable everywhere, allow-listed file or not.
+    """
+    granted = {label for label, matches in FORGIVEN_MATCHES.items() if matches}
+
+    assert granted == {"Peruvian phone number"}
 
 
 def test_no_secret_or_personal_data_pattern_is_committed() -> None:
@@ -101,12 +202,11 @@ def test_no_secret_or_personal_data_pattern_is_committed() -> None:
     It was verified by hand at tasks 1.5 and 3.16 and again during
     verification, but a public repository needs the regression guard, not a
     record that someone once looked. The allow-list is deliberately narrow —
-    named files plus the exact placeholder string — because loosening the
-    pattern instead would disarm the check for every future file.
+    named files, one placeholder, and only the pattern that placeholder
+    triggers — because loosening the pattern instead would disarm the check
+    for every future file.
     """
-    offenders = [
-        f"{label}: {hit}" for label, pattern in SECRET_PATTERNS for hit in _grep(pattern) if not _is_allowed(hit)
-    ]
+    offenders = _scan()
 
     assert offenders == [], "committed secrets or personal data:\n" + "\n".join(offenders)
 
@@ -117,8 +217,9 @@ def test_every_allow_listed_placeholder_line_still_exists() -> None:
     If the attack payload is renamed or moved, this fails and the entry has to
     be revisited rather than left behind as a permanent hole.
     """
-    hits = _grep(SECRET_PATTERNS[0][1])
-    covered = {hit.partition(":")[0] for hit in hits if _is_allowed(hit)}
+    covered = {
+        hit.path for hit in _grep() if hit.path in PLACEHOLDER_ALLOW_LIST and HOSTILE_TITLE_PLACEHOLDER in hit.text
+    }
 
     assert covered == set(PLACEHOLDER_ALLOW_LIST), (
         f"allow-list entries with no matching line: {sorted(set(PLACEHOLDER_ALLOW_LIST) - covered)}"
