@@ -8,10 +8,12 @@ section 10) — no `unittest.mock`.
 from datetime import datetime, timedelta
 
 from rain_alert.application.run_alert_cycle import RunAlertCycle
-from rain_alert.domain.entities import Forecast, HourlyPoint
+from rain_alert.domain.entities import Forecast, HourlyPoint, Warning
+from rain_alert.domain.hazards import Phenomenon, Zone
 from rain_alert.domain.messages import AlertMessage, AlertRecord
+from rain_alert.domain.reasons import WarningReason
 from rain_alert.domain.sources import Available, Unavailable
-from rain_alert.domain.values import Level, NoticeKind, SourceName, TimeWindow, UnavailableReason
+from rain_alert.domain.values import Level, NoticeKind, SourceName, TimeWindow, UnavailableReason, WarningLevel
 from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
 
 NOW = DEFAULT_NOW
@@ -28,6 +30,25 @@ def _forecast(hours: int, *, mm_total: float, probability_pct: int, now: datetim
 
 def _unavailable(source: SourceName, *, now: datetime = NOW) -> Unavailable:
     return Unavailable(source=source, reason=UnavailableReason.TIMEOUT, detail="timed out", observed_at=now)
+
+
+def _precipitation_warning(level: WarningLevel, zone: Zone, *, title: str, source_id: str) -> Warning:
+    """A rainfall warning whose geography is stated, so `may_raise_imminent`
+    answers on the value itself rather than on the permissive default."""
+    return Warning(
+        source_id=source_id,
+        title=title,
+        level=level,
+        region=DEFAULT_CONFIG.region,
+        window=TimeWindow(start=NOW, end=NOW + timedelta(hours=6)),
+        emitted_at=NOW,
+        phenomenon=Phenomenon.PRECIPITATION,
+        zone=zone,
+    )
+
+
+def _cited_warning_titles(result_reasons: tuple[object, ...]) -> list[str]:
+    return [reason.title for reason in result_reasons if isinstance(reason, WarningReason)]
 
 
 def _record(level: Level, window: TimeWindow) -> AlertRecord:
@@ -81,6 +102,79 @@ class TestRecordAfterNotify:
         assert recorded.level == result.assessment.level
         assert recorded.window == result.assessment.window
         assert recorded.message == result.message
+
+
+class TestTheWarningSummaryAgreesWithTheVerdict:
+    """`MessageRequest.warning` must name a warning the verdict actually rested
+    on (W1).
+
+    Choosing by `WarningLevel` alone let the request name the highlands warning
+    branch 1 refused to act on while `assessment.reasons` named the coastal one
+    that earned the level. Nothing renders `warning` today, but it is a pinned
+    contract and change 2's composer reads it, so the message would quote one
+    aviso while the reasons quote another.
+    """
+
+    def test_an_imminent_verdict_names_the_coastal_warning_that_earned_it(self) -> None:
+        highlands = _precipitation_warning(
+            WarningLevel.RED, Zone.HIGHLANDS, title="SIERRA-RED", source_id="senamhi-sierra"
+        )
+        coast = _precipitation_warning(
+            WarningLevel.ORANGE, Zone.COAST, title="COSTA-ORANGE", source_id="senamhi-costa"
+        )
+        deps = build_fake_deps(warnings=Available(data=(highlands, coast), fetched_at=NOW))
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.assessment.level == Level.IMMINENT
+        assert _cited_warning_titles(result.assessment.reasons) == ["COSTA-ORANGE"]
+        summary = result.message_request.warning
+        assert summary is not None
+        assert (summary.title, summary.level, summary.source_id) == (
+            "COSTA-ORANGE",
+            WarningLevel.ORANGE,
+            "senamhi-costa",
+        )
+
+    def test_a_prepare_verdict_names_the_most_severe_warning_that_contributed(self) -> None:
+        """The combined branch counts a highlands warning, so on `prepare` the
+        highlands red *is* the right answer — the rule is "most severe among
+        the contributors", not "never highlands"."""
+        highlands = _precipitation_warning(
+            WarningLevel.RED, Zone.HIGHLANDS, title="SIERRA-RED", source_id="senamhi-sierra"
+        )
+        coast = _precipitation_warning(
+            WarningLevel.YELLOW, Zone.COAST, title="COSTA-YELLOW", source_id="senamhi-costa"
+        )
+        deps = build_fake_deps(
+            warnings=Available(data=(highlands, coast), fetched_at=NOW),
+            forecast=_forecast(48, mm_total=10.0, probability_pct=60),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.assessment.level == Level.PREPARE
+        assert _cited_warning_titles(result.assessment.reasons) == ["SIERRA-RED", "COSTA-YELLOW"]
+        summary = result.message_request.warning
+        assert summary is not None
+        assert summary.title == "SIERRA-RED"
+
+    def test_a_forecast_only_verdict_names_no_warning_at_all(self) -> None:
+        """A yellow aviso is on the page but no branch used it. Naming it would
+        hand the composer an aviso the reasons do not support."""
+        coast = _precipitation_warning(
+            WarningLevel.YELLOW, Zone.COAST, title="COSTA-YELLOW", source_id="senamhi-costa"
+        )
+        deps = build_fake_deps(
+            warnings=Available(data=(coast,), fetched_at=NOW),
+            forecast=_forecast(24, mm_total=29.8, probability_pct=70),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.assessment.level == Level.IMMINENT
+        assert _cited_warning_titles(result.assessment.reasons) == []
+        assert result.message_request.warning is None
 
 
 class TestShortHorizonForecastsDoNotCrashTheCycle:
