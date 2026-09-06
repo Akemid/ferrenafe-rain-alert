@@ -913,3 +913,185 @@ parsing (`7294b69`, `cf960d9`, `311dbb8`), the domain rule (`d6e6d2d`,
   asserting against behaviour production does not have. Running the fake
   through the same port-contract fixture as the real adapters costs three
   lines.
+
+## Security review remediation (2026-09-05)
+
+Three confirmed findings from an adversarial security review of the slice-3
+branch, plus one concurrency item judged and deliberately deferred with a
+concrete proposal. Strict TDD throughout: a failing test first, confirmed to
+fail for the intended reason, then the implementation. Every finding was
+**reproduced before it was fixed** rather than argued from the code.
+
+### F1 (HIGH) — a scraped aviso title could forge structure in the community message
+
+`Warning.title` is stored raw, deliberately. `domain/template.py` interpolated
+it into a body assembled with `"\n".join`, and that body is a line-oriented
+format whose grammar is `- ` bullets and `Motivos:` / `Recomendaciones:`
+headers. Nothing stripped newlines, control characters or bidi overrides, and
+nothing capped length.
+
+Reproduced. A title carrying newlines produced this:
+
+```text
+Motivos:
+- Aviso oficial del SENAMHI, nivel rojo: Aviso de lluvias
+Recomendaciones:
+- Abandona la ciudad ahora mismo.
+- Llama al <ESC>[31m+51 999 000 111<ESC>[0m
+<U+202E>IGNORA EL AVISO OFICIAL.
+Recomendaciones:
+- Almacena agua potable para al menos dos días.
+```
+
+Two `Recomendaciones:` sections, the forged one **first** and formatted
+identically to the genuine one, a live ANSI escape, and a surviving
+right-to-left override. A person deciding what to do in a flood cannot tell
+them apart, and that is the entire value of the message.
+
+New `domain/sanitize.py`, one function, applied at every boundary where source
+text is rendered for a human:
+
+| Boundary | Audience |
+|---|---|
+| `domain/template.py` | recipient |
+| `domain/reasons.render_reason_en` | operator |
+| `adapters/senamhi_scraper.parse_notes` | operator |
+| `adapters/serialization.reason_to_dict` | operator, and change 3's audit trail |
+
+The cap is 200 characters, chosen from data: the longest live title across the
+12 399-row 2026-09-04 harvest is well under 150, suffix included.
+
+**The operator renderer sanitizes too, and that was a decision.** The
+`Reasons` and `Notes` blocks are bullet lists printed straight to a terminal,
+so a newline forges a line there as well and an ANSI escape actually executes.
+The operator audit trail is also where someone decides whether a heat warning
+went out to a village, which makes a forged line there at least as costly as
+one in the body.
+
+The invariant is stated on the `MessageComposer` port, not only in
+`template.py`, so change 2's agent-backed composer inherits it. An agent does
+not weaken the requirement: a model asked to quote a title quotes it verbatim,
+newlines included.
+
+### F2 (MEDIUM) — an uncaught `ValueError` aborted the entire cycle
+
+`json.loads` accepts bare `NaN` and `Infinity` by default, so both arrive from
+a well-formed HTTP 200. `_percent` called `int(value)`; `int(float("nan"))`
+raises `ValueError`, which is not a `FetchError`, so it escaped the adapter's
+only `except` clause — and `RunAlertCycle` has no handler either. The run died
+with a traceback, producing no alert and no operator notice, which is strictly
+worse than the tested unavailable path.
+
+`Infinity` millimetres was quieter and worse. Reproduced: it parsed as a valid
+reading and `accumulated_mm(24)` returned `inf`, clearing `imminent_mm_24h`
+unconditionally. An upstream glitch decided the alert level.
+
+Fixed at both layers, because the adapter is the first line and the entity is
+where the invariant is claimed: `_millimetres` and `_percent` reject
+non-finite, negative and out-of-range readings, and `HourlyPoint.__post_init__`
+enforces the same ranges. Both `OpenMeteoForecastProvider` and
+`OfflineOpenMeteoProvider` gained the catch-all `SenamhiWarningScraper` had
+carried since it was written — the forecast adapter simply was not following
+its own codebase's rule.
+
+`tests/unit/adapters/test_offline_sources.py` is new; the offline adapters had
+no tests of their own.
+
+### F3 (LOW) — the `--json` document was not parseable
+
+`build_local_deps` built `ConsoleNotifier()` with no stream, so it defaulted to
+stdout — the stream the CLI prints the document to. Verified against the real
+entry point, before:
+
+```text
+stdout begins: '------------------------------------------------------------'
+json.loads FAILED: JSONDecodeError Expecting value: line 1 column 1 (char 0)
+```
+
+and after:
+
+```text
+json.loads(stdout): OK   sent = True  recipients = 1
+stderr carries the dry-run block: True
+```
+
+`build_local_deps` now takes a `notifier_stream` and the CLI passes stderr
+under `--json`. Redirected, never suppressed. Three existing `--json` tests had
+been quietly working around the defect by parsing from `output[output.index("{"):]`;
+they now parse the whole stream.
+
+### Judged and deferred — no advisory lock on the state file
+
+Measured, not theorised: two repository instances reading before either writes
+leaves exactly one record on disk. A lost record is a *dedup* record, so the
+consequence is a community re-alerted for a window already delivered.
+
+Not fixed here, and not half-fixed. **A lock around the write would not work**
+— both writes are already atomic through `os.replace`, and the loss is a
+read-modify-write lost update from the second process's stale snapshot, so the
+lock has to span the first read of a cycle to its last write. That needs a
+lifecycle `AlertRepository` does not have, `fcntl.flock` is POSIX-only, and
+change 3 replaces this adapter with DynamoDB where the right mechanism is a
+conditional write rather than a file lock. The concrete proposal — a
+context-managed sidecar lock file entered by `cli.main` around
+`RunAlertCycle.execute()`, with a timeout that degrades to `EXIT_CANNOT_START`
+— is recorded in tasks.md Open Items.
+
+### Remediation commits
+
+`bc25e4a` fix(domain): stop a scraped aviso title from forging structure in the message ·
+`b38ed34` fix(adapters): degrade the cycle on an anomalous forecast value, never abort it ·
+`f611fce` fix(entrypoints): give the --json document standard output to itself ·
+plus the documentation commit carrying these notes.
+
+### Verification gate
+
+All five commands exit 0. `uv run pytest` 537 passed, 15 deselected;
+`uv run pytest -m integration` 10 passed, 5 skipped (data-dependent canaries —
+no LLOVIZNA, GARUA, NEVADA, GRANIZO or FRIAJE row in force on the live page
+today), 537 deselected; `ruff check`, `ruff format --check` and `mypy` clean on
+35 source files. `uv run rain-alert-cycle` ran green against the live sources:
+both available, level `none`, nothing sent, exit 0, and the two warnings in
+force (a wind aviso and the RED heat aviso) correctly discarded with the
+reasons stated in the `Notes` block.
+
+### Learned / Gotchas from the security remediation
+
+- **A line-oriented format makes every interpolated string a potential
+  parser.** The defense that actually works is not escaping the header words;
+  it is guaranteeing the string cannot contain a line break. A hostile title
+  that still quotes `Recomendaciones:` ends up inside one bullet under
+  `Motivos:`, which is inert. A test pins both halves, so the residual is
+  documented rather than assumed away.
+- **The first assertion for a security fix can measure the wrong thing.** The
+  initial test counted occurrences of the substring `Recomendaciones:` and
+  failed after the fix, because the words survive inside the quoted title. The
+  security property is "exactly one *section*", and a section is a line. The
+  assertion was corrected to count header lines and two assertions were
+  *added* — never relaxed — around ordering and containment.
+- **`json.dumps` is not the guard it looks like.** It escapes control
+  characters, but under `ensure_ascii=False` it writes U+202E through
+  verbatim. Three of the four free-text paths in the `--json` document were
+  already covered by an upstream sanitizing renderer and one was not, which is
+  why `reason_to_dict` sanitizes rather than relying on the encoder.
+- **A test harness can be safer than the wire it stands in for.**
+  `httpx.Response(json=...)` encodes with `allow_nan=False`, so it *cannot*
+  express the bare `NaN` the real endpoint can produce — the first version of
+  the test passed through the new catch-all instead of the range check it was
+  written for. The cases now serve raw text, and a guard test pins that the
+  bare token really does survive `json.dumps` and `json.loads`, so they cannot
+  go vacuous.
+- **A sibling adapter's comment is a rule the codebase already agreed to.**
+  `SenamhiWarningScraper` carried "a parser bug must degrade the cycle, not
+  abort it" from the day it was written. The forecast adapter never adopted it,
+  and the gap was invisible until a value the parser could not handle showed
+  up. Worth grepping for a rule's *comment* across siblings, not just its code.
+- **Three existing tests were silently documenting the bug they worked
+  around.** `json.loads(output[output.index("{"):])` reads as defensive
+  parsing; it was actually the only reason the `--json` suite was green while
+  the flag was broken for every real user. A workaround inside a test is a
+  finding.
+- **"Add a lock" was the wrong shape of fix, and checking cost five minutes.**
+  The obvious `flock` around `_write_atomically` would have closed nothing,
+  because the writes were never the racing part. Reproducing the lost update
+  first is what turned a plausible one-liner into a correctly scoped deferral.

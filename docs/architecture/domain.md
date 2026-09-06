@@ -11,6 +11,7 @@ The domain imports nothing but the standard library and other domain modules. Th
 | `values.py` | Enums and range-checked value objects everything else is built from. |
 | `sources.py` | Availability as a tagged union. |
 | `hazards.py` | Which official warnings may drive a flood alert, and how far. |
+| `sanitize.py` | The one filter every source-derived free text passes through. |
 | `entities.py` | `Warning`, `Forecast`, `RiskAssessment` and their accessors. |
 | `config.py` | The injected thresholds and the per-city configuration. |
 | `reasons.py` | Structured reasons, and the English rendering for the operator. |
@@ -101,6 +102,42 @@ The previous rule discarded 144 of the 243 live precipitation rows on the Lambay
 
 Returns a string explaining why a warning was discarded, or `None` when it was kept. The operator audit trail needs this. Without it, "the filter removed everything" and "the scraper is broken" look identical from outside. The string is used by the scraper to build `Available.notes`.
 
+## `sanitize.py`
+
+One function, `sanitize_source_text(value)`, and it exists because of a defect that was reproduced end to end rather than argued about.
+
+**The defect.** `Warning.title` is stored raw, deliberately — see [adapters.md](./adapters.md) for why normalizing it for storage once put `EXTENSION` in front of recipients. `template.py` interpolates that title into a body assembled with `"\n".join`, and that body is a line-oriented format whose grammar is `- ` bullets and `Motivos:` / `Recomendaciones:` headers. A title containing newlines therefore writes that grammar itself.
+
+A hostile title produced a body with **two** `Recomendaciones:` sections, the forged one ahead of the genuine one and formatted identically, plus a live ANSI escape sequence and a surviving right-to-left override. A person deciding what to do in a flood cannot tell the forged instructions from the system's own, and that is the entire value of the message.
+
+**What it does**, in this order:
+
+| Step | Rule | Why in this order |
+|---|---|---|
+| 1 | Every whitespace run, newlines and tabs included, becomes a single space. | Newlines are *replaced*, not deleted. Deleting would weld two words together and change what the title says. |
+| 2 | C0 and C1 control characters are removed. | This takes the `ESC` out of an ANSI sequence. The remaining `[31m` is inert text. |
+| 3 | Unicode bidi controls are removed: U+202A–U+202E and U+2066–U+2069. | An override reverses the display order of everything after it. `json.dumps` escapes control characters but writes these through verbatim under `ensure_ascii=False`. |
+| 4 | The text is trimmed and capped at `MAX_SOURCE_TEXT_LENGTH`, with a visible `…`. | The cap is applied *after* the removals, so padding with control characters is not a way to push real text past it. |
+
+`MAX_SOURCE_TEXT_LENGTH` is 200. The number comes from the 2026-09-04 harvest of all 12 regional pages: the longest live title, suffix included, is well under 150 characters, and the one quoted in the code is 100. 200 leaves room for a longer real title than SENAMHI has ever published while stopping a hostile one from outgrowing the message it is quoted in.
+
+**It is deliberately not an allow-list of characters.** Aviso titles are Spanish, accented, and carry em dashes and parentheses. A rule that stripped non-ASCII would mangle every real one. The rule removes what has no legitimate place in a one-line title and leaves the language alone.
+
+**It is idempotent**, because it is applied at every boundary where source text is rendered for a human, and those boundaries must not have to know about each other.
+
+### Where it is applied, and why it is not applied at parse time
+
+| Boundary | Module | Audience |
+|---|---|---|
+| The Spanish community body | `domain/template.py` | recipient |
+| The English operator audit line | `domain/reasons.py` | operator |
+| The `Notes` block | `adapters/senamhi_scraper.parse_notes` | operator |
+| The persisted and `--json` document | `adapters/serialization.reason_to_dict` | operator, and change 3's audit trail |
+
+The alternative was to sanitize once when the title enters the domain, in the scraper. It was rejected: `Warning.title` is the record of what the source actually published, and the scraper's docstring already explains what happened the last time that value was normalized on the way in. Sanitizing is a rendering concern, so it happens at each rendering boundary — through one shared function, so there is one rule and not four.
+
+Why the operator boundaries are included is a decision rather than an oversight. The operator's `Reasons` and `Notes` blocks are bullet lists printed straight to a terminal, so a newline forges a line there just as it does in the body, and an ANSI escape actually executes. The operator audit trail is also where someone decides whether a heat warning went out to a village, which makes a forged line there at least as costly as one in the body.
+
 ## `entities.py`
 
 ### `Warning`
@@ -112,6 +149,17 @@ A normalized SENAMHI entry: `source_id`, `title`, `level`, `region`, `window`, `
 Two properties delegate to `hazards.py`: `is_flood_relevant` and `may_raise_imminent`.
 
 Note where each is actually consumed, because the two are not applied at the same layer. `may_raise_imminent` is read by `RiskEvaluator._imminent_from_official`. `is_flood_relevant` is not read anywhere in `src/` outside its own definition: the scraper applies the same rule through `discard_reason`, so warnings that reach the evaluator have already been filtered. The property exists for inspection and is asserted by the live canary tests.
+
+### `HourlyPoint`
+
+One hourly forecast sample: `at`, `precipitation_mm`, `probability_pct`. `__post_init__` enforces three ranges, and it enforces them here rather than only in the adapter for the same reason `Coordinates` and `TimeWindow` enforce theirs — this is where the invariant is claimed.
+
+| Field | Rule |
+|---|---|
+| `precipitation_mm` | Must be finite, and must not be negative. |
+| `probability_pct` | Must be in 0 to 100. |
+
+**`Infinity` millimetres was not hypothetical.** `json.loads` accepts bare `NaN` and `Infinity` by default, so an anomalous upstream value parsed as a valid reading, accumulated to an infinite rainfall total, and cleared `imminent_mm_24h` unconditionally. An upstream glitch decided the alert level for a real community. The adapter now rejects it at parse time too; see [adapters.md](./adapters.md).
 
 ### `Forecast`
 
@@ -175,6 +223,8 @@ Two fields deserve a note. `ForecastThresholdReason.hours` is the horizon actual
 `ReasonKind` is a serializable tag, needed because reasons are persisted. `AlertRecord.reasons` becomes the `reasons` attribute of the stored item, and the CLI's `--json` output emits it too.
 
 `render_reason_en(reason)` produces the operator line. `render_reasons_en(reasons)` renders a tuple in the order the evaluator produced it. Both `match` statements end in `assert_never`, so adding a variant without giving it wording is a type error rather than a silent fallthrough.
+
+**`WarningReason.title` is sanitized on the way out**, through `sanitize_source_text`. It is the only source-derived free text any `Reason` variant carries: `level` is a `WarningLevel` from a fixed token map, and every `ForecastThresholdReason` field is a number rendered with a format specifier. The rationale for sanitizing the *operator's* line, not only the recipient's, is in the `sanitize.py` section above.
 
 ## `risk.py`
 
@@ -322,6 +372,14 @@ Recomendaciones:
 ```
 
 The title is `Alerta de lluvias — {city} — {level label}`. Level labels are `sin riesgo`, `prepárate` and `riesgo inminente`. Warning level labels are `amarillo`, `naranja` and `rojo`. `AlertMessage.valid_until` is the window end.
+
+### No source-derived text may write that structure
+
+The fixed line order above is a promise to the reader, and it only holds if nothing the system did not write can insert a line. **Every source-derived free text this module renders goes through `sanitize_source_text` first.** The module docstring carries the audit field by field; the short version is that `WarningReason.title` is the only one, and the rest is either configuration or a number.
+
+The defense is the line orientation itself. A string that cannot contain a line break cannot forge a section, whatever words it contains — a hostile title that quotes `Recomendaciones:` ends up inside one `- Aviso oficial del SENAMHI ...` bullet under `Motivos:`, which is a very different thing from a second block formatted identically to the real one. `TestASourceDerivedTitleCannotForgeStructure` pins both halves: the forged section is gone, and the quoted words that remain stay inside their bullet.
+
+The invariant is stated on the `MessageComposer` port rather than only here, so change 2's agent-backed composer inherits it. See [ports-and-application.md](./ports-and-application.md).
 
 ### Why the composer cannot decide anything
 

@@ -8,7 +8,7 @@ Two modules. `wiring.py` builds the object graph. `cli.py` parses arguments, run
 
 ### `wiring.py`
 
-`build_local_deps(state_file, now, offline_fixtures=None)` returns one `CycleDependencies`.
+`build_local_deps(state_file, now, offline_fixtures=None, notifier_stream=None)` returns one `CycleDependencies`.
 
 | Port | Live wiring | With `--offline-fixtures` |
 |---|---|---|
@@ -17,7 +17,7 @@ Two modules. `wiring.py` builds the object graph. `cli.py` parses arguments, run
 | `forecast` | `OpenMeteoForecastProvider()` | `OfflineOpenMeteoProvider(dir / "open_meteo.json")` |
 | `composer` | `MessageComposer()` | same |
 | `contacts` | `StaticContactRepository()` | same |
-| `notifier` | `ConsoleNotifier()` | same |
+| `notifier` | `ConsoleNotifier(notifier_stream)` | same |
 | `alerts` | `JsonFileAlertRepository(state_file)` | same |
 | `evaluator_factory` | `RiskEvaluator` | same |
 | `now` | the callable passed in | same |
@@ -25,6 +25,8 @@ Two modules. `wiring.py` builds the object graph. `cli.py` parses arguments, run
 Only two leaves change. **`--offline-fixtures` swaps the fetch leaves and nothing else.** The real scraper and the real payload parser still do the work, which is what makes an offline run trustworthy for calibration.
 
 The fixture file names are pinned as `SENAMHI_FIXTURE_NAME` and `OPEN_METEO_FIXTURE_NAME`, and re-exported from `cli.py` so the help text and the tests use the same constants.
+
+**`notifier_stream` exists because the caller, not the notifier, knows what else is on standard output.** Passing `None` keeps the notifier's own default of `sys.stdout`. The CLI passes standard error under `--json` and its own standard output otherwise; the reason is under [The JSON view](#the-json-view) below. It is a stream rather than a boolean flag because the notifier's job is to write somewhere, not to know that `--json` exists.
 
 This function mirrors `tests.support.wiring.build_fake_deps`. Both return the same `CycleDependencies` type, so the object graph the CLI runs is the object graph the tests exercise. Only the leaves differ. That is the reason decision `D6` bundles the ports at all.
 
@@ -87,12 +89,22 @@ The coordinates line prints `(PLACEHOLDER — pending confirmation)` whenever `c
 
 The document also carries `coordinates_are_placeholder`, so a calibration log records whether the coordinates were confirmed at the time of the run.
 
+**Under `--json`, standard output carries the document and nothing else.**
+
+`ConsoleNotifier` also defaulted to standard output, so on any run that sent an alert or emitted an operator notice, the document was preceded by a `[DRY-RUN ALERT]` or `[OPERATOR NOTICE]` block and `json.loads` failed. The flag is documented as machine-readable output for calibration logging, so it broke on precisely the runs worth logging — a send and a degraded cycle are the two things a calibration log exists to record.
+
+The CLI now hands the notifier standard error whenever `--json` is set. The blocks are **redirected, never suppressed**: the dry-run block is the operator's proof of what would have been delivered, and losing it to gain a parseable document would be a bad trade. Without `--json` the whole operator view belongs together, so the notifier writes to the same stream everything else does.
+
+Passing the CLI's own stream on the human-readable path also closes a smaller latent bug. `ConsoleNotifier()` resolved `sys.stdout` for itself, so it ignored a stream explicitly injected into `main` — an embedding caller could capture the report and not the blocks.
+
+`TestTheJsonDocumentOwnsStandardOutputAlone` pins all of it, including the triangulating case that the human-readable path still prints the block on standard output. Three pre-existing `--json` tests used to parse from `output[output.index("{"):]`, which quietly worked around the defect; they now parse the whole stream.
+
 ## Part 2: the test architecture
 
-455 tests run by default, in about a third of a second. 15 more are deselected because they need the network.
+537 tests run by default, in about half a second. 15 more are deselected because they need the network.
 
 ```bash
-uv run pytest                # the 455 offline tests
+uv run pytest                # the 537 offline tests
 uv run pytest -m integration # the 15 live canaries
 ```
 
@@ -102,16 +114,16 @@ The deselection comes from `addopts = "-q -m 'not integration'"` in `pyproject.t
 
 | Directory | Tests | What it checks |
 |---|---|---|
-| `tests/unit/domain/` | 156 | Every rule, value object and rendering. |
-| `tests/unit/adapters/` | 244 | Parsing, classification, persistence, notification, serialization. |
+| `tests/unit/domain/` | 212 | Every rule, value object and rendering, including the sanitizer. |
+| `tests/unit/adapters/` | 264 | Parsing, classification, persistence, notification, serialization, offline sources. |
 | `tests/unit/application/` | 16 | The lookback range, and the cycle's call order. |
-| `tests/unit/entrypoints/` | 29 | The CLI output, exit codes, clocks and wiring. |
+| `tests/unit/entrypoints/` | 35 | The CLI output, the stream split, exit codes, clocks and wiring. |
 | `tests/unit/test_package_smoke.py` | 2 | The package and its five layer sub-packages import under their expected names. |
 | `tests/architecture/` | 4 | The layer boundary, by static analysis. |
 | `tests/hygiene/` | 4 | Public-repository constraints. |
 | `tests/integration/` | 15 | The live SENAMHI page and the live Open-Meteo API. |
 
-The heaviest single files are `test_senamhi_classification.py` at 61, `test_local_repositories.py` at 59, `test_open_meteo.py` at 44 and `test_risk.py` at 43.
+The heaviest single files are `test_senamhi_classification.py` at 61, `test_local_repositories.py` at 59, `test_open_meteo.py` at 56 and `test_risk.py` at 43.
 
 ### Why every test directory has an `__init__.py`
 
@@ -224,7 +236,7 @@ The division is visible in the test docstrings and is worth naming, because it i
 
 | Command | What it enforces |
 |---|---|
-| `uv run pytest` | The 455 offline tests. |
+| `uv run pytest` | The 537 offline tests. |
 | `uv run pytest -m integration` | The 15 live canaries. |
 | `uv run ruff check .` | Lint rules `E`, `W`, `F`, `I`, `B`, `C4`, `UP`, `SIM`, with `E501` ignored and a 120 column limit. |
 | `uv run ruff format --check .` | Formatting. |

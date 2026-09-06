@@ -22,6 +22,12 @@ All seven live in one file, `src/rain_alert/ports/__init__.py`. They are `typing
 
 **Fakes do not subclass these protocols.** The recording spies in `tests/support/fakes.py` declare no base class. Structural typing means an accidental signature change in a port shows up as a type error at the wiring site, which is exactly the drift the tests exist to catch.
 
+**`MessageComposer` carries a sanitization invariant, stated on the port.** It is the only port through which recipient-facing text is produced, which makes it the chokepoint: every source-derived free text reaching `AlertMessage.title` or `AlertMessage.body` must pass through `domain.sanitize.sanitize_source_text` first.
+
+"Source-derived" means the system did not write it. Today that is the scraped SENAMHI aviso title, carried on `WarningReason.title` and `WarningSummary.title`. It excludes operator-owned configuration — `city`, `timezone`, `checklist` — and the evaluator's own numbers.
+
+The invariant lives on the port rather than only in `template.py` so that change 2's agent-backed composer inherits it rather than rediscovering it. An agent does not weaken the requirement and does not replace it: a model asked to quote a title will quote it verbatim, newlines included, and text arriving from a scraped page is precisely the input a composer must not be handed unfiltered. The reproduced defect and the four rendering boundaries are described in [domain.md](./domain.md).
+
 **`Notifier` has two methods, not one method taking a union.** This is decision `D3`. A community alert and an operator notice serve different audiences, are formatted differently, and in change 3 will travel over different channels. Collapsing them into one method would have pushed a type check into every implementation.
 
 ### The ports package imports almost nothing

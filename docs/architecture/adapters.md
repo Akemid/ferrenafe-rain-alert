@@ -79,11 +79,28 @@ It then drops every sample stamped before the hour containing `now`, and require
 
 The per-value helpers `_millimetres` and `_percent` reject booleans explicitly, because `bool` is a subclass of `int` in Python and `True` would otherwise parse as 1 mm.
 
+They also reject non-finite and out-of-range readings, and that check is not cosmetic.
+
+**`json.loads` accepts bare `NaN` and `Infinity` by default.** Both therefore arrive from a perfectly well-formed HTTP 200, and each used to cause a different failure.
+
+| Value | What it used to do |
+|---|---|
+| `NaN` probability | `int(float("nan"))` raises `ValueError`, which is not a `FetchError`, so it escaped the adapter's only `except` clause. `RunAlertCycle` has no handler either, so the whole run died with a traceback — no alert and no operator notice, which is strictly worse than a declared outage. |
+| `Infinity` millimetres | Parsed as a valid reading, accumulated to an infinite rainfall total, and cleared `imminent_mm_24h` unconditionally. An upstream glitch decided the level. |
+
+Anomalous upstream values are most likely during exactly the extreme weather this tool exists for, which is what makes this worth a range check rather than a note.
+
+`_millimetres` requires a finite, non-negative number. `_percent` checks finiteness **before** `int(value)`, then requires 0 to 100. Both report `MALFORMED_PAYLOAD`. `HourlyPoint` enforces the same ranges in its own `__post_init__` — the adapter is the first line and the entity the second, so a future caller that skips these helpers still cannot build an unusable point. The construction is wrapped so that the entity's `ValueError` leaves as a `FetchError` like everything else.
+
 `_timestamp` attaches UTC to a naive string. The request pins `timezone=UTC`, so the API returns values like `2026-09-04T00:00` with no offset. The zone is attached here rather than assumed later.
 
 ### `OpenMeteoForecastProvider`
 
-The port implementation. Its transport is injectable, so this exact class is exercised offline through `httpx.MockTransport` rather than a substitute. `fetch_forecast` catches `FetchError` and returns `Unavailable` carrying the reason and the detail. No exception escapes.
+The port implementation. Its transport is injectable, so this exact class is exercised offline through `httpx.MockTransport` rather than a substitute. `fetch_forecast` catches `FetchError` and returns `Unavailable` carrying the reason and the detail.
+
+**No exception escapes, including the ones nobody predicted.** The `FetchError` clause alone was a claim rather than a guarantee, and the `NaN` case above is how that claim failed. There is now a catch-all, reporting `TRANSPORT_ERROR` and naming the exception type, exactly as `SenamhiWarningScraper` already did. The sibling had carried that rule and its comment since it was written; this adapter simply was not following it.
+
+The reason code does not change any routing — only `Available` versus `Unavailable` does — so matching the sibling buys one thing: an unfamiliar detail string reads the same wherever an operator meets it.
 
 ## `senamhi_classification.py`
 
@@ -190,6 +207,8 @@ Relevance is the domain rule. `discard_reason(warning.phenomenon)` returns a str
 
 **Anomalies are summarized, not listed.** A structural change can produce hundreds, and the operator needs the fact that rows were lost, not a wall of them. The note reads `N of M rows were unparseable and skipped; first: ...`.
 
+**Every source-derived fragment in a note is sanitized**, through `domain.sanitize.sanitize_source_text`: the discarded warning's `source_id` and `title`, and the first anomaly string. The CLI prints notes as `- senamhi: <note>` bullets in a terminal, so a title carrying a newline forges an extra note line and an ANSI escape executes — the same defect as the community body, one layer over. The fragments are sanitized rather than the finished line, so the length cap lands on the source text and the note's own wording stays whole.
+
 Without these notes, a `Level none` result has two very different causes that look identical from outside: nothing was in force, or everything in force was filtered out.
 
 ### Row parsing details
@@ -199,6 +218,8 @@ Without these notes, a `Level none` result has two very different causes that lo
 **The end date is inclusive**, so `_build_warning` adds one day to it. A warning listed as ending on 2026-09-06 covers the whole of that day.
 
 **The title is stored raw**, with accents intact. Normalization is for matching, not for storing. `Warning.title` reaches the Spanish community body through `WarningSummary`, and the accent-stripped form put `EXTENSION` in front of recipients. Both classifiers normalize internally, so they can be handed the raw title.
+
+That decision stands after the security review, and it is worth saying why the review did not overturn it. A raw title is the record of what SENAMHI actually published, and it is exactly the field the last normalization-on-the-way-in attempt damaged. The fix for a hostile title is applied where the text is **rendered** for a human, not where it is stored — through one shared domain function, at each of the four rendering boundaries listed in [domain.md](./domain.md).
 
 `_source_id` extracts the detail-page identifier from the row's link with the pattern `[?&]b=(\d+)`, falling back to the number cell's text. Detail pages are not fetched here. The identifier is carried so change 2's `get_warning_detail` tool can use it.
 
@@ -238,6 +259,8 @@ The persisted shape of alerts, outages and structured reasons.
 Three decisions worth stating.
 
 **Reasons are tagged with `ReasonKind`**, the domain's own enum, rather than a second serialization vocabulary. `AlertRecord.reasons` is the audit trail for why the community was alerted, and the CLI's `--json` output emits it for threshold calibration. It therefore stays structured and numeric, never rendered prose.
+
+**The one free-text field in that document is sanitized.** `reason_to_dict` passes `WarningReason.title` through `domain.sanitize.sanitize_source_text`. JSON encoding is not the guard it looks like here: `json.dumps` escapes control characters, but under `ensure_ascii=False` — which this project uses so Spanish stays readable — it writes a bidi override through verbatim, and the operator reads the result in a terminal. Sanitizing at this boundary is what makes **every** field of the `--json` document safe, rather than only the three (`message.body`, `reasons_en`, `notes`) that happen to come from an already-sanitizing renderer.
 
 **An unknown tag raises.** A state file written by a newer version must not be read as though a reason simply were not there, because the audit trail would then silently lie about why an alert went out. The local state file is disposable and gitignored, so failing loudly costs little.
 
@@ -329,7 +352,23 @@ Three behaviours are deliberate.
 
 **A corrupt file raises.** Starting from empty state would look like "no alert has ever been sent" and re-alert the community for a window already delivered. The file is disposable and gitignored, so failing loudly is cheap. Guessing is not. A missing file, by contrast, reads as empty state, which is the correct interpretation of a first run.
 
-There is a known, recorded limitation in `_flush`. The `alerts` list grows without bound and the whole document is rewritten on every send, so both the file and the write cost grow forever. It is tolerable here: one send per six-hour cycle, only on an escalation, and the file is disposable. The retention rule is deferred because it needs a clock the port does not carry, and because change 3's DynamoDB adapter should use a TTL attribute rather than a rewrite, so the mechanism would not be shared anyway.
+### There is no lock, and two concurrent runs lose each other's records
+
+Known, measured and deliberately not fixed in this change. It is recorded here because the failure mode is a dedup failure, and a lost dedup record means a community re-alerted for a window already delivered.
+
+The sequence, with two processes:
+
+1. A reads the state file. B reads the state file.
+2. A writes its record. The write itself is atomic.
+3. B writes its record, built from the snapshot it took in step 1. A's record is gone.
+
+**A lock around the write would not fix this.** Both writes are already atomic through `os.replace`; the loss comes from B's *in-memory snapshot* being stale, not from the writes interleaving. This is a read-modify-write lost update, so the lock would have to be held from the first read of a cycle to its last write.
+
+That is why it is not a two-line change. `AlertRepository` has no lifecycle in its contract — nothing tells the repository that a cycle has ended — so a cycle-scoped lock means either a context manager the CLI enters around `RunAlertCycle.execute()`, which changes the port or the entrypoint's structure, or a lock the repository holds for its own lifetime, which changes when the file is released. `fcntl.flock` is also POSIX-only, and testing it honestly needs two real processes.
+
+It is unrealistic for a single-operator command line tool run by hand, and it becomes real the moment a scheduler exists. The concrete proposal is recorded in the change's Open Items rather than half-implemented.
+
+There is a second known, recorded limitation in `_flush`. The `alerts` list grows without bound and the whole document is rewritten on every send, so both the file and the write cost grow forever. It is tolerable here: one send per six-hour cycle, only on an escalation, and the file is disposable. The retention rule is deferred because it needs a clock the port does not carry, and because change 3's DynamoDB adapter should use a TTL attribute rather than a rewrite, so the mechanism would not be shared anyway.
 
 ## `local/offline_sources.py`
 
@@ -340,6 +379,10 @@ The fixture-backed adapters behind the CLI's `--offline-fixtures` flag.
 That is the whole reason the offline path is trustworthy for calibration. A separate "offline parser" would be a second implementation to keep in step, and the first divergence between them would be invisible.
 
 A missing or unreadable fixture is reported as `FetchError` with `TRANSPORT_ERROR`, exactly like a transport failure, so the cycle degrades the same way it would live. A fixture that is not JSON becomes `Unavailable` with `MALFORMED_PAYLOAD`.
+
+`OfflineOpenMeteoProvider.fetch_forecast` carries the same catch-all as the live provider, for the same reason. A recorded payload is a captured live response, so it can carry the same bare `NaN` the live endpoint can, and `RunAlertCycle` has no exception handler either way. `json.JSONDecodeError` is caught **before** the catch-all, because it is a `ValueError` subclass and deserves its own reason and a detail naming the file.
+
+`tests/unit/adapters/test_offline_sources.py` covers both classes. They previously had no tests of their own and were exercised only indirectly through the CLI.
 
 ## Where to go next
 
