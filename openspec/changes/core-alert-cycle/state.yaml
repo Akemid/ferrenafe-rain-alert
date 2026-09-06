@@ -285,9 +285,76 @@ phases:
       the line-budget decision is still outstanding, and no push or PR was
       made by the remediation run.
   verify:
-    status: pending
+    status: done
     depends_on: [apply]
-    artifact: null
+    artifact: openspec/changes/core-alert-cycle/verify-report.md
+    engram_topic_key: sdd/core-alert-cycle/verify-report
+    engram_saved: false
+    verdict: PASS WITH FINDINGS
+    verified_on: 2026-09-06
+    verified_ref: chore/land-slice3-remainder @ bcba50b
+    gate: >-
+      uv run pytest 537 passed / 15 deselected; uv run ruff check . clean;
+      uv run ruff format --check . 78 files; uv run mypy clean on 35 source
+      files. All exit 0. Live CLI run clean, exit 0, nothing transmitted, both
+      hazards in force correctly discarded with stated reasons. The opt-in
+      integration suite needed three attempts: runs 1 and 2 failed on transient
+      TLS connect timeouts to the live sources, run 3 passed 10 / 5 skipped.
+    coverage: >-
+      35 requirements and 64 scenarios traced across the seven spec files.
+      34 of 35 requirements proven by a test that ran green; 63 of 64 scenarios
+      have a covering test. The uncovered scenario is repo-hygiene
+      "Grep check passes", which has no automated test — the property itself was
+      re-verified by hand during this run and is clean.
+    findings:
+      critical: 0
+      warning: 8
+      suggestion: 11
+    blocking: none
+    key_findings:
+      - >-
+        W1 MessageRequest.warning can name a warning the evaluator refused to
+        act on (_most_severe_warning ignores may_raise_imminent), and the field
+        has zero test coverage. Latent contract defect for change 2's composer;
+        no user-visible impact today because the template does not render it.
+      - >-
+        W2 The "in order" and "record only after notify" guarantees in
+        alert-cycle are unasserted, and tests/support/fakes.py has no shared
+        call log, so cross-port ordering is not observable at all.
+      - >-
+        W3 repo-hygiene "Grep check passes" is the only spec scenario with no
+        automated test. Verified manually and clean; no regression guard exists
+        on a public repository.
+      - >-
+        W4 The --json document's evaluated_at is the assessment window start,
+        not the cycle clock. Reproduced: a run at 2026-09-05T12:00Z reported
+        2026-09-04T05:00Z. The document carries no record of when the cycle ran.
+      - >-
+        W5 tasks.md still states forecast_days=3 at lines 67 and 91; code,
+        design section 8.1 and the architecture guide all say 4.
+      - >-
+        W5b domain/sanitize.py and the MessageComposer sanitization invariant
+        are not recorded in design.md; the module docstring cites section 3.2,
+        which is about forecast horizons.
+      - >-
+        W6 This state.yaml does not describe the shipped system: apply is still
+        in_progress, slices 2 and 3 say "PR not open / no push was made",
+        next_recommended is sdd-apply, and the 2026-09-05 security remediation
+        has no entry at all. The archive record is built from this file.
+      - >-
+        W7 risk-evaluation requires the evaluator to read coordinates from
+        configuration; RiskEvaluator only ever receives RiskThresholds. Spec
+        sentence broader than its own scenario and than anything the code can
+        satisfy.
+      - >-
+        W8 alert-cycle says the template must include "each reason"; the
+        template deliberately suppresses SenamhiUnavailableReason's line per
+        design section 3.1. The spec sentence was never amended.
+    note: >-
+      No source file was modified by this phase. Only verify-report.md and this
+      block were written. Findings W5, W5b and W6 are artifact-accuracy issues
+      and should be corrected before sdd-archive, because the archive record is
+      assembled from these artifacts.
   archive:
     status: pending
     depends_on: [verify]
