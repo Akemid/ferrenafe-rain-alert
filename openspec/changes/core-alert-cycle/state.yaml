@@ -391,9 +391,15 @@ phases:
           shared CallLog existed the same mutation left the whole suite green.
         gate: >-
           pytest 549 passed / 15 deselected, ruff check, ruff format --check,
-          mypy clean on 35 source files, uv run rain-alert-cycle exit 0. The
-          opt-in live suite passed on the first attempt: 10 passed, 5 skipped
-          in 2.05s, down from three attempts and 28-37s (finding S9).
+          mypy clean on 35 source files, uv run rain-alert-cycle exit 0 against
+          the live sources with both hazards in force correctly discarded.
+          The opt-in live suite needed two attempts on the final run: attempt 1
+          failed on a transient read timeout in test_open_meteo_live.py
+          (1 failed, 9 passed, 5 skipped, 6.89s), attempt 2 was clean
+          (10 passed, 5 skipped, 1.95s). The SENAMHI canary passed on both
+          attempts, which is what finding S9 addressed; the Open-Meteo live
+          test deliberately keeps the production timeout and can still flake.
+          Recorded honestly rather than reported as a single green run.
         note: >-
           Not pushed and no PR opened by the remediation run, by instruction;
           the orchestrator owns the push. This is the only apply work in the

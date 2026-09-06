@@ -1182,6 +1182,69 @@ paragraph in its first draft, which is the strongest evidence available that it
 works. The allow-list was not widened to accommodate the prose; the prose was
 rewritten.
 
+### Verification gate
+
+```
+$ uv run pytest
+549 passed, 15 deselected in 0.57s
+exit=0
+
+$ uv run ruff check .
+All checks passed!
+exit=0
+
+$ uv run ruff format --check .
+78 files already formatted
+exit=0
+
+$ uv run mypy
+Success: no issues found in 35 source files
+exit=0
+
+$ uv run rain-alert-cycle --state-file <scratch>/state.json
+Ferreñafe  (-6.6400, -79.7900)  (PLACEHOLDER — pending confirmation)
+Sources    senamhi: available (fetched 2026-09-06T04:42:00+00:00)
+           open_meteo: available (fetched 2026-09-06T04:42:00+00:00)
+Notes      - senamhi: discarded warning 28745 (INCREMENTO DE VIENTO EN LA SIERRA NORTE): phenomenon wind cannot cause flooding
+           - senamhi: discarded warning 28705 (INCREMENTO DE TEMPERATURA DIURNA EN LA COSTA Y SIERRA): phenomenon high_temperature cannot cause flooding
+Level      none
+Window     2026-09-06T04:42:00+00:00 → 2026-09-08T04:42:00+00:00
+Reasons    —
+Decision   NOT SENT — level none
+Notices    0 emitted
+exit=0
+```
+
+Two hazards were in force on the live page and both were discarded with a
+stated reason. Nothing was transmitted. The state file was directed outside the
+repository, so no file was written inside it.
+
+The opt-in live suite needed two attempts, recorded honestly:
+
+```
+$ uv run pytest -m integration          # run 1
+FAILED tests/integration/test_open_meteo_live.py::test_the_live_api_returns_a_usable_48_hour_forecast
+E   assert False
+E    +  where False = isinstance(Unavailable(source=open_meteo, reason=timeout,
+E        detail='ReadT... read operation timed out'), Available)
+1 failed, 9 passed, 5 skipped, 549 deselected in 6.89s
+exit=1
+
+$ uv run pytest -m integration          # run 2
+.......ss.sss..                                                          [100%]
+10 passed, 5 skipped, 549 deselected in 1.95s
+exit=0
+```
+
+The SENAMHI canary passed on **both** attempts, which is what S9 addressed. The
+failure was `test_open_meteo_live.py`, which deliberately keeps the production
+`DEFAULT_TIMEOUT` because its subject is whether the deployed configuration
+works against the real API; lending it the canary's patience would make it
+assert something the deployed system does not do. Carried to change 3 as an
+open item, where D12's deferred retry/backoff decision is the right place to
+resolve it. The five skips are the per-family classifier canaries for hazard
+families with no row in force on the live page today.
+
 ### Commits
 
 | Commit | Work unit |
