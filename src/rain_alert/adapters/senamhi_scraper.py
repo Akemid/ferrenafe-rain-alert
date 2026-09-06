@@ -59,6 +59,7 @@ from rain_alert.adapters.http import FetchError, HtmlFetcher
 from rain_alert.adapters.senamhi_classification import classify_phenomenon, classify_zone
 from rain_alert.domain.entities import Warning
 from rain_alert.domain.hazards import discard_reason
+from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.sources import Available, SourceResult, Unavailable
 from rain_alert.domain.values import SourceName, TimeWindow, UnavailableReason, WarningLevel
 
@@ -121,12 +122,22 @@ def parse_notes(outcome: ParseOutcome) -> tuple[str, ...]:
     community was *not* told about. Anomalies are summarized rather than
     listed, because a structural change can produce hundreds and the operator
     needs the fact that rows were lost, not a wall of them.
+
+    Every source-derived fragment is sanitized here, and only here. A note is
+    printed by the CLI as a `- senamhi: <note>` bullet and read in a terminal,
+    so a title or a number cell carrying a newline forges an extra note line
+    and an ANSI escape executes — the same defect as the community body, one
+    layer over. Sanitizing the fragments rather than the finished line keeps
+    the length cap on the source text and leaves the note's own wording whole.
     """
-    notes = [f"discarded warning {item.source_id} ({item.title}): {item.reason}" for item in outcome.discarded]
+    notes = [
+        f"discarded warning {sanitize_source_text(item.source_id)} ({sanitize_source_text(item.title)}): {item.reason}"
+        for item in outcome.discarded
+    ]
     if outcome.anomalies:
         notes.append(
             f"{len(outcome.anomalies)} of {outcome.rows_seen} rows were unparseable "
-            f"and skipped; first: {outcome.anomalies[0]}"
+            f"and skipped; first: {sanitize_source_text(outcome.anomalies[0])}"
         )
     return tuple(notes)
 

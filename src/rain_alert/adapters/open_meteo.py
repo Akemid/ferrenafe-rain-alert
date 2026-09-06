@@ -31,6 +31,7 @@ the CLI's `--offline-fixtures` mode. It never returns a partially-filled
 from __future__ import annotations
 
 import json
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -65,20 +66,51 @@ def _series(hourly: Any, name: str) -> list[Any]:
 
 
 def _millimetres(value: Any, index: int) -> float:
+    """One `hourly.precipitation` entry as finite, non-negative millimetres.
+
+    `json.loads` accepts bare `NaN` and `Infinity`, so both reach here from a
+    well-formed HTTP 200. `Infinity` used to parse as a valid reading and
+    accumulate to an infinite rainfall total, which clears `imminent_mm_24h`
+    unconditionally. Rejecting at parse time keeps the anomaly a declared
+    outage rather than an unconditional alert.
+    """
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise FetchError(
             UnavailableReason.MALFORMED_PAYLOAD, f"hourly.precipitation[{index}] is not a number: {value!r}"
         )
+    if not math.isfinite(value):
+        raise FetchError(UnavailableReason.MALFORMED_PAYLOAD, f"hourly.precipitation[{index}] is not finite: {value!r}")
+    if value < 0:
+        raise FetchError(UnavailableReason.MALFORMED_PAYLOAD, f"hourly.precipitation[{index}] is negative: {value!r}")
     return float(value)
 
 
 def _percent(value: Any, index: int) -> int:
+    """One `hourly.precipitation_probability` entry as a 0-100 percentage.
+
+    The finiteness check has to come before `int(value)`: `int(float("nan"))`
+    raises `ValueError`, which is not a `FetchError`, so it escaped the
+    adapter's only `except` clause and killed the whole cycle with a
+    traceback — no alert and no operator notice, which is strictly worse than
+    the tested unavailable path.
+    """
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise FetchError(
             UnavailableReason.MALFORMED_PAYLOAD,
             f"hourly.precipitation_probability[{index}] is not a number: {value!r}",
         )
-    return int(value)
+    if not math.isfinite(value):
+        raise FetchError(
+            UnavailableReason.MALFORMED_PAYLOAD,
+            f"hourly.precipitation_probability[{index}] is not finite: {value!r}",
+        )
+    percent = int(value)
+    if not 0 <= percent <= 100:
+        raise FetchError(
+            UnavailableReason.MALFORMED_PAYLOAD,
+            f"hourly.precipitation_probability[{index}] is outside 0..100: {value!r}",
+        )
+    return percent
 
 
 def _timestamp(value: Any, index: int) -> datetime:
@@ -138,13 +170,21 @@ def parse_forecast_payload(payload: Any, location: Coordinates, hours: int, now:
         at = _timestamp(stamp, index)
         if at < current_hour:
             continue  # the API returns whole days; hours already past are dropped
-        points.append(
-            HourlyPoint(
+        try:
+            point = HourlyPoint(
                 at=at,
                 precipitation_mm=_millimetres(millimetres[index], index),
                 probability_pct=_percent(percentages[index], index),
             )
-        )
+        except ValueError as exc:
+            # `HourlyPoint` defends the same ranges the helpers above check.
+            # It is the second line, not the first: a future caller that skips
+            # the helpers must not be able to build an unusable point, and its
+            # `ValueError` must still leave here as a `FetchError`.
+            raise FetchError(
+                UnavailableReason.MALFORMED_PAYLOAD, f"hourly sample {index} is not a usable reading: {exc}"
+            ) from exc
+        points.append(point)
     if len(points) < hours:
         raise FetchError(
             UnavailableReason.INSUFFICIENT_HORIZON,
@@ -182,12 +222,33 @@ class OpenMeteoForecastProvider:
         No exception escapes: a transport failure, a bad status, a malformed
         body and too short a horizon all become `Unavailable` with a
         machine-readable reason (D12 — no retries; the cycle repeats).
+
+        "No exception escapes" now includes the ones nobody predicted. The
+        `FetchError` clause alone was a claim, not a guarantee: `_percent`
+        called `int(value)` on a value `json.loads` was happy to produce, and
+        the resulting `ValueError` aborted the whole run with a traceback,
+        because `RunAlertCycle` has no exception handler either. The sibling
+        `SenamhiWarningScraper` already carried this catch-all with the same
+        reasoning; this adapter was not following its own codebase's rule.
+
+        The catch-all reports `TRANSPORT_ERROR` and names the exception type,
+        exactly as the scraper does. The reason code does not change any
+        routing — only `Available` versus `Unavailable` does — so the value of
+        matching the sibling is that one unfamiliar detail string reads the
+        same wherever an operator meets it.
         """
         try:
             body = self._fetch(location)
             return Available(data=parse_forecast_payload(body, location, hours, now), fetched_at=now)
         except FetchError as exc:
             return Unavailable(source=SourceName.OPEN_METEO, reason=exc.reason, detail=exc.detail, observed_at=now)
+        except Exception as exc:  # noqa: BLE001 - a parser bug must degrade the cycle, not abort it
+            return Unavailable(
+                source=SourceName.OPEN_METEO,
+                reason=UnavailableReason.TRANSPORT_ERROR,
+                detail=f"unexpected {type(exc).__name__}: {exc}",
+                observed_at=now,
+            )
 
     def _fetch(self, location: Coordinates) -> Any:
         with httpx.Client(transport=self._transport, timeout=self._timeout) as client:

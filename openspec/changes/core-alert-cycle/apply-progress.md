@@ -390,3 +390,708 @@ exit=0
 - **A degraded source must never buy sensitivity.** The missing fifth branch was invisible to nine scenario tests and only surfaced as a monotonicity property. Property-style tests across a grid of inputs catch a class of bug that named scenarios cannot.
 - **Boundary tests need exact arithmetic.** Spreading 9.5 mm across 48 points and summing does not necessarily equal 9.5. The boundary table puts all the rain in the first hour so the assertion tests the threshold rule, not floating-point summation.
 - **`uv run` puts the working directory on `sys.path` before pytest gets a say.** No pytest import-mode or `pythonpath` setting can keep the repository root off `sys.path` under `uv run pytest`; do not assume `__init__.py` files buy isolation they cannot buy.
+
+---
+
+# Apply Progress: Core Alert Cycle — Slice 3 (Adapters, Local Repositories, CLI)
+
+**Branch**: `feat/core-alert-cycle-3-adapters` (from `main`, slices 1 and 2 merged)
+**Batch**: 3 of 3 (slice 1 and slice 2 progress above read and preserved, not overwritten)
+**Mode**: Strict TDD (test runner: `uv run pytest`)
+**Status**: Complete — all 16 Phase 3 tasks (3.1–3.16) plus one owner-approved
+contract change (3.5b) done. Verification gate green, live CLI run clean.
+
+## Completed Tasks
+
+- [x] 3.1 [RED] `tests/unit/adapters/test_http.py`, `test_open_meteo.py` via `httpx.MockTransport`
+- [x] 3.2 [GREEN] `adapters/http.py`, `adapters/open_meteo.py`
+- [x] 3.3 Capture SENAMHI fixtures + `README.md` (five files, not four — see Deviations)
+- [x] 3.4 [RED] `tests/unit/adapters/test_senamhi_scraper.py`
+- [x] 3.5 [GREEN] `adapters/senamhi_scraper.py`
+- [x] 3.5b [GREEN] **Owner-approved contract change**: `domain/hazards.py`, `adapters/senamhi_classification.py`, `Warning.phenomenon`/`zone`
+- [x] 3.6 [RED] `tests/unit/adapters/test_console_notifier.py`
+- [x] 3.7 [GREEN] `adapters/console_notifier.py`
+- [x] 3.8 [RED] `tests/unit/adapters/test_local_repositories.py`, `test_serialization.py`
+- [x] 3.9 [GREEN] `adapters/serialization.py`, `adapters/local/*`
+- [x] 3.10 `entrypoints/wiring.py` (`build_local_deps`)
+- [x] 3.11 [RED] `tests/unit/entrypoints/test_cli.py`
+- [x] 3.12 [GREEN] `entrypoints/cli.py`
+- [x] 3.13 Opt-in `tests/integration/` canaries
+- [x] 3.14 Live smoke run
+- [x] 3.15 [REFACTOR] D12 consistency, clock truncation, dead-parameter removal
+- [x] 3.16 PR-3 / final verification gate
+
+## The Owner-Approved Contract Change (design §5.1)
+
+**Per-requirement disposition of the two approved filters.**
+
+| Filter | Requirement | Where implemented | Where pinned | Disposition |
+|---|---|---|---|---|
+| **1. Phenomenon — precipitation only** | Wind, heat and cold warnings must never reach the evaluator | `domain/hazards.is_flood_relevant` decides; `adapters/senamhi_classification.classify_phenomenon` translates the title | spec "Only flood-relevant official warnings may drive an alert", scenarios 1, 2, 4; `test_hazards.py`, `test_senamhi_classification.py`, `test_senamhi_scraper.py`, `test_cli.py` | **Implemented as approved.** Extended beyond the brief on evidence: the brief named `PRECIPITACIONES ...`, but the live page also uses `LLUVIA ...` for ~10 rows. Both map to precipitation; matching only `PRECIPITACIONES` would have silently dropped real rain warnings. |
+| **2. Geography — must include the coast** | Highlands-only warnings discarded; coastal and coast+highlands kept | same split | spec scenarios 2, 3, 5; same test files | **Implemented as approved.** Extended beyond the brief on evidence: the brief named `EN LA COSTA`, but the page also carries `PRECIPITACIONES EN COSTA NORTE Y SIERRA` (no `EN LA`). The rule is a word-boundary match on `COSTA`, so both forms are kept and `COSTADO` is not misread as `COSTA`. |
+| **Conservative unknown** | A precipitation warning with an unclassifiable zone is relevant | `FLOOD_RELEVANT_PHENOMENA` includes `UNKNOWN`; `ZONES_WITHOUT_THE_COAST` is only `{HIGHLANDS}` | `test_hazards.py::test_a_precipitation_warning_with_an_unclassifiable_zone_is_kept` and `::test_an_unrecognized_phenomenon_is_treated_as_relevant`; spec scenario 5 | **Implemented, and extended.** An unknown *phenomenon* is also treated as relevant, for the same reason: an unrecognized title may be new wording for a rainfall hazard. The `Warning` field defaults are `UNKNOWN` so a caller that forgets to classify over-alerts rather than going silent. |
+| **In force, cross-checked** | Use `(vigente)`, but verify against start/end dates | `parse_warnings_page` requires the marker **and** `window.start <= now <= window.end` | spec "Only warnings currently in force may drive an alert", 3 scenarios; `TestHistoricalRows` (4 tests) | **Implemented as approved.** `history_only.html`'s most recent row deliberately keeps dates containing the test clock, so the marker check is proven load-bearing rather than incidental. |
+| **Auditable, testable, not buried** | Classification carried on a normalized structure; a pure domain function decides | `ParseOutcome.discarded` records each exclusion with `discard_reason`; the rule is a 4-line pure function in the domain | spec scenario "Exclusions are auditable"; `test_the_heat_warning_is_recorded_as_discarded_with_its_reason` | **Implemented, with the owner's recommended structure adopted.** See the placement note below. |
+
+**Placement, with rationale (the owner invited an override; none was taken on
+the split, one refinement was made on where the rule is *applied*).**
+
+The owner's recommendation was adopted: the scraper parses every row into a
+normalized structure carrying phenomenon and zone, and a pure domain function
+decides relevance. Two refinements:
+
+1. **The rule and the vocabulary are split across the layer boundary.**
+   `domain/hazards.py` owns the enums and `is_flood_relevant` — a rule about
+   which hazards can flood a coastal city. `adapters/senamhi_classification.py`
+   owns the Spanish title vocabulary, because that vocabulary belongs to
+   SENAMHI, not to the domain. Putting the Spanish regexes in the domain would
+   have made the domain know a source's wording.
+2. **The filter is applied at the adapter boundary**, not inside the
+   evaluator. Filtering in the evaluator would require branches 1, 3 and 4 *and*
+   `_build_message_request`'s `_most_severe_warning` each to remember to filter
+   — four sites, any one of which could put a heat warning in front of a
+   recipient. Filtering once, where irrelevant data enters, is fail-safe by
+   construction and matches §8.2's existing posture that a source adapter never
+   hands the domain something it must re-validate.
+
+**Known limitation, recorded rather than hidden.** The discard audit lives in
+`ParseOutcome`, which the `WarningProvider` port cannot carry — the port returns
+`SourceResult[tuple[Warning, ...]]` and is a slice-2 contract that is already
+merged. So the CLI does not currently print *why* a warning was discarded; the
+audit is asserted by the unit tests and by the integration canary. Widening the
+port to carry a parse report would be a breaking change to a merged contract and
+was not taken unilaterally. Flagged for the fresh-context reviewer.
+
+## TDD Cycle Evidence
+
+| Task | Test file | Layer | Safety net | RED (exact failure) | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 3.1/3.2 | `test_http.py`, `test_open_meteo.py` | Unit (`httpx.MockTransport`) | N/A (new modules); 149 pre-existing green | `ModuleNotFoundError: No module named 'rain_alert.adapters.http'`, then `...adapters.open_meteo` | 30 passed | ✅ 8-case parametrized malformed-payload table, plus a shorter-horizon case proving `INSUFFICIENT_HORIZON` is a real check and not a constant | ✅ replaced an `httpx.Response(...).json()` round trip with `json.loads`; unrolled an unreadable nested comprehension |
+| 3.5b (hazards) | `test_hazards.py`, `test_senamhi_classification.py` | Unit (pure) | 149 green | `ModuleNotFoundError: ...domain.hazards` and `...adapters.senamhi_classification` | 54 passed | ✅ 27 parametrized cases over **live** title vocabulary (65 distinct titles harvested from the real page), plus a rule/audit consistency test over the full enum cross-product | ➖ none needed |
+| 3.5b (`Warning`) | `test_entities.py` | Unit | ✅ 13/13 green before the change | `AttributeError: 'Warning' object has no attribute 'phenomenon'` — 3 failed, 13 passed, so the safety net held | 16 passed | ✅ relevant / not-relevant / unclassified-default | ➖ none needed |
+| 3.4/3.5 | `test_senamhi_scraper.py` | Unit (stub `HtmlFetcher` + 5 fixtures) | 236 green | `ModuleNotFoundError: ...adapters.senamhi_scraper` | 30 passed after one test-arithmetic fix (see Issues) | ✅ 3 level tokens, 4 in-force cases, 5 breakage cases, 4 anomaly cases including the >50% structure threshold | ➖ none needed |
+| 3.6/3.7 | `test_console_notifier.py` | Unit (`io.StringIO`) | 266 green | `ModuleNotFoundError: ...adapters.console_notifier` | 9 passed | ✅ recipient count triangulated at 0, 1 and 2 so a hardcoded count fails | ➖ none needed |
+| 3.8/3.9 | `test_serialization.py`, `test_local_repositories.py` | Unit (`tmp_path`) | 275 green | `ModuleNotFoundError: ...adapters.local.in_memory_alert_repository` | 66 passed after one test-construction fix (see Issues) | ✅ the port contract runs **parametrized over both** repository implementations, so they cannot drift; every reason variant round-trips; both failure paths of the atomic write | ✅ restructured `JsonFileAlertRepository` mutators to serialize-then-adopt after noticing in-memory state could outlive a failed write |
+| 3.11/3.12 | `test_cli.py` | Unit (`capsys`, real graph, fixture leaves) | 342 green | `ModuleNotFoundError: ...entrypoints.cli` | 21 passed after one test-data fix (see Issues) | ✅ the multi-hazard filter is triangulated end to end: the real page's RED heat warning yields `none`, the same path with a coastal precipitation aviso yields `imminent` — so the filter is shown to *discriminate*, not merely to suppress | ✅ split `_parse_now` into `default_now`/`parse_now`, dropped a dead parameter |
+| 3.13 | `tests/integration/*` | Integration (live) | N/A | N/A — canaries, written against live behaviour | 6 passed, 363 deselected by default | ✅ 3 SENAMHI assertions incl. classifier-drift detection | ➖ none needed |
+
+### Test Summary
+
+- **Total tests added this slice**: 219 (368 total, up from 149)
+- **Total tests passing**: 368 offline + 6 integration
+- **Layers used**: Unit (362), Integration (6, opt-in and deselected by default)
+- **Approval tests**: none — no refactoring of existing behaviour
+- **Pure functions added**: `is_flood_relevant`, `discard_reason`, `normalize_title`, `classify_phenomenon`, `classify_zone`, `parse_forecast_payload`, `build_query`, `parse_warnings_page`, `warnings_url_for`, `region_slug`, the six `*_to_dict`/`*_from_dict` pairs, `render`, `as_json`, `default_now`, `parse_now`
+
+## Files Changed
+
+| File | Action | What Was Done |
+|---|---|---|
+| `src/rain_alert/adapters/http.py` | Created | `DEFAULT_TIMEOUT`, `FetchError`, `HtmlFetcher` protocol, `fetch_text`, `HttpxHtmlFetcher`. No `httpx` exception escapes |
+| `src/rain_alert/adapters/open_meteo.py` | Created | `build_query`, pure `parse_forecast_payload`, `OpenMeteoForecastProvider` |
+| `src/rain_alert/domain/hazards.py` | Created | `Phenomenon`, `Zone`, `is_flood_relevant`, `discard_reason` (design §5.1) |
+| `src/rain_alert/adapters/senamhi_classification.py` | Created | `normalize_title`, `classify_phenomenon`, `classify_zone` |
+| `src/rain_alert/domain/entities.py` | Modified | `Warning` gains `phenomenon`, `zone` (defaulting to `UNKNOWN`) and `is_flood_relevant` |
+| `src/rain_alert/adapters/senamhi_scraper.py` | Created | Header-signature location, `ParseOutcome`, `DiscardedWarning`, in-force + relevance filter, `SenamhiWarningScraper` |
+| `src/rain_alert/adapters/console_notifier.py` | Created | `ConsoleNotifier` — prints only, recipient count only, imports nothing that could transmit |
+| `src/rain_alert/adapters/serialization.py` | Created | The §4.1 document shape for reasons, alert records and outage records |
+| `src/rain_alert/adapters/local/in_memory_alert_repository.py` | Created | The whole `AlertRepository` query rule, no I/O |
+| `src/rain_alert/adapters/local/json_alert_repository.py` | Created | Durable state, atomic write, serialize-then-adopt |
+| `src/rain_alert/adapters/local/static_config_repository.py` | Created | `AlertConfig` from constants; strict all-or-nothing env coordinate overrides |
+| `src/rain_alert/adapters/local/static_contact_repository.py` | Created | One synthetic console contact, zero personal data |
+| `src/rain_alert/adapters/local/offline_sources.py` | Created | `FileHtmlFetcher`, `OfflineOpenMeteoProvider` — fetch leaves only |
+| `src/rain_alert/entrypoints/wiring.py` | Created | `build_local_deps`, mirroring `build_fake_deps` |
+| `src/rain_alert/entrypoints/cli.py` | Created | `main`, `render`, `as_json`, `default_now`, `parse_now` |
+| `tests/support/fixtures.py` | Created | Fixture path constants |
+| `tests/fixtures/senamhi/*` | Created | 5 HTML fixtures + `README.md` (capture date, URL, refresh procedure) |
+| `tests/fixtures/open_meteo/forecast_72h.json` | Created | Real recorded payload, captured 2026-09-04 |
+| `tests/unit/adapters/*`, `tests/unit/entrypoints/*`, `tests/integration/*` | Created | 219 tests |
+| `openspec/.../specs/weather-sources/spec.md` | Modified | Two new requirements, 9 new scenarios |
+| `openspec/.../design.md` | Modified | New §5.1 |
+| `openspec/.../tasks.md` | Modified | 3.1–3.16 checked off, scope notes, Open Items resolved |
+| `openspec/.../state.yaml` | Modified | Slice-3 entry |
+
+## Verification Gate Output
+
+Run from the repository root, exit codes shown:
+
+```
+$ uv run pytest
+........................................................................ [ 19%]
+........................................................................ [ 39%]
+........................................................................ [ 58%]
+........................................................................ [ 78%]
+........................................................................ [ 97%]
+........                                                                 [100%]
+368 passed, 6 deselected in 0.34s
+exit=0
+
+$ uv run ruff check .
+All checks passed!
+exit=0
+
+$ uv run ruff format --check .
+75 files already formatted
+exit=0
+
+$ uv run mypy
+Success: no issues found in 34 source files
+exit=0
+```
+
+Opt-in integration suite, run separately against the live sources:
+
+```
+$ uv run pytest -m integration
+......                                                                   [100%]
+6 passed, 363 deselected in 4.12s
+exit=0
+```
+
+Secrets and personal-data scan over `src/` and `tests/` (`git grep`): emails,
+`AKIA` keys, 12-digit AWS account IDs, Peruvian phone shapes and
+`secret|password|api_key|token` assignments — **no matches**. The SENAMHI
+fixtures are public official content and contain no personal data.
+
+## Live CLI Run (task 3.14)
+
+Real sources, no fixtures, fresh state directory. Verbatim:
+
+```
+$ rm -rf .local-state && uv run rain-alert-cycle
+Ferreñafe  (-6.6400, -79.7900)  (PLACEHOLDER — pending confirmation)
+Sources    senamhi: available (fetched 2026-09-05T00:05:25+00:00)
+           open_meteo: available (fetched 2026-09-05T00:05:25+00:00)
+Level      none
+Window     2026-09-05T00:05:25+00:00 → 2026-09-07T00:05:25+00:00
+Reasons    —
+Decision   NOT SENT — level none
+Message    PREVIEW (NOT SENT)
+           title: Alerta de lluvias — Ferreñafe — sin riesgo
+           body:
+             Ciudad: Ferreñafe
+             Nivel: sin riesgo
+             Ventana: del 04/09/2026 19:05 al 06/09/2026 19:05 (hora local, America/Lima)
+             Recomendaciones:
+             - Almacena agua potable para al menos dos días.
+             - Protege documentos y aparatos eléctricos por encima del nivel del piso.
+             - Limpia canaletas, techos y desagües cercanos.
+             - Asegura objetos sueltos y calaminas.
+             - Ten a mano una linterna, un botiquín y los teléfonos de emergencia.
+Notices    0 emitted
+exit=0
+```
+
+Three things this run proves that no offline test can:
+
+1. **Both live sources parse.** SENAMHI's 788-row page matched the header
+   signature and Open-Meteo returned a usable 48-hour forward horizon.
+2. **The multi-hazard filter works in production.** A RED
+   `INCREMENTO DE TEMPERATURA DIURNA` warning was in force at the time of this
+   run. The level is `none`. Without the filter this run would have printed
+   `Level imminent` and sent a flood alert.
+3. **Nothing was transmitted, and no state was written.** `.local-state/` was
+   not even created: a healthy cycle with no send and no outage performs zero
+   writes, which is design §6's `state_changed` gate behaving as specified.
+
+## Spec/Design Inconsistencies Found and Resolved
+
+1. **The design's core premise about SENAMHI was wrong** (highest-severity
+   finding). Design §8.2 treats the Lambayeque page as a rain-warning feed and
+   §5's branch 1 raises `imminent` on any current orange/red warning. The page
+   is a multi-hazard feed, and the warning in force on the apply date was a RED
+   heat warning. **Resolved** by the owner-approved filter documented above:
+   two new spec requirements, new design §5.1, new domain rule and adapter
+   classifier. This is the single most consequential change in the slice.
+
+2. **`forecast_days=2` versus `3`.** The session brief reported, correctly,
+   that `forecast_days=2` returns exactly 48 hourly points. But those 48 start
+   at *today 00:00 UTC*, so any run after midnight has fewer than 48 hours
+   ahead of it — a run at 12:41 UTC would carry 34 and yield
+   `INSUFFICIENT_HORIZON`, silently degrading the system to SENAMHI-only for
+   most of every day. **Resolved** by keeping design §8.1's `forecast_days=3`
+   and its forward slice, which the brief's own observation is consistent with.
+   Verified live and pinned by an integration test. Everything else in the
+   brief's Open-Meteo facts was confirmed exactly.
+
+3. **Design §8.3 specifies a `[DRY-RUN ALERT]` prefix while §9 forbids a
+   `--dry-run` flag.** Not a contradiction but easy to read as one. **Resolved**
+   by keeping §8.3's literal prefix and adding an explicit "nothing was
+   transmitted" line, so the output cannot be read as implying a send mode
+   exists elsewhere.
+
+4. **Design §12's file table did not list `adapters/serialization.py` or
+   `adapters/local/offline_sources.py`.** The former is required because §4.1's
+   document shape is shared with change 3's DynamoDB adapter, and putting it
+   under `local/` would misname it. The latter is required by §9's
+   `--offline-fixtures`. **Resolved** by recording both in `tasks.md`'s Open
+   Items, as `domain/reasons.py` and `application/policies.py` were before them.
+
+5. **Task 3.3 named four fixtures**, but the real capture's only in-force row
+   is a heat warning, so no fixture would have exercised a successful warning
+   path. **Resolved** by adding `precipitation_coast_current.html`, derived from
+   the real capture with one synthetic in-force row; its synthetic nature is
+   stated in the fixture header and the fixtures README.
+
+## Issues Found
+
+Three test-authoring bugs, each caught by the RED/GREEN cycle and fixed in the
+**test**, never by weakening an assertion or relaxing a type:
+
+1. `test_a_few_anomalies_do_not_condemn_a_healthy_page` assumed the date string
+   it corrupted appeared once in the fixture; it appears twice. The
+   implementation was right; the expected count was corrected from 1 to 2 and
+   the docstring now says why.
+2. `test_an_existing_file_is_not_corrupted_...` built its invalid record through
+   a helper that itself dereferenced the invalid field, so it failed before
+   reaching the repository. Rebuilt with `dataclasses.replace`, and a companion
+   test was added for the in-memory half of the same guarantee.
+3. `test_the_reasons_are_the_english_operator_audit_trail` put its rain in the
+   first forecast hour, which clears the *imminent* branch rather than the
+   degraded *prepare* branch the assertion named. The payload helper gained an
+   `at_hour` parameter and the rain moved to hour 30. This one was a genuinely
+   useful failure: it proved the assertion was branch-specific rather than
+   incidentally true.
+
+## Deviations from Design
+
+1. **Owner-approved contract change** (design §5.1) — the multi-hazard filter.
+   Fully documented above; specs and design updated in the same commit as the
+   code.
+2. **`forecast_days=3` retained** over the brief's `2`, with the live evidence
+   above. Reported rather than silently applied.
+3. **Five SENAMHI fixtures instead of four**, and the real capture keeps its
+   owner-supplied filename `warnings_table.html` rather than being renamed to
+   `active_warning.html`.
+4. **Two additions to design §12's file table** (`adapters/serialization.py`,
+   `adapters/local/offline_sources.py`).
+5. **The discard audit is not surfaced by the CLI**, because the
+   `WarningProvider` port cannot carry it and that port is a merged slice-2
+   contract. Recorded above as a known limitation for the reviewer.
+
+## Review Workload / Line Budget
+
+`git diff main...HEAD --stat`: **41 files changed, 4507 insertions, 3 deletions**.
+
+| Area | Lines |
+|---|---|
+| `src/` | 1739 |
+| `tests/` (incl. ~750 lines of captured fixtures) | 2639 |
+| `openspec/` (specs + design §5.1) | 129 |
+
+Against the tasks.md estimate of ~450. **Flagged, not absorbed**, per
+`ask-on-risk`. Two honest drivers: the owner-approved filter was unplanned
+scope worth roughly 500 lines across source, tests and specs; and roughly 750
+test lines are recorded fixture data rather than authored logic. The remaining
+overrun is the same pattern slices 1 and 2 hit — strict TDD with real
+triangulation against spec scenarios costs more test lines than the estimates
+assumed. All eight work-unit commits are independently reviewable and
+revertable, so a further split into chained PRs is feasible if the owner
+prefers it to a third `size:exception`.
+
+## Work-Unit Commits
+
+`e23c226` feat(adapters): fetch the Open-Meteo forecast over HTTP ·
+`84fbb13` feat(domain): filter official warnings to flood-relevant hazards ·
+`a2694bd` feat(adapters): scrape the warnings currently in force from SENAMHI ·
+`a7a000e` feat(adapters): print community alerts and operator notices to the console ·
+`0ab8149` feat(adapters): persist alerts, outages and reasons locally ·
+`2849876` feat(entrypoints): run the local alert cycle from the CLI ·
+`0d0966c` test: add opt-in canaries against the live sources ·
+`57078b1` refactor(entrypoints): truncate the default clock to whole seconds
+
+No push, no PR — as instructed.
+
+## Learned / Gotchas
+
+- **A source's *content model* is an assumption worth verifying before its
+  *transport*.** The design carefully pinned timeouts, retry policy, header
+  signatures and failure taxonomy for SENAMHI, and every one of those was
+  right. What was wrong was the unexamined premise that the page lists rain
+  warnings. The most expensive defect in this slice was invisible to every
+  structural test that could have been written against the design as approved.
+- **"Available with zero warnings" now has two very different causes**, and
+  keeping them distinguishable took deliberate work. A healthy page whose
+  warnings were all filtered and a healthy page with genuinely nothing in force
+  produce identical port-level results. `ParseOutcome.discarded` is what keeps
+  the difference recoverable — but only in tests, because the port cannot carry
+  it. Worth fixing when the port is next opened.
+- **A conservative default must be asymmetric to be meaningful.** Treating both
+  `UNKNOWN` phenomenon and `UNKNOWN` zone as relevant is only safe *because*
+  `HIGHLANDS` is a positive exclusion. If unknown were treated the same as
+  highlands, vocabulary drift would silently switch the system off; as built,
+  drift silently switches the filter off, which over-alerts. The integration
+  canary asserts drift explicitly rather than trusting the fail-safe.
+- **Verified facts still need their premises checked.** `forecast_days=2`
+  really does return 48 points; the inference that 48 points means 48 *forward*
+  hours is what does not hold. The observation was correct and the conclusion
+  from it would have degraded the system for 23 hours of every day.
+- **`bs4` on `html.parser` handles SENAMHI's unclosed `<a>` tags inside `<td>`
+  cells without swallowing subsequent cells** — worth knowing, because the
+  markup looks like it should break a parser and D5's choice of the most
+  tolerant parser is doing real work here.
+- **An in-memory cache in front of a file store can outlive a failed write.**
+  The first draft of `JsonFileAlertRepository` mutated state, then persisted. A
+  serialization failure would have left the process believing an alert was
+  recorded that was never written — and the next read of that state would say
+  the community had already been told. Serialize, persist, *then* adopt.
+
+## Remaining Tasks (this slice)
+
+None. All Phase 3 tasks are complete and the gate is green.
+
+## Next Recommended
+
+Fresh-context adversarial review of `feat/core-alert-cycle-3-adapters` before
+PR-3 opens (interactive mode requires it). The review should weigh in
+specifically on: the owner-approved filter's placement and its conservative
+defaults; the `forecast_days` reconciliation; the un-surfaced discard audit; and
+the line-budget flag. After review, `sdd-verify` for the whole change.
+
+## Phase 3 Review Remediation (2026-09-04)
+
+A fresh-context adversarial review of `feat/core-alert-cycle-3-adapters`
+returned two CRITICAL findings, three WARNINGs and three suggestions, plus one
+owner decision taken after the review, plus a correction to a carried open item
+this record itself had got wrong. All were fixed on the same branch under
+strict TDD — failing test first, confirmed failing for the intended reason,
+then implementation. **No test was weakened and no type annotation was relaxed
+to reach green.** This subsection is appended to the slice-3 record above, not
+a replacement for it.
+
+### Disposition per finding
+
+| Finding | Disposition | What changed | Evidence |
+|---|---|---|---|
+| **C1** — phenomenon classification used substring matching, so a live wording variant defeated the filter | **Fixed** | `_PHENOMENON_MARKERS` are now `re.Pattern`s anchored on word boundaries with the article optional (`\bINCREMENTO\s+DE\s+(?:LA\s+)?TEMPERATURA\b`) and open-ended stems for plurals. `Phenomenon` gained `SNOW` and `HAIL`; `LLOVIZNA`/`GARUA` map to precipitation, `NEVADA` to snow, `GRANIZO` to hail, `FRIAJE` to the cold family. Snow and hail are not flood-relevant and the enum records why. | RED confirmed: all four article-variant titles returned `UNKNOWN`, and `UNKNOWN` is deliberately flood-relevant, so the heat aviso reached the evaluator. Verified against **12 399 live rows harvested from all 12 regional pages** — 56 rows used `DE LA TEMPERATURA` on 9 of 12 pages, matching the reviewer's count. **After the fix, zero of the 12 399 titles fall through to `UNKNOWN`.** Commit `7294b69`. |
+| **C1b** — the canary's `UNKNOWN < 0.1 * len(titles)` bound cannot catch the one decisive in-force row | **Fixed** | The share bound is replaced by `test_no_live_title_at_all_falls_through_to_unknown` (zero unknowns, listing offenders) plus a per-family parametrized canary asserting every `NEVADA`/`LLOVIZNA`/`VIENTO`/… row classifies into that family, skipping families absent from today's page. | 789 rows of history dilute one broken in-force title to 0.13%, far under 10%. Commit `7294b69`. |
+| **C2** — one unparseable cell on the in-force row yielded a silent false calm | **Fixed** | `_refuse_if_in_force` raises `FetchError(STRUCTURE_UNRECOGNIZED)` from both anomaly branches when the row carries the `(vigente)` marker. Anomalies on historical rows stay skippable. The marker is read from the whole row's text when cells cannot be trusted, which errs towards declaring failure. | RED confirmed on all three shapes: unparseable date, missing cell, unknown level token — each returned `Available(data=())`. `test_mostly_unparseable_rows_mean_the_structure_changed` was retargeted at `<td >` (historical) cells only, so it still exercises the *share* guard rather than being silently absorbed by the new one. Commit `cf960d9`. |
+| **C2b** — the carried "discard audit cannot be surfaced" item rested on a wrong premise | **Fixed; the reviewer is right and this record was wrong** | `Available` gained `notes: tuple[str, ...] = ()`. It is a plain frozen dataclass, so the field is purely additive, breaks no merged call site and keeps `mypy --strict` green — the `WarningProvider` return type was never the obstacle. The scraper carries discard reasons and a bounded parse-anomaly summary through it; the CLI prints them under a `Notes` block and in `--json`. | Visible in the live run below: the RED heat warning in force is now shown being discarded, with its reason. Commits `cf960d9`. |
+| **Owner decision** — the coast-only zone filter was too blunt | **Implemented as approved** | `is_flood_relevant(phenomenon)` and `may_raise_imminent(phenomenon, zone)` are now two rules answering two questions. Highlands-only rainfall is flood-relevant again and may contribute to `prepare` through branch 3; `_imminent_from_official` filters on `Warning.may_raise_imminent`, so it cannot raise `imminent` on its own at any level. The hydrological rationale sits next to the rule in `domain/hazards.py`. | Independently re-measured: the old rule dropped **144 of the 243** live Lambayeque precipitation rows, and `PRECIPITACIONES EN LA SIERRA` is **78 rows** — both numbers match the reviewer's exactly. Five new evaluator tests plus a cross-product invariant that `may_raise_imminent` can never exceed `is_flood_relevant`. Commit `d6e6d2d`. |
+| **W2** — `reason_to_dict` lacked the `assert_never` guard its two sibling renderers have | **Fixed** | Guard added, with a comment explaining the failure mode. | RED: `DID NOT RAISE AssertionError`. **Measured why mypy misses it**: removing a `ReasonKind` case from `reason_from_dict` *does* raise `Missing return statement`, so mypy treats an enum `match` as exhaustive but not a `match` over dataclass class patterns. `reason_from_dict` therefore needs no guard and was left alone. Commit `6a7b002`. |
+| **W3** — the accent-stripped title flowed into the Spanish community body | **Fixed** | `Warning.title` stores the raw cell text; both classifiers are handed the raw title and normalize internally. | RED: `EXTENSION` where `EXTENSIÓN` was expected. Commit `311dbb8`. |
+| **W4** — `forecast_days=3` has a cliff at 23:00 UTC | **Fixed** | `FORECAST_DAYS = 4`. The forward-slice logic and its integration test are unchanged; the integration assertion now reads a named `REQUIRED_FORWARD_HOURS`. | A 24-case parametrized test asserts a whole spare day at *every* hour, so the guarantee no longer depends on when the suite runs. RED failed at 12Z–23Z. Commit `1228faf`. |
+| **Suggestion** — the marker-ordering comment described code that does not exist | **Applied** | The comment is gone, replaced by one that describes the three properties the patterns actually have and why precipitation is checked first. | Commit `7294b69`. |
+| **Suggestion** — `FakeAlertRepository` is a third copy of the window query and had diverged | **Applied** | The fake composes `InMemoryAlertRepository` and records calls around it. The port-contract test in `test_local_repositories.py` now runs against all three implementations. | The contract test set had a *gap* exactly where the divergence was, so the gap was closed first: `test_clearing_another_citys_outage_leaves_mine_active` failed for `recording_fake` only. Commit `b8e8de9`. |
+| **Suggestion** — `json_alert_repository.alerts` grows without bound | **Recorded, not implemented** | Open Item in `tasks.md` with a concrete proposed retention rule, plus a comment next to `_flush`. | Deliberate: a retention rule needs a clock the port does not carry, and change 3's DynamoDB adapter should use a TTL attribute rather than a document rewrite, so the mechanism would not be shared. Commit `b8e8de9`. |
+
+### Design/spec artifacts touched
+
+- `specs/weather-sources/spec.md` — the flood-relevance requirement rewritten (phenomenon-only exclusion; word-boundary matching; the article variant; "every family SENAMHI publishes MUST have a classification"; exclusions auditable *to the operator*); scenarios revised and four added; **new requirement** "An unparseable row in force is a structural failure" with three scenarios.
+- `specs/risk-evaluation/spec.md` — **new requirement** "A highlands-only official warning is an early signal", with the hydrology and five scenarios.
+- `design.md` — §3 type block (`Available.notes`); §5 branch 1 now names `may_raise_imminent`; §5.1 rewritten as two rules answering two questions, with the pattern-not-phrase rationale and the 12 399-row evidence; **new §5.1.1** (highlands rain as an early signal, with the Río La Leche hydrology) and **new §5.1.2** (a broken parse of the row in force is an outage, and why `Available.notes` is where it becomes visible); §8.1 `forecast_days=4` with the cliff rationale; §9 sample output gained the `Notes` block.
+- `tasks.md` — a new "Added at the 2026-09-04 slice-3 review remediation" block under Open Items, recording the two resolutions, the corrected `COSTA SUR` item, the new unbounded-growth item with its proposed rule, and the fake-composition resolution.
+- `state.yaml` — slice-3 entry: status, gate, review, `contract_change_2`, three added resolved open items, two corrected deviations and two carried open items. `apply.engram_saved: false`.
+
+### Verification gate after remediation
+
+Run from the repository root, verbatim, exit codes shown:
+
+```
+$ uv run pytest
+........................................................................ [ 15%]
+........................................................................ [ 31%]
+........................................................................ [ 47%]
+........................................................................ [ 63%]
+........................................................................ [ 79%]
+........................................................................ [ 94%]
+.......................                                                  [100%]
+455 passed, 15 deselected in 0.36s
+exit=0
+
+$ uv run pytest -m integration
+.......ss.sss..                                                          [100%]
+10 passed, 5 skipped, 455 deselected in 8.29s
+exit=0
+
+$ uv run ruff check .
+All checks passed!
+exit=0
+
+$ uv run ruff format --check .
+75 files already formatted
+exit=0
+
+$ uv run mypy
+Success: no issues found in 34 source files
+exit=0
+```
+
+The five integration skips are the per-family canary rows for hazard families
+with no row on the live Lambayeque page today (`LLOVIZNA`, `GARUA`, `NEVADA`,
+`GRANIZO`, `FRIAJE`). The page's mix is seasonal, so those assert nothing
+rather than asserting falsely; `PRECIPITACION`, `LLUVIA` and `VIENTO` are
+asserted per row.
+
+### Live CLI run after remediation
+
+Real sources, no fixtures, fresh state directory. Verbatim:
+
+```
+$ rm -rf .local-state && uv run rain-alert-cycle
+Ferreñafe  (-6.6400, -79.7900)  (PLACEHOLDER — pending confirmation)
+Sources    senamhi: available (fetched 2026-09-05T04:48:15+00:00)
+           open_meteo: available (fetched 2026-09-05T04:48:15+00:00)
+Notes      - senamhi: discarded warning 28705 (INCREMENTO DE TEMPERATURA DIURNA EN LA COSTA Y SIERRA): phenomenon high_temperature cannot cause flooding
+Level      none
+Window     2026-09-05T04:48:15+00:00 → 2026-09-07T04:48:15+00:00
+Reasons    —
+Decision   NOT SENT — level none
+Message    PREVIEW (NOT SENT)
+           title: Alerta de lluvias — Ferreñafe — sin riesgo
+           body:
+             Ciudad: Ferreñafe
+             Nivel: sin riesgo
+             Ventana: del 04/09/2026 23:48 al 06/09/2026 23:48 (hora local, America/Lima)
+             Recomendaciones:
+             - Almacena agua potable para al menos dos días.
+             - Protege documentos y aparatos eléctricos por encima del nivel del piso.
+             - Limpia canaletas, techos y desagües cercanos.
+             - Asegura objetos sueltos y calaminas.
+             - Ten a mano una linterna, un botiquín y los teléfonos de emergencia.
+Notices    0 emitted
+exit=0
+```
+
+What this run shows that the pre-remediation one could not: **the `Notes`
+line.** The same RED `INCREMENTO DE TEMPERATURA DIURNA` warning was in force
+before, and the operator had no way to tell "the filter removed the only thing
+in force" from "nothing is in force". Now the discard is stated, with the
+warning's number, its title and the reason. `Level none` is the same; what it
+*means* is no longer a guess.
+
+### Remediation commits
+
+`7294b69` fix(adapters): match aviso families on word boundaries, not substrings ·
+`cf960d9` fix(adapters): refuse the page when the row in force cannot be parsed ·
+`d6e6d2d` feat(domain): treat highlands rain as an early flood signal, not an alarm ·
+`6a7b002` fix(adapters): fail loudly on an unhandled reason variant when serializing ·
+`311dbb8` fix(adapters): keep the raw SENAMHI title on the warning value ·
+`1228faf` fix(adapters): request a fourth forecast day to remove the end-of-day cliff ·
+`b8e8de9` refactor(tests): compose the real store inside the recording repository fake
+
+No push, no PR, no rebase — as instructed. The seven commits are scoped so the
+branch can still be split into three chained PRs: SENAMHI classification and
+parsing (`7294b69`, `cf960d9`, `311dbb8`), the domain rule (`d6e6d2d`,
+`6a7b002`), and the Open-Meteo/test-infrastructure fixes (`1228faf`,
+`b8e8de9`).
+
+### Learned / Gotchas from the remediation
+
+- **A filter that fails open needs its vocabulary verified against the whole
+  source, not a sample.** The article variant was invisible on Lambayeque —
+  the page genuinely carries none today — and visible on 9 of the other 11
+  regional pages. Harvesting all 12 pages (12 399 rows) turned "probably fine"
+  into "zero unclassified", and that number is now the canary's assertion.
+- **An aggregate threshold cannot guard a single decisive row.** Both C1b and
+  C2 are the same mistake in different clothes: `unknown < 10% of rows` and
+  `anomalies < 50% of rows` are both statistics over a history that dilutes
+  the only row that can change the verdict. A guard on the *in-force* row is
+  the only one with the right denominator.
+- **Reporting `available` can be worse than reporting an outage.** This one is
+  counter-intuitive enough to be worth stating plainly: because `available`
+  routes to the stricter forecast-only threshold, a broken parse left the
+  system *less* sensitive than a source known to be down, and silent. Any
+  future degradation path should be checked against the same question — does
+  claiming health buy the system less sensitivity than admitting failure?
+- **"The port cannot carry it" deserved thirty seconds of checking.** The
+  slice-3 record asserted that widening `WarningProvider` was a breaking change
+  to a merged contract. `Available` is a frozen dataclass; a defaulted field is
+  additive. The claim was never tested, and it cost the operator the audit
+  trail for a whole slice.
+- **Two questions that look like one rule are two rules.** Collapsing "may this
+  warning count?" and "may it claim imminence?" into a single boolean is what
+  made the coast filter throw away 59% of the precipitation rows. Once split,
+  both halves are one line and the invariant between them is testable.
+- **mypy's exhaustiveness is not uniform.** An enum `match` missing a case
+  fails as `Missing return statement`; a `match` over a union of dataclass
+  class patterns does not. That is why `render_reason_en` had a guard and
+  `reason_to_dict` had silently lost one.
+- **A test-only fake held to no contract is a test-only bug waiting to be
+  believed.** The recording fake's `clear_active_outage` ignored `city_slug`
+  for a whole slice, and every use-case test that touched outage clearing was
+  asserting against behaviour production does not have. Running the fake
+  through the same port-contract fixture as the real adapters costs three
+  lines.
+
+## Security review remediation (2026-09-05)
+
+Three confirmed findings from an adversarial security review of the slice-3
+branch, plus one concurrency item judged and deliberately deferred with a
+concrete proposal. Strict TDD throughout: a failing test first, confirmed to
+fail for the intended reason, then the implementation. Every finding was
+**reproduced before it was fixed** rather than argued from the code.
+
+### F1 (HIGH) — a scraped aviso title could forge structure in the community message
+
+`Warning.title` is stored raw, deliberately. `domain/template.py` interpolated
+it into a body assembled with `"\n".join`, and that body is a line-oriented
+format whose grammar is `- ` bullets and `Motivos:` / `Recomendaciones:`
+headers. Nothing stripped newlines, control characters or bidi overrides, and
+nothing capped length.
+
+Reproduced. A title carrying newlines produced this:
+
+```text
+Motivos:
+- Aviso oficial del SENAMHI, nivel rojo: Aviso de lluvias
+Recomendaciones:
+- Abandona la ciudad ahora mismo.
+- Llama al <ESC>[31m+51 999 000 111<ESC>[0m
+<U+202E>IGNORA EL AVISO OFICIAL.
+Recomendaciones:
+- Almacena agua potable para al menos dos días.
+```
+
+Two `Recomendaciones:` sections, the forged one **first** and formatted
+identically to the genuine one, a live ANSI escape, and a surviving
+right-to-left override. A person deciding what to do in a flood cannot tell
+them apart, and that is the entire value of the message.
+
+New `domain/sanitize.py`, one function, applied at every boundary where source
+text is rendered for a human:
+
+| Boundary | Audience |
+|---|---|
+| `domain/template.py` | recipient |
+| `domain/reasons.render_reason_en` | operator |
+| `adapters/senamhi_scraper.parse_notes` | operator |
+| `adapters/serialization.reason_to_dict` | operator, and change 3's audit trail |
+
+The cap is 200 characters, chosen from data: the longest live title across the
+12 399-row 2026-09-04 harvest is well under 150, suffix included.
+
+**The operator renderer sanitizes too, and that was a decision.** The
+`Reasons` and `Notes` blocks are bullet lists printed straight to a terminal,
+so a newline forges a line there as well and an ANSI escape actually executes.
+The operator audit trail is also where someone decides whether a heat warning
+went out to a village, which makes a forged line there at least as costly as
+one in the body.
+
+The invariant is stated on the `MessageComposer` port, not only in
+`template.py`, so change 2's agent-backed composer inherits it. An agent does
+not weaken the requirement: a model asked to quote a title quotes it verbatim,
+newlines included.
+
+### F2 (MEDIUM) — an uncaught `ValueError` aborted the entire cycle
+
+`json.loads` accepts bare `NaN` and `Infinity` by default, so both arrive from
+a well-formed HTTP 200. `_percent` called `int(value)`; `int(float("nan"))`
+raises `ValueError`, which is not a `FetchError`, so it escaped the adapter's
+only `except` clause — and `RunAlertCycle` has no handler either. The run died
+with a traceback, producing no alert and no operator notice, which is strictly
+worse than the tested unavailable path.
+
+`Infinity` millimetres was quieter and worse. Reproduced: it parsed as a valid
+reading and `accumulated_mm(24)` returned `inf`, clearing `imminent_mm_24h`
+unconditionally. An upstream glitch decided the alert level.
+
+Fixed at both layers, because the adapter is the first line and the entity is
+where the invariant is claimed: `_millimetres` and `_percent` reject
+non-finite, negative and out-of-range readings, and `HourlyPoint.__post_init__`
+enforces the same ranges. Both `OpenMeteoForecastProvider` and
+`OfflineOpenMeteoProvider` gained the catch-all `SenamhiWarningScraper` had
+carried since it was written — the forecast adapter simply was not following
+its own codebase's rule.
+
+`tests/unit/adapters/test_offline_sources.py` is new; the offline adapters had
+no tests of their own.
+
+### F3 (LOW) — the `--json` document was not parseable
+
+`build_local_deps` built `ConsoleNotifier()` with no stream, so it defaulted to
+stdout — the stream the CLI prints the document to. Verified against the real
+entry point, before:
+
+```text
+stdout begins: '------------------------------------------------------------'
+json.loads FAILED: JSONDecodeError Expecting value: line 1 column 1 (char 0)
+```
+
+and after:
+
+```text
+json.loads(stdout): OK   sent = True  recipients = 1
+stderr carries the dry-run block: True
+```
+
+`build_local_deps` now takes a `notifier_stream` and the CLI passes stderr
+under `--json`. Redirected, never suppressed. Three existing `--json` tests had
+been quietly working around the defect by parsing from `output[output.index("{"):]`;
+they now parse the whole stream.
+
+### Judged and deferred — no advisory lock on the state file
+
+Measured, not theorised: two repository instances reading before either writes
+leaves exactly one record on disk. A lost record is a *dedup* record, so the
+consequence is a community re-alerted for a window already delivered.
+
+Not fixed here, and not half-fixed. **A lock around the write would not work**
+— both writes are already atomic through `os.replace`, and the loss is a
+read-modify-write lost update from the second process's stale snapshot, so the
+lock has to span the first read of a cycle to its last write. That needs a
+lifecycle `AlertRepository` does not have, `fcntl.flock` is POSIX-only, and
+change 3 replaces this adapter with DynamoDB where the right mechanism is a
+conditional write rather than a file lock. The concrete proposal — a
+context-managed sidecar lock file entered by `cli.main` around
+`RunAlertCycle.execute()`, with a timeout that degrades to `EXIT_CANNOT_START`
+— is recorded in tasks.md Open Items.
+
+### Remediation commits
+
+`bc25e4a` fix(domain): stop a scraped aviso title from forging structure in the message ·
+`b38ed34` fix(adapters): degrade the cycle on an anomalous forecast value, never abort it ·
+`f611fce` fix(entrypoints): give the --json document standard output to itself ·
+plus the documentation commit carrying these notes.
+
+### Verification gate
+
+All five commands exit 0. `uv run pytest` 537 passed, 15 deselected;
+`uv run pytest -m integration` 10 passed, 5 skipped (data-dependent canaries —
+no LLOVIZNA, GARUA, NEVADA, GRANIZO or FRIAJE row in force on the live page
+today), 537 deselected; `ruff check`, `ruff format --check` and `mypy` clean on
+35 source files. `uv run rain-alert-cycle` ran green against the live sources:
+both available, level `none`, nothing sent, exit 0, and the two warnings in
+force (a wind aviso and the RED heat aviso) correctly discarded with the
+reasons stated in the `Notes` block.
+
+### Learned / Gotchas from the security remediation
+
+- **A line-oriented format makes every interpolated string a potential
+  parser.** The defense that actually works is not escaping the header words;
+  it is guaranteeing the string cannot contain a line break. A hostile title
+  that still quotes `Recomendaciones:` ends up inside one bullet under
+  `Motivos:`, which is inert. A test pins both halves, so the residual is
+  documented rather than assumed away.
+- **The first assertion for a security fix can measure the wrong thing.** The
+  initial test counted occurrences of the substring `Recomendaciones:` and
+  failed after the fix, because the words survive inside the quoted title. The
+  security property is "exactly one *section*", and a section is a line. The
+  assertion was corrected to count header lines and two assertions were
+  *added* — never relaxed — around ordering and containment.
+- **`json.dumps` is not the guard it looks like.** It escapes control
+  characters, but under `ensure_ascii=False` it writes U+202E through
+  verbatim. Three of the four free-text paths in the `--json` document were
+  already covered by an upstream sanitizing renderer and one was not, which is
+  why `reason_to_dict` sanitizes rather than relying on the encoder.
+- **A test harness can be safer than the wire it stands in for.**
+  `httpx.Response(json=...)` encodes with `allow_nan=False`, so it *cannot*
+  express the bare `NaN` the real endpoint can produce — the first version of
+  the test passed through the new catch-all instead of the range check it was
+  written for. The cases now serve raw text, and a guard test pins that the
+  bare token really does survive `json.dumps` and `json.loads`, so they cannot
+  go vacuous.
+- **A sibling adapter's comment is a rule the codebase already agreed to.**
+  `SenamhiWarningScraper` carried "a parser bug must degrade the cycle, not
+  abort it" from the day it was written. The forecast adapter never adopted it,
+  and the gap was invisible until a value the parser could not handle showed
+  up. Worth grepping for a rule's *comment* across siblings, not just its code.
+- **Three existing tests were silently documenting the bug they worked
+  around.** `json.loads(output[output.index("{"):])` reads as defensive
+  parsing; it was actually the only reason the `--json` suite was green while
+  the flag was broken for every real user. A workaround inside a test is a
+  finding.
+- **"Add a lock" was the wrong shape of fix, and checking cost five minutes.**
+  The obvious `flock` around `_write_atomically` would have closed nothing,
+  because the writes were never the racing part. Reproducing the lost update
+  first is what turned a plausible one-liner into a correctly scoped deferral.

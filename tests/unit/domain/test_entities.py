@@ -24,6 +24,41 @@ def _hourly_points(count: int, *, mm: float, probability: int) -> tuple[HourlyPo
     return tuple(HourlyPoint(at=_utc(h), precipitation_mm=mm, probability_pct=probability) for h in range(count))
 
 
+class TestHourlyPointInvariants:
+    """The range check belongs where the invariant is claimed.
+
+    `precipitation_mm` is millimetres of rain and `probability_pct` is a
+    percentage; both are documented as such and both feed thresholds. A
+    parser that let a non-finite or out-of-range value through produced an
+    `inf` accumulation, which clears `imminent_mm_24h` unconditionally — an
+    upstream anomaly deciding the level for a real community. Defending it
+    only in the adapter leaves every other constructor, including change 3's,
+    free to reintroduce it.
+    """
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "-inf"])
+    def test_a_non_finite_precipitation_reading_is_rejected(self, value: float) -> None:
+        with pytest.raises(ValueError, match="finite"):
+            HourlyPoint(at=_utc(0), precipitation_mm=value, probability_pct=50)
+
+    def test_a_negative_precipitation_reading_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="precipitation_mm"):
+            HourlyPoint(at=_utc(0), precipitation_mm=-0.1, probability_pct=50)
+
+    def test_zero_precipitation_is_accepted(self) -> None:
+        """Triangulation: a dry hour is the commonest reading there is."""
+        assert HourlyPoint(at=_utc(0), precipitation_mm=0.0, probability_pct=0).precipitation_mm == 0.0
+
+    @pytest.mark.parametrize("value", [-1, 101, 1_000], ids=["below-zero", "just-over", "far-over"])
+    def test_a_probability_outside_zero_to_one_hundred_is_rejected(self, value: int) -> None:
+        with pytest.raises(ValueError, match="probability_pct"):
+            HourlyPoint(at=_utc(0), precipitation_mm=1.0, probability_pct=value)
+
+    @pytest.mark.parametrize("value", [0, 50, 100], ids=["zero", "middle", "one-hundred"])
+    def test_the_whole_documented_probability_range_is_accepted(self, value: int) -> None:
+        assert HourlyPoint(at=_utc(0), precipitation_mm=1.0, probability_pct=value).probability_pct == value
+
+
 class TestForecast:
     def test_accumulated_mm_sums_precipitation_over_the_window(self) -> None:
         points = _hourly_points(4, mm=2.5, probability=50)

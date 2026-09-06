@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import assert_never
 
+from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.values import WarningLevel
 
 
@@ -99,10 +100,20 @@ type Reason = WarningReason | ForecastThresholdReason | SenamhiUnavailableReason
 
 
 def render_reason_en(reason: Reason) -> str:
-    """The operator audit line for one reason (English, with the numbers)."""
+    """The operator audit line for one reason (English, with the numbers).
+
+    The scraped title is sanitized here for the same reason the Spanish body
+    sanitizes it, and the decision was deliberate rather than inherited. The
+    operator's `Reasons` block is a `- ` bullet list printed straight to a
+    terminal, so a title carrying a newline forges an extra audit line and an
+    ANSI escape executes. This block is also where someone decides whether a
+    heat warning went out to a village, which makes a forged line here as
+    costly as one in the community body — arguably more so, because the
+    operator is the party who would otherwise catch the first one.
+    """
     match reason:
         case WarningReason(level=level, title=title):
-            return f"official SENAMHI warning: {level.value} — {title}"
+            return f"official SENAMHI warning: {level.value} — {sanitize_source_text(title)}"
         case ForecastThresholdReason(
             accumulated_mm=accumulated,
             hours=hours,

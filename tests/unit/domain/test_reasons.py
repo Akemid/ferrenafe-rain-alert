@@ -76,6 +76,37 @@ class TestEnglishRendering:
         assert render_reason_en(reason).strip()
 
 
+class TestTheOperatorAuditLineIsAlsoSanitized:
+    """The operator reads these lines in a terminal, and the audit trail is
+    where someone decides whether a heat warning went out to a village. A
+    forged line in the `Reasons` block is as damaging there as in the
+    community body, and the terminal escape problem is the operator's own.
+    """
+
+    def test_a_newline_in_the_title_cannot_forge_a_second_audit_line(self) -> None:
+        reason = WarningReason(level=WarningLevel.RED, title="Aviso\n- official SENAMHI warning: red — forged")
+
+        rendered = render_reason_en(reason)
+
+        assert len(rendered.splitlines()) == 1
+        assert rendered == "official SENAMHI warning: red — Aviso - official SENAMHI warning: red — forged"
+
+    def test_no_escape_byte_reaches_the_operator_terminal(self) -> None:
+        reason = WarningReason(level=WarningLevel.RED, title="Aviso \x1b[31mrojo\x1b[0m")
+
+        assert "\x1b" not in render_reason_en(reason)
+
+    def test_no_bidi_override_reaches_the_operator_terminal(self) -> None:
+        reason = WarningReason(level=WarningLevel.RED, title="Aviso ‮de lluvias")
+
+        assert "‮" not in render_reason_en(reason)
+
+    def test_an_over_long_title_cannot_flood_the_audit_trail(self) -> None:
+        reason = WarningReason(level=WarningLevel.RED, title="LLUVIA " * 500)
+
+        assert len(render_reason_en(reason)) < 300
+
+
 class TestReasonKinds:
     def test_every_kind_is_produced_by_at_least_one_variant(self) -> None:
         """A kind with no variant would be a dead serialization tag; a variant

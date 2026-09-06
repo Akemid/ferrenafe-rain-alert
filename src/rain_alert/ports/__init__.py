@@ -29,6 +29,34 @@ class ForecastProvider(Protocol):
 
 
 class MessageComposer(Protocol):
+    """The only port through which recipient-facing text is produced.
+
+    That makes it the chokepoint for one invariant every implementation owes,
+    including change 2's agent-backed composer:
+
+    **Every source-derived free text that reaches `AlertMessage.title` or
+    `AlertMessage.body` must pass through
+    `rain_alert.domain.sanitize.sanitize_source_text` first.**
+
+    Source-derived means "the system did not write it": today that is the
+    scraped SENAMHI aviso title, carried on `WarningReason.title` and
+    `WarningSummary.title`. It excludes operator-owned configuration
+    (`city`, `timezone`, `checklist`) and the evaluator's own numbers.
+
+    The reason is not theoretical. `AlertMessage.body` is a line-oriented
+    format whose grammar is `- ` bullets and `Motivos:` / `Recomendaciones:`
+    headers. A title containing newlines was shown to produce a body with two
+    `Recomendaciones:` sections, the forged one first and formatted
+    identically to the genuine one, carrying a live ANSI escape and a
+    right-to-left override. A person deciding what to do in a flood cannot
+    tell the two apart.
+
+    An agent-backed composer does not weaken this and does not replace it: a
+    model asked to quote a title will quote it verbatim, newlines included,
+    and prompt text arriving from a scraped page is exactly the input a
+    composer must not be handed unfiltered.
+    """
+
     def compose(self, request: MessageRequest) -> AlertMessage: ...
 
 

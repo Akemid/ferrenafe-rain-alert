@@ -60,6 +60,17 @@ def _json_provider(payload: dict[str, Any]) -> OpenMeteoForecastProvider:
     return _provider(lambda request: httpx.Response(200, json=payload))
 
 
+def _raw_provider(payload: dict[str, Any]) -> OpenMeteoForecastProvider:
+    """Serves the payload as the *wire* would, bare `NaN`/`Infinity` included.
+
+    `httpx.Response(json=...)` encodes with `allow_nan=False` and refuses
+    them, so it cannot express this case at all. Python's `json.dumps` emits
+    the bare tokens by default and `json.loads` accepts them by default —
+    which is precisely why they reach the parser from a well-formed HTTP 200.
+    """
+    return _provider(lambda request: httpx.Response(200, text=json.dumps(payload)))
+
+
 class TestSuccessfulFetch:
     def test_a_valid_response_yields_48_available_hourly_points(self) -> None:
         """weather-sources: Successful fetch."""
@@ -183,6 +194,106 @@ class TestUnavailableResults:
 
         assert isinstance(result, Unavailable), case
         assert result.reason is UnavailableReason.MALFORMED_PAYLOAD, case
+
+    @pytest.mark.parametrize(
+        ("mutate", "case"),
+        [
+            (lambda p: p["hourly"]["precipitation_probability"].__setitem__(3, float("nan")), "NaN probability"),
+            (lambda p: p["hourly"]["precipitation_probability"].__setitem__(3, float("inf")), "Infinity probability"),
+            (lambda p: p["hourly"]["precipitation"].__setitem__(3, float("nan")), "NaN precipitation"),
+            (lambda p: p["hourly"]["precipitation"].__setitem__(3, float("inf")), "Infinity precipitation"),
+            (lambda p: p["hourly"]["precipitation"].__setitem__(3, float("-inf")), "-Infinity precipitation"),
+        ],
+        ids=lambda value: value if isinstance(value, str) else "",
+    )
+    def test_a_non_finite_reading_is_reported_as_a_malformed_payload(self, mutate, case: str) -> None:
+        """`json.loads` accepts bare `NaN` and `Infinity` by default, and
+        `int(float("nan"))` raises `ValueError`, which is not a `FetchError`.
+        Before the fix that killed the whole cycle with a traceback: no alert
+        and no operator notice, which is worse than the tested unavailable
+        path — and anomalous upstream values are most likely during exactly
+        the extreme weather this tool exists for.
+
+        `Infinity` millimetres was worse still: it parsed as a valid reading,
+        accumulated to an infinite rainfall total and cleared
+        `imminent_mm_24h` unconditionally."""
+        payload = _payload()
+        mutate(payload)
+
+        result = _raw_provider(payload).fetch_forecast(LOCATION, 48, DAY_START)
+
+        assert isinstance(result, Unavailable), case
+        assert result.reason is UnavailableReason.MALFORMED_PAYLOAD, case
+
+    def test_the_bare_non_finite_token_really_does_reach_the_parser(self) -> None:
+        """Guards the test above from becoming vacuous. If a future httpx
+        started rejecting these on decode, the case would still pass while no
+        longer exercising the defect it was written for."""
+        payload = _payload()
+        payload["hourly"]["precipitation"][3] = float("inf")
+
+        wire = json.dumps(payload)
+
+        assert "Infinity" in wire
+        assert json.loads(wire)["hourly"]["precipitation"][3] == float("inf")
+
+    @pytest.mark.parametrize(
+        ("mutate", "case"),
+        [
+            (lambda p: p["hourly"]["precipitation_probability"].__setitem__(3, 101), "probability above 100"),
+            (lambda p: p["hourly"]["precipitation_probability"].__setitem__(3, -1), "probability below zero"),
+            (lambda p: p["hourly"]["precipitation"].__setitem__(3, -0.5), "negative precipitation"),
+        ],
+        ids=lambda value: value if isinstance(value, str) else "",
+    )
+    def test_an_out_of_range_reading_is_reported_as_a_malformed_payload(self, mutate, case: str) -> None:
+        """A percentage is 0 to 100 and rainfall is not negative. Both are
+        claimed by `HourlyPoint`, and an upstream value that violates them
+        would otherwise flow into a threshold comparison."""
+        payload = _payload()
+        mutate(payload)
+
+        result = _json_provider(payload).fetch_forecast(LOCATION, 48, DAY_START)
+
+        assert isinstance(result, Unavailable), case
+        assert result.reason is UnavailableReason.MALFORMED_PAYLOAD, case
+
+    def test_the_documented_range_boundaries_are_still_accepted(self) -> None:
+        """Triangulation: the range check must not reject real readings. 0%
+        and 100% both occur in live payloads."""
+        probability = [0] + [100] * 71
+
+        result = _json_provider(_payload(probability=probability)).fetch_forecast(LOCATION, 48, DAY_START)
+
+        assert isinstance(result, Available)
+        assert result.data.max_probability_pct(48) == 100
+
+    def test_an_unexpected_exception_degrades_the_cycle_instead_of_aborting_it(self) -> None:
+        """The sibling scraper already carries a catch-all with exactly this
+        comment: a parser bug must degrade the cycle, not abort it, because
+        `RunAlertCycle` has a fully tested degraded path and no exception
+        handler at all. This adapter did not follow its own codebase's rule."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise RuntimeError("an httpx internal that is not an HTTPError")
+
+        result = _provider(handler).fetch_forecast(LOCATION, 48, DAY_START)
+
+        assert isinstance(result, Unavailable)
+        assert result.source is SourceName.OPEN_METEO
+        assert result.reason in set(UnavailableReason)
+        assert "RuntimeError" in result.detail
+
+    def test_an_unexpected_parser_bug_is_also_reported_rather_than_raised(self, monkeypatch) -> None:
+        def boom(*args, **kwargs):
+            raise KeyError("a field the parser assumed was there")
+
+        monkeypatch.setattr("rain_alert.adapters.open_meteo.parse_forecast_payload", boom)
+
+        result = _json_provider(_payload()).fetch_forecast(LOCATION, 48, DAY_START)
+
+        assert isinstance(result, Unavailable)
+        assert "KeyError" in result.detail
 
     def test_a_gap_in_the_hourly_series_is_a_parse_failure_not_silent_interpolation(self) -> None:
         """`Forecast` requires contiguous hourly points, so a missing hour must

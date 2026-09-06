@@ -7,9 +7,11 @@ its calls so tests can assert order and arguments, not just return values.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from rain_alert.adapters.local.in_memory_alert_repository import InMemoryAlertRepository
 from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.entities import Contact, Forecast, Warning
 from rain_alert.domain.messages import AlertMessage, AlertRecord, MessageRequest, OperatorNotice, OutageRecord
@@ -84,39 +86,60 @@ class FakeNotifier:
         self.notice_calls.append(notice)
 
 
-@dataclass
 class FakeAlertRepository:
-    alerts: list[AlertRecord] = field(default_factory=list)
-    active_outage: OutageRecord | None = None
-    query_calls: list[tuple[str, datetime, datetime]] = field(default_factory=list)
-    record_calls: list[AlertRecord] = field(default_factory=list)
-    save_outage_calls: list[OutageRecord] = field(default_factory=list)
-    clear_outage_calls: list[str] = field(default_factory=list)
+    """`AlertRepository` that records its calls around a real one.
+
+    It **composes** `InMemoryAlertRepository` rather than reimplementing the
+    query. `in_memory_alert_repository.py` says in as many words that a second
+    copy of "filter by city, filter by window-start range, sort ascending" is
+    the kind of duplication that diverges silently and re-alerts a community,
+    and that is exactly what happened here: the third copy also cleared the
+    active outage without checking `city_slug`, so a fake the use-case tests
+    trust behaved differently from production.
+
+    This class therefore owns exactly one thing — the call log. Behaviour is
+    the real store's, and the port contract in
+    `tests/unit/adapters/test_local_repositories.py` runs against this class
+    too, so the two cannot drift again.
+    """
+
+    def __init__(
+        self,
+        alerts: Iterable[AlertRecord] = (),
+        active_outage: OutageRecord | None = None,
+    ) -> None:
+        self._state = InMemoryAlertRepository(alerts=alerts, active_outage=active_outage)
+        self.query_calls: list[tuple[str, datetime, datetime]] = []
+        self.record_calls: list[AlertRecord] = []
+        self.save_outage_calls: list[OutageRecord] = []
+        self.clear_outage_calls: list[str] = []
+
+    @property
+    def alerts(self) -> tuple[AlertRecord, ...]:
+        """Everything recorded so far, for assertions on stored state."""
+        return self._state.snapshot()[0]
+
+    @property
+    def active_outage(self) -> OutageRecord | None:
+        return self._state.snapshot()[1]
 
     def alerts_with_window_start_between(
         self, city_slug: str, earliest_start: datetime, latest_start: datetime
     ) -> tuple[AlertRecord, ...]:
         self.query_calls.append((city_slug, earliest_start, latest_start))
-        matches = [
-            record
-            for record in self.alerts
-            if record.city_slug == city_slug and earliest_start <= record.window.start <= latest_start
-        ]
-        return tuple(sorted(matches, key=lambda record: record.window.start))
+        return self._state.alerts_with_window_start_between(city_slug, earliest_start, latest_start)
 
     def record_alert(self, record: AlertRecord) -> None:
-        self.alerts.append(record)
+        self._state.record_alert(record)
         self.record_calls.append(record)
 
     def get_active_outage(self, city_slug: str) -> OutageRecord | None:
-        if self.active_outage is not None and self.active_outage.city_slug == city_slug:
-            return self.active_outage
-        return None
+        return self._state.get_active_outage(city_slug)
 
     def save_active_outage(self, record: OutageRecord) -> None:
-        self.active_outage = record
+        self._state.save_active_outage(record)
         self.save_outage_calls.append(record)
 
     def clear_active_outage(self, city_slug: str) -> None:
-        self.active_outage = None
+        self._state.clear_active_outage(city_slug)
         self.clear_outage_calls.append(city_slug)
