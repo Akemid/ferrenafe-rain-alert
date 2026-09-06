@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.policies import AlertPolicy
@@ -46,6 +47,11 @@ class CycleResult:
     report on one cycle, whether or not a send was authorized."""
 
     config_city: str
+    #: The cycle clock — when this cycle ran, not when its window starts. The
+    #: `--json` calibration document previously reported `window.start` here,
+    #: which on an imminent-from-official verdict is the aviso's own start date
+    #: and can be days in the past.
+    evaluated_at: datetime
     senamhi: SourceResult[tuple[Warning, ...]]
     open_meteo: SourceResult[Forecast]
     assessment: RiskAssessment
@@ -188,6 +194,7 @@ class RunAlertCycle:
 
         return CycleResult(
             config_city=config.city,
+            evaluated_at=now,
             senamhi=warnings,
             open_meteo=forecast,
             assessment=assessment,

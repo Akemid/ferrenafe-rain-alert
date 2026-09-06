@@ -209,7 +209,9 @@ def as_json(result: CycleResult, config: AlertConfig) -> str:
         "latitude": config.coordinates.latitude,
         "longitude": config.coordinates.longitude,
         "coordinates_are_placeholder": config.coordinates_are_placeholder,
-        "evaluated_at": result.assessment.window.start.isoformat(),
+        # The cycle clock, not the window start. The two are different facts and
+        # the window start can precede the run by days on an official verdict.
+        "evaluated_at": result.evaluated_at.isoformat(),
         "level": result.assessment.level.value,
         "degraded": result.assessment.degraded,
         "window_start": result.assessment.window.start.isoformat(),

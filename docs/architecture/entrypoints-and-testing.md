@@ -89,6 +89,8 @@ The coordinates line prints `(PLACEHOLDER — pending confirmation)` whenever `c
 
 The document also carries `coordinates_are_placeholder`, so a calibration log records whether the coordinates were confirmed at the time of the run.
 
+**`evaluated_at` is the cycle clock, not the window start.** It reads `CycleResult.evaluated_at`, which `RunAlertCycle` fills from the injected clock. It used to read `assessment.window.start`, which is a different fact: on an imminent-from-official verdict the window start is the aviso's own start date and can be days earlier than the run. It also duplicated `window_start` exactly, so the document carried no record of when the cycle actually ran — the one field that lets a reviewer correlate a verdict with the data available at that moment, in a document whose stated purpose is calibration logging.
+
 **Under `--json`, standard output carries the document and nothing else.**
 
 `ConsoleNotifier` also defaulted to standard output, so on any run that sent an alert or emitted an operator notice, the document was preceded by a `[DRY-RUN ALERT]` or `[OPERATOR NOTICE]` block and `json.loads` failed. The flag is documented as machine-readable output for calibration logging, so it broke on precisely the runs worth logging — a send and a degraded cycle are the two things a calibration log exists to record.
