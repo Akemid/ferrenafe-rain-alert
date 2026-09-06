@@ -169,7 +169,7 @@ uv run ruff format --check .
 uv run mypy
 ```
 
-At the time of writing, `uv run pytest` reports 537 passed and 15 deselected. The deselected tests are the live-network canaries, which are opt-in by the `addopts = "-q -m 'not integration'"` setting in `pyproject.toml`.
+At the time of writing, `uv run pytest` reports 549 passed and 15 deselected. The deselected tests are the live-network canaries, which are opt-in by the `addopts = "-q -m 'not integration'"` setting in `pyproject.toml`.
 
 ```bash
 uv run pytest -m integration

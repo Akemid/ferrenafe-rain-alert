@@ -1095,3 +1095,143 @@ reasons stated in the `Notes` block.
   The obvious `flock` around `_write_atomically` would have closed nothing,
   because the writes were never the racing part. Reproducing the lost update
   first is what turned a plausible one-liner into a correctly scoped deferral.
+
+---
+
+## Verification remediation (2026-09-06)
+
+Source: `verify-report.md` — verdict PASS WITH FINDINGS, 0 CRITICAL, 8 WARNING,
+11 SUGGESTION, verified on `chore/land-slice3-remainder` @ `bcba50b`.
+
+Branch: `chore/land-slice3-remainder`. Strict TDD throughout: a failing test
+first, confirmed failing for the intended reason, then the implementation.
+Nothing was pushed and no PR was opened by this run.
+
+### Disposition per finding
+
+Every WARNING and SUGGESTION in the report is listed. Nothing was silently
+skipped.
+
+| # | Disposition | What happened |
+|---|---|---|
+| W1 | Fixed | `MessageRequest.warning` named a warning the evaluator refused to act on. `_warnings_behind` now reads the contributors off `assessment.reasons`. Three tests, including the verifier's exact reproduction. |
+| W2 | Fixed | One shared `CallLog` across every spy. Two ordering tests, mutation-confirmed in both directions. |
+| W3 | Fixed | `test_no_secret_or_personal_data_pattern_is_committed` — six shape patterns through `git grep -nIE`, narrow allow-list, plus a test that fails if an allow-list entry outlives its line. |
+| W4 | Fixed | `CycleResult.evaluated_at` carries the cycle clock; `--json` no longer reports the window start as the run time. |
+| W5 | Fixed | `tasks.md` said `forecast_days=3` in two places; corrected to the shipped `4` with the reason it was raised. |
+| W5b | Fixed | `domain/sanitize.py` is now design §3.3 (contractual for changes 2 and 3) and appears in §12's additions table. Its docstring cited §3.2, about forecast horizons; it now cites §3.3. |
+| W6 | Fixed | `state.yaml` rewritten to the shipped reality: apply complete, six merged PRs with numbers, bases and merge times, a slice record for the 2026-09-05 security remediation that had none, the task count corrected to 44, `next_recommended: [sdd-archive]` with a blocking reason for the unpushed branch. |
+| W7 | Fixed | `risk-evaluation` narrowed to thresholds; coordinates are a `ForecastProvider` concern already covered by `weather-sources`. Amendment noted inline. |
+| W8 | Fixed | `alert-cycle` now says "each reason, except where the body already states the same fact in its own sentence", with a scenario naming the degraded case. Amendment noted inline. |
+| S1 | Fixed | One branch numbering, design §5's, stated in `risk.py`'s module docstring. |
+| S2 | Fixed | Same commit; `_prepare_forecast_only` is branch 4 and `_prepare_degraded` branch 5 everywhere. |
+| S3 | Deferred (design amended) | Branch 6's window corrected in design §5 to `now + PREPARE_HORIZON_HOURS`. The `forecast_hours` knob question is carried to change 3 with the closing condition written down: either rename the knob to say it is a fetch horizon, or move both horizons into `RiskThresholds`. Not decided here because it is a calibration question for the first rainy season, not a refactor. |
+| S3b | Fixed | The article-variant heat aviso is now discarded through the scraper, not only at the classifier. |
+| S4 | Fixed | A red coastal warning raising `imminent` is asserted directly. |
+| S5 | Fixed | The notice-kind test asserts the disjointness from `Level` its docstring claimed, instead of a set membership that cannot fail. |
+| S6 | Fixed | `git check-ignore` replaces the `.gitignore` substring scan. |
+| S6b | Fixed | One cycle now proves both halves of proposal criterion 8. |
+| S7 | Fixed | All twelve Success Criteria boxes ticked, with a note recording that criterion 8 is now end-to-end and criterion 12 now automated. |
+| S8 | Fixed | Folded into W3: the allow-list names the three files and the exact placeholder string rather than loosening the pattern. |
+| S9 | Fixed | The canary fetches once per session on a patient timeout. 10 passed, 5 skipped in 2.05 s, clean on the first run, down from three attempts and 28–37 s. |
+| S10 | Fixed | Design §8.2 amended from the planned four fixtures to the shipped five. |
+| S11 | Fixed | `TimeWindow.key()` recorded in design §4.1 as a change-3 affordance. |
+
+### W2 mutation evidence, both directions
+
+The mutation is the verifier's: the whole `AlertRecord` construction and
+`deps.alerts.record_alert(record)` moved above `deps.notifier.send_alert(...)`.
+
+Before the shared `CallLog` existed, with the mutation applied:
+
+```
+$ uv run pytest
+540 passed, 15 deselected in 0.43s
+```
+
+After the shared `CallLog`, with the same mutation re-applied:
+
+```
+$ uv run pytest
+FAILED tests/unit/application/test_run_alert_cycle.py::TestTheCycleRunsItsStepsInTheSpecifiedOrder::test_an_authorized_send_calls_the_ports_in_the_order_the_spec_lists
+FAILED tests/unit/application/test_run_alert_cycle.py::TestTheCycleRunsItsStepsInTheSpecifiedOrder::test_the_alert_is_recorded_only_after_the_notifier_delivered_it
+E       assert log.position_of("notifier", "send_alert") < log.position_of("alerts", "record_alert")
+E       AssertionError: assert 9 < 8
+2 failed, 541 passed, 15 deselected in 0.41s
+```
+
+Mutation reverted:
+
+```
+$ uv run pytest tests/unit/application/test_run_alert_cycle.py -k TestTheCycleRunsItsStepsInTheSpecifiedOrder
+3 passed, 15 deselected in 0.02s
+```
+
+### W3 detection evidence
+
+The scan is clean on the repository as it stands. To prove the guard can fail,
+a probe file was written carrying one AWS-shaped access key id (the `AKIA`
+prefix plus sixteen upper-case alphanumerics) and one address-shaped string,
+then staged so `git grep` would see it. Both were reported by name, with the
+pattern label, the path and the line number, and the probe was then removed.
+
+The literals themselves are deliberately **not** reproduced here. Writing them
+down would put two secret-shaped strings into a tracked artifact, which is the
+thing the check exists to prevent — and the check duly failed on this very
+paragraph in its first draft, which is the strongest evidence available that it
+works. The allow-list was not widened to accommodate the prose; the prose was
+rewritten.
+
+### Commits
+
+| Commit | Work unit |
+|---|---|
+| `fix(application): name the aviso that earned the verdict in the message request` | W1 |
+| `test(support): make cross-port call order observable in the fakes` | W2, design §10.1 |
+| `docs(openspec): amend the two spec sentences the shipped code contradicts` | W7, W8, plus the two ordering scenarios |
+| `fix(entrypoints): report the cycle clock as evaluated_at in the json document` | W4, plus the guide entries for W1 and W2 |
+| `docs(domain): use one branch numbering in the evaluator prose` | S1, S2 |
+| `test: close five coverage gaps the verification named` | S3b, S4, S5, S6, S6b |
+| `test(hygiene): guard the committed-secrets scan with a test` | W3, S8 |
+| `test(integration): make the SENAMHI canary reliable enough to be trusted` | S9, design §10.2 |
+| `docs(openspec): describe the shipped system in the change artifacts` | W5, W5b, W6, S3, S7, S10, S11 |
+
+### Learned / Gotchas from this remediation
+
+- **A second copy of a rule in a different layer is the defect, not the
+  symptom.** W1 was not "someone forgot `may_raise_imminent`" — it was that
+  `_build_message_request` held its own copy of the evaluator's branch
+  conditions at all. Design §5.1 had already named this call site as one of
+  four that must not forget the filter, and it forgot anyway. Reading the
+  contributors back off `assessment.reasons` removes the *possibility* of
+  disagreement rather than fixing this instance of it, which is the same
+  argument `risk.py` makes for building reasons in the deciding branch.
+- **"The fakes assert call order" was in two docstrings and true in neither.**
+  A claim in a docstring is not a test. The cheap check is to make the mutation
+  the claim forbids and see whether anything goes red — which took two minutes
+  and found that nothing did.
+- **Caching the canary's page was worth far more than it looked.** It was a
+  two-line change (`lru_cache`) that took the opt-in suite from 28–37 s and
+  three attempts to 2.05 s on the first attempt. Eight requests for one page
+  that cannot change between them was eight chances to fail, not one.
+- **An allow-list that forgives a file forgives it forever unless something
+  checks.** `test_every_allow_listed_placeholder_line_still_exists` exists
+  because the hostile-title payload will eventually move, and an entry left
+  behind is a permanent hole in the check with nothing to notice it.
+- **The new scan caught this very document.** The first draft of the W3
+  evidence above quoted the probe's literal `AKIA` key and address so the
+  transcript would be verbatim, and the hygiene test failed on
+  `apply-progress.md`. The tempting fix — allow-list the artifact — would have
+  disarmed the check for the file most likely to accumulate pasted output. The
+  prose was rewritten instead. A guard that inconveniences the person who wrote
+  it on its first day is a guard that works.
+- **The hygiene test had to allow-list itself.** Declaring the placeholder it
+  forgives means the file matches its own pattern. Building the literal from
+  concatenated fragments would have hidden it from the scan — which is exactly
+  the evasion the check exists to prevent — so the honest answer was an
+  allow-list entry naming the file and the reason.
+- **The orchestrator's brief said this branch was the head of an open PR 6.**
+  `gh pr list` says PR 6 merged on 2026-09-06 from
+  `feat/core-alert-cycle-3c-cli`, and this branch is on no remote at all. The
+  artifacts record what `gh` and `git` report, not the brief; a `state.yaml`
+  written from a stale premise is the exact class of defect W6 is about.
