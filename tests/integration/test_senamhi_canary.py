@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import UTC, datetime
+from functools import lru_cache
 
+import httpx
 import pytest
 from bs4 import BeautifulSoup
 
@@ -35,8 +37,28 @@ REGION = "Lambayeque"
 pytestmark = pytest.mark.integration
 
 
+#: A patient timeout, used **only** by the drift probe below.
+#:
+#: `DEFAULT_TIMEOUT`'s 3-second connect budget is a production decision: no
+#: retries exist (D12), so a slow SENAMHI must become `Unavailable` quickly and
+#: the cycle repeats in six hours. A canary is not making that decision. Two of
+#: three verification runs failed on transient TLS connect timeouts, each time
+#: on a different test, and an unreliable canary is an ignored canary — which
+#: would leave the project with no detector for page drift at all. The one test
+#: that asserts *production* behaviour keeps the production timeout.
+CANARY_TIMEOUT = httpx.Timeout(connect=15.0, read=20.0, write=5.0, pool=5.0)
+
+
+@lru_cache(maxsize=1)
 def _live_page() -> str:
-    return HttpxHtmlFetcher().fetch(warnings_url_for(REGION))
+    """The live page, fetched once per session.
+
+    Every test in this module used to call this, and `_live_titles` fetched
+    again on top, so a six-test file made roughly eight live requests for one
+    page that cannot change between them. Caching removes seven chances to hit
+    a transient network failure without weakening a single assertion.
+    """
+    return HttpxHtmlFetcher(timeout=CANARY_TIMEOUT).fetch(warnings_url_for(REGION))
 
 
 def test_the_live_page_still_matches_the_header_signature_and_yields_rows() -> None:
@@ -67,12 +89,14 @@ _KNOWN_FAMILY_STEMS: tuple[tuple[str, Phenomenon], ...] = (
 )
 
 
-def _live_titles() -> list[str]:
-    return [
+@lru_cache(maxsize=1)
+def _live_titles() -> tuple[str, ...]:
+    """Immutable on purpose: a cached value is shared by every caller."""
+    return tuple(
         row.find_all("td")[0].get_text(" ", strip=True)
         for row in BeautifulSoup(_live_page(), "html.parser").find_all("tr")
         if row.find_all("td")
-    ]
+    )
 
 
 def test_the_live_page_is_still_a_multi_hazard_feed_the_classifier_recognizes() -> None:
@@ -135,7 +159,12 @@ def test_every_returned_live_warning_is_flood_relevant() -> None:
 
 
 def test_the_scraper_reports_available_against_the_live_page() -> None:
-    """The port-level result the cycle actually consumes."""
+    """The port-level result the cycle actually consumes.
+
+    Deliberately the one test here that fetches for itself, on the production
+    `DEFAULT_TIMEOUT`: it asserts what the real cycle would get, so lending it
+    the canary's patience would make it assert something else.
+    """
     result = SenamhiWarningScraper(HttpxHtmlFetcher()).fetch_current_warnings(REGION, datetime.now(UTC))
 
     assert isinstance(result, Available), getattr(result, "detail", result)

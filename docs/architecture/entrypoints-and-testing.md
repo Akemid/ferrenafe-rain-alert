@@ -181,6 +181,8 @@ These are opt-in, and they exist because **nothing offline can notice the live s
 - Every warning the parser returns is flood-relevant, and none is wind.
 - The port-level result the cycle actually consumes is `Available`.
 
+**The page is fetched once per session, on a patient timeout.** Every test above used to call `_live_page()` and `_live_titles()` fetched again on top, so the file made roughly eight live requests for one page that cannot change between them, each under the production 3-second connect budget. Two of three verification runs failed on transient TLS connect timeouts, on a different test each time — and an unreliable canary is an ignored canary, which would leave the project with no drift detector at all. `_live_page` is now `lru_cache`d and uses `CANARY_TIMEOUT`, which is generous because a canary is not making the production availability decision that `DEFAULT_TIMEOUT` encodes. `test_the_scraper_reports_available_against_the_live_page` deliberately still fetches for itself on the production timeout, because it asserts what the real cycle would get.
+
 ### `tests/fixtures/`
 
 The pinned HTML and JSON the offline suite parses. `tests/fixtures/senamhi/README.md` documents the capture and each derived file.
