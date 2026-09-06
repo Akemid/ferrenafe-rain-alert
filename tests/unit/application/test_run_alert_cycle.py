@@ -345,3 +345,24 @@ class TestDegradedModeWiring:
         assert result.message is not None
         assert "SENAMHI" in result.message.body
         assert "no estuvo disponible" in result.message.body
+
+    def test_one_degraded_cycle_discloses_the_outage_and_notifies_the_operator(self) -> None:
+        """Proposal success criterion 8, end to end in a single cycle (S6b).
+
+        Both halves were proven before — the body disclosure here, the operator
+        notice in the CLI tests — but never together, and the criterion is
+        written as one cycle doing both. `test_a_degraded_cycle_still_exits_zero`
+        runs exactly this scenario and asserts only the exit code.
+        """
+        forecast = _forecast(48, mm_total=15.0, probability_pct=75)
+        deps = build_fake_deps(warnings=_unavailable(SourceName.SENAMHI), forecast=forecast)
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.assessment.senamhi_status == "unavailable"
+        assert result.sent is True
+        assert result.message is not None
+        assert "no estuvo disponible" in result.message.body
+        assert [notice.kind for notice in result.notices] == [NoticeKind.SOURCE_UNAVAILABLE]
+        assert len(deps.notifier.notice_calls) == 1
+        assert deps.notifier.notice_calls[0].sources == frozenset({SourceName.SENAMHI})

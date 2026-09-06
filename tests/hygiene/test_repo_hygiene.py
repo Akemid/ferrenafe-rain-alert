@@ -5,6 +5,7 @@ design.md section 11.
 """
 
 import re
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -27,9 +28,20 @@ def test_readme_contains_the_required_disclaimers() -> None:
 
 
 def test_gitignore_excludes_local_secrets_and_state() -> None:
-    text = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
-    for pattern in (".env", ".local-state/", ".venv/"):
-        assert pattern in text
+    """S6: the substring scan this replaced would pass on a `.gitignore` that
+    only mentioned `.env.example`, or only carried the comment "never commit
+    .env". The scenario is about what git would track, so it asks git.
+
+    `git check-ignore` answers from the ignore rules alone; the paths need not
+    exist, so nothing is created and the local environment file is never read.
+    """
+    for path in (".env", ".local-state/alerts.json", ".venv/pyvenv.cfg"):
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", "--", path],
+            cwd=REPO_ROOT,
+            check=False,
+        )
+        assert result.returncode == 0, f"{path} is not ignored by .gitignore"
 
 
 def test_env_example_lists_variable_names_with_no_values() -> None:
