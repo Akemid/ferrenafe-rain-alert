@@ -422,84 +422,163 @@ phases:
     artifact: openspec/changes/core-alert-cycle/verify-report.md
     engram_topic_key: sdd/core-alert-cycle/verify-report
     engram_saved: false
-    verdict: PASS WITH FINDINGS
-    verified_on: 2026-09-06
-    verified_ref: chore/land-slice3-remainder @ bcba50b
+    verdict: PASS
+    verified_on: 2026-09-07
+    verified_ref: main @ a2f3af8 (a2f3af853a9e090eeb0194bf1c671cb936cd55af)
+    # Re-verification on main after every remediation was merged. It replaces
+    # the 2026-09-06 run, which was taken on the then-unmerged branch
+    # chore/land-slice3-remainder @ bcba50b and reported 34/35 requirements,
+    # 63/64 scenarios, 0 CRITICAL, 8 WARNING and 11 SUGGESTION. Those counts
+    # are stale in two ways: the findings were remediated, and the specs
+    # gained three scenarios while that happened.
+    verify_result_envelope:
+      # The machine-readable gentle-ai.verify-result/v1 envelope is the first
+      # non-empty content of verify-report.md and is what the native
+      # dispatcher parses. Mirrored here for the archive record only; the
+      # report is authoritative. Admission confirmed with
+      # `gentle-ai sdd-verify-validate --requirements 35 --scenarios 67`.
+      schema: gentle-ai.verify-result/v1
+      evidence_revision: sha256:a85fada3d1fb9c5d1052d2a4180ddbef50c4ab6d84b7d2215f8c429ab130e6ad
+      verdict: pass
+      blockers: 0
+      critical_findings: 0
+      requirements: 35/35
+      scenarios: 67/67
+      test_command: uv run pytest
+      test_exit_code: 0
+      test_output_hash: sha256:3ed9c83a12d7a9945bc938c83632259dacefd2ca0e9f72dda448274e493e5941
+      build_command: uv run mypy
+      build_exit_code: 0
+      build_output_hash: sha256:f948243de639409228dd4bee63b27f24b14f54c40abe7bc306836ead628b67b0
+    measurement:
+      requirements: >-
+        35, counted with `grep -cE '^### Requirement:'` over the seven files
+        under specs/ and summed: alert-cycle 4, alert-dedup 5, local-alert-cli
+        3, repo-hygiene 5, risk-evaluation 7, source-outage-notices 4,
+        weather-sources 7.
+      scenarios: >-
+        67, counted with `grep -cE '^#### Scenario:'` over the same seven files
+        and summed: alert-cycle 8, alert-dedup 6, local-alert-cli 3,
+        repo-hygiene 6, risk-evaluation 18, source-outage-notices 6,
+        weather-sources 20. Up from 64 because the remediation added three
+        scenarios to alert-cycle; no other file changed its counts.
+      evidence_revision: >-
+        sha256 of `git rev-parse HEAD` including its trailing newline, so the
+        digest names the revision the evidence was measured at. Matches the
+        owner's independently captured value byte for byte.
+      output_hashes: >-
+        sha256 of each command's combined stdout and stderr with trailing
+        newlines stripped. build_output_hash is exactly reproducible and
+        matches the owner's value. test_output_hash is NOT reproducible across
+        runs: pytest's summary line ends in the wall-clock duration, so an
+        identical all-green suite yields a different digest each time. The
+        exact hashed bytes are printed verbatim in verify-report.md, and both
+        digests were re-derived from those printed blocks after writing.
     gate: >-
-      uv run pytest 537 passed / 15 deselected; uv run ruff check . clean;
-      uv run ruff format --check . 78 files; uv run mypy clean on 35 source
-      files. All exit 0. Live CLI run clean, exit 0, nothing transmitted, both
-      hazards in force correctly discarded with stated reasons. The opt-in
-      integration suite needed three attempts: runs 1 and 2 failed on transient
-      TLS connect timeouts to the live sources, run 3 passed 10 / 5 skipped.
+      uv run pytest 557 passed / 15 deselected, exit 0; uv run mypy clean on 35
+      source files, exit 0; uv run ruff check . clean, exit 0; uv run ruff
+      format --check . 78 files, exit 0. The opt-in integration suite passed on
+      the first attempt for the first time (10 passed, 5 skipped), which is what
+      finding S9's remediation addressed. Live CLI run clean, exit 0, nothing
+      transmitted, nothing written inside the repository, and the one hazard in
+      force (a wind warning) correctly discarded with a stated reason.
     coverage: >-
-      35 requirements and 64 scenarios traced across the seven spec files.
-      34 of 35 requirements proven by a test that ran green; 63 of 64 scenarios
-      have a covering test. The uncovered scenario is repo-hygiene
-      "Grep check passes", which has no automated test — the property itself was
-      re-verified by hand during this run and is clean.
+      35 requirements and 67 scenarios traced across the seven spec files. 35 of
+      35 requirements proven by a test that ran green in this run; 67 of 67
+      scenarios have a covering test that ran green. 66 of those tests would
+      fail if the behaviour broke; one asserts a proxy for its scenario's second
+      clause (finding W-A). No scenario is uncovered — repo-hygiene "Grep check
+      passes" is automated now and is no longer the manual exception it was on
+      2026-09-06.
     findings:
       critical: 0
-      warning: 8
-      suggestion: 11
+      warning: 1
+      suggestion: 5
+    strict_tdd_verification: >-
+      Strict TDD Mode is active, so the report carries the module's sections.
+      TDD compliance 6/6: apply-progress.md has three TDD Cycle Evidence tables
+      and 34 of the 44 task ids appear in one; the 10 that do not are the
+      tooling scaffold, the three verification gates, the Protocol-only ports
+      module, the test-support fakes, the fixture capture, the local wiring, the
+      manual live smoke and one REFACTOR task — none of them RED/GREEN work, and
+      the wiring is covered by TestWiring anyway. Test layers: 539 unit, 4
+      architecture, 14 hygiene, 15 opt-in live integration; 572 collected, 557
+      run by default. No E2E layer and none expected — the CLI is the outermost
+      boundary. Coverage skipped cleanly: pytest-cov is not a dependency, which
+      is informational and not blocking. Assertion-quality audit: 0 CRITICAL and
+      0 WARNING from the pattern scan — no tautologies, no assertion without a
+      production call, no lone len()==0, no mock-heavy test (unittest.mock is
+      used nowhere by design), all 14 lone `is not None` hits are narrowing
+      guards followed by a value assertion, and all 32 empty-collection
+      assertions have a companion non-empty test in the same class. The only
+      assertion-strength problem is W-A, which no pattern scan could find and
+      the mutation did.
     blocking: none
     key_findings:
       - >-
-        W1 MessageRequest.warning can name a warning the evaluator refused to
-        act on (_most_severe_warning ignores may_raise_imminent), and the field
-        has zero test coverage. Latent contract defect for change 2's composer;
-        no user-visible impact today because the template does not render it.
+        W-A (WARNING) The alert-cycle scenario "A reason the body already states
+        in its own sentence is not repeated" asserts
+        body.count("no estuvo disponible") == 1, which is a wording check rather
+        than the structural claim the scenario makes. Mutation-proven: with
+        SenamhiUnavailableReason rendering a differently worded Motivos bullet,
+        the reason IS repeated and all 557 tests stay green. The shipped code is
+        correct; the guard is weaker than the sentence.
       - >-
-        W2 The "in order" and "record only after notify" guarantees in
-        alert-cycle are unasserted, and tests/support/fakes.py has no shared
-        call log, so cross-port ordering is not observable at all.
+        S-A (SUGGESTION) The repo-hygiene "Grep check passes" scenario still
+        says "GIVEN the full repository working tree" and names four shapes,
+        while the shipped guard scans all 84 reachable commits over ten
+        patterns. The requirement ("at any commit") is satisfied and the
+        implementation is right; the scenario text was never widened.
       - >-
-        W3 repo-hygiene "Grep check passes" is the only spec scenario with no
-        automated test. Verified manually and clean; no regression guard exists
-        on a public repository.
+        S-B (SUGGESTION) GIT_IDENTITY is defined twice in
+        tests/hygiene/test_repo_hygiene.py; the second shadows the first before
+        any use, so the first is dead code that reads like a live constant.
       - >-
-        W4 The --json document's evaluated_at is the assessment window start,
-        not the cycle clock. Reproduced: a run at 2026-09-05T12:00Z reported
-        2026-09-04T05:00Z. The document carries no record of when the cycle ran.
+        S-C (SUGGESTION) PLACEHOLDER_ALLOW_LIST names verify-report.md, and
+        test_every_allow_listed_placeholder_line_still_exists fails if an
+        allow-listed file stops carrying the phone-shaped hostile-title
+        placeholder (the literal is deliberately not repeated here: this file is
+        not allow-listed, and writing it here failed the scan). sdd-archive will
+        move verify-report.md, so the allow-list entry has to move with it or
+        the suite fails on the archive commit. Named here because the archive
+        record is assembled from this file.
       - >-
-        W5 tasks.md still states forecast_days=3 at lines 67 and 91; code,
-        design section 8.1 and the architecture guide all say 4.
+        S-D (SUGGESTION) test_output_hash cannot be reproduced from a rerun,
+        because pytest's summary line carries the wall-clock duration. Worked
+        around by printing the exact hashed bytes; a future run could hash a
+        normalized capture instead and say so.
       - >-
-        W5b domain/sanitize.py and the MessageComposer sanitization invariant
-        are not recorded in design.md; the module docstring cites section 3.2,
-        which is about forecast horizons.
-      - >-
-        W6 This state.yaml does not describe the shipped system: apply is still
-        in_progress, slices 2 and 3 say "PR not open / no push was made",
-        next_recommended is sdd-apply, and the 2026-09-05 security remediation
-        has no entry at all. The archive record is built from this file.
-      - >-
-        W7 risk-evaluation requires the evaluator to read coordinates from
-        configuration; RiskEvaluator only ever receives RiskThresholds. Spec
-        sentence broader than its own scenario and than anything the code can
-        satisfy.
-      - >-
-        W8 alert-cycle says the template must include "each reason"; the
-        template deliberately suppresses SenamhiUnavailableReason's line per
-        design section 3.1. The spec sentence was never amended.
+        S-E (SUGGESTION) S3 stays open by owner decision:
+        AlertConfig.forecast_hours does not move the evaluation window, whose
+        horizons are module constants in domain/risk.py. Recorded in design
+        section 5 and tasks.md. Closing it is a calibration decision for the
+        first rainy season.
+    mutation_evidence: >-
+      Both ordering guarantees confirmed independently of the remediation run,
+      and without modifying the repository: src/ was copied to a scratch
+      directory, mutated there, and the suite run against the copy by putting it
+      first on PYTHONPATH (confirmed by printing the imported module's
+      __file__). Moving AlertRecord construction and record_alert above
+      send_alert failed exactly two tests with "AssertionError: assert 9 < 8"
+      (2 failed, 555 passed, 15 deselected). The W-A mutation, making
+      SenamhiUnavailableReason render a differently worded Motivos bullet, left
+      the suite green (557 passed), which is the finding.
     note: >-
-      No source file was modified by this phase. Only verify-report.md and this
-      block were written. Findings W5, W5b and W6 are artifact-accuracy issues
-      and should be corrected before sdd-archive, because the archive record is
-      assembled from these artifacts.
-    remediation:
-      date: 2026-09-06
-      slice: verification-remediation
-      status: implemented_pending_push
-      outcome: >-
-        All 8 WARNINGs and all 11 SUGGESTIONs dispositioned. 13 fixed in code,
-        9 fixed in the artifacts, 1 (S3, partial) deferred with the reason and
-        the closing condition recorded in tasks.md. Every finding the report
-        raised about the artifacts not describing the shipped system — W5, W5b,
-        W6 — is corrected here, so the archive record can now be assembled
-        truthfully. Coverage after remediation: 35 of 35 requirements and 64 of
-        64 scenarios have a covering test; repo-hygiene "Grep check passes" is
-        no longer manual.
+      No source file and no test was modified by this phase. Only
+      verify-report.md and this block were written, plus the removal of the
+      stale blocked_reasons entry below. The verify-report.md rewrite added the
+      gentle-ai.verify-result/v1 envelope the native dispatcher requires: before
+      it, `gentle-ai sdd-status core-alert-cycle` refused to advance with
+      "verify evidence requires unmanaged remediation: missing valid
+      gentle-ai.verify-result/v1 envelope: the first non-empty content must be
+      fenced yaml", and routing parses only that envelope. The report's prose
+      substance was preserved and its traceability updated to the measured
+      counts.
+      One artifact inaccuracy is left uncorrected because it falls outside this
+      phase's write authority: the archive block below still says archive "must
+      not run until the verification remediation on chore/land-slice3-remainder
+      is merged". It is merged — pull requests 1 through 7 are all on main — so
+      that note should be cleared by whoever owns the archive block.
   archive:
     status: pending
     depends_on: [verify]
@@ -512,11 +591,10 @@ phases:
 next_recommended:
   - sdd-archive
 
-blocked_reasons:
-  - >-
-    The 2026-09-06 verification remediation is implemented but unpushed on
-    chore/land-slice3-remainder (9 commits ahead of origin/main). Push, open
-    the PR and merge it; then clear this reason and run sdd-archive.
+# Cleared 2026-09-07 at re-verification. The 2026-09-06 remediation is merged:
+# pull requests 1 through 7 are all on main, main carries everything, and the
+# working tree is clean with nothing unpushed.
+blocked_reasons: []
 
 resolved_decisions:
   - id: threshold-contradiction
