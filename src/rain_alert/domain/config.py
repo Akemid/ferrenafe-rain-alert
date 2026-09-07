@@ -36,4 +36,3 @@ class AlertConfig:
     active_channel: str
     forecast_hours: int  # 48
     dedup_lookback_hours: int  # 72
-    coordinates_are_placeholder: bool  # True until design spec 12 is closed

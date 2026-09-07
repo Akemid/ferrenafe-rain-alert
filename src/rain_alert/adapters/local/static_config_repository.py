@@ -1,22 +1,29 @@
 """`ConfigRepository` built from module constants (design.md 8.3).
 
-The coordinates are an **approximate placeholder**, not a verified location.
-Ferreñafe's exact latitude/longitude is still an open decision (design spec
-section 12, `state.yaml -> open_decisions.ferrenafe-coordinates`), so the
-config says so through `coordinates_are_placeholder=True` and the CLI prints
-a marker beside them on every run. Presenting a guess as verified would put
-a forecast for the wrong place under the project's own name.
+The default coordinates are the centre of the city of Ferreñafe, the
+provincial capital, which is where the community this system serves lives.
+They are `6°38'10"S 79°47'23"W`, which two independent public references
+agree on:
 
-Two environment overrides let an operator supply real coordinates without a
-code change. They are treated strictly:
+- https://en.wikipedia.org/wiki/Ferre%C3%B1afe_District
+- https://www.deperu.com/infoperu/lambayeque/ferrenafe/
 
-- **Both or neither.** Half an override is not a coordinate; pairing a real
-  latitude with a placeholder longitude would forecast for a point in the
-  ocean while claiming to be configured.
-- **Unparseable or out of range raises.** Falling back to the placeholder
-  would hide an operator typo and forecast for the wrong city silently.
-- **A complete override clears the placeholder flag**, because an operator
-  who supplies coordinates is asserting them.
+**Sourced is not surveyed.** These come from public references, not from a
+reading taken on the ground, and they name the administrative centre rather
+than any particular point on the river. They are good enough to calibrate
+against — the whole city sits well inside one Open-Meteo grid cell — and they
+should be confirmed against a real reading before the deployment change
+writes them into cloud configuration.
+
+Two environment overrides let an operator supply a better point without a
+code change. They are treated strictly, and that matters more now that the
+default is no longer self-evidently provisional:
+
+- **Both or neither.** Half an override is not a coordinate; pairing an
+  operator's latitude with the default longitude would forecast for a point
+  neither of them chose while claiming to be configured.
+- **Unparseable or out of range raises.** Falling back to the default would
+  hide an operator typo and forecast for the wrong city silently.
 
 `checklist` is the one place in this codebase where copy is Spanish by
 contract: it is rendered into the community message body (design spec 7.4).
@@ -33,8 +40,9 @@ from rain_alert.domain.values import Coordinates, WarningLevel
 LAT_ENV_VAR = "RAIN_ALERT_LAT"
 LON_ENV_VAR = "RAIN_ALERT_LON"
 
-#: Approximate, unverified. See the module docstring.
-PLACEHOLDER_COORDINATES = Coordinates(latitude=-6.64, longitude=-79.79)
+#: The city centre, `6°38'10"S 79°47'23"W`. Sourced from public references,
+#: not surveyed on the ground. See the module docstring.
+SOURCED_CITY_CENTRE_COORDINATES = Coordinates(latitude=-6.636005, longitude=-79.789860)
 
 CITY = "Ferreñafe"
 CITY_SLUG = "ferrenafe"
@@ -72,12 +80,12 @@ def _coordinate(env: Mapping[str, str], name: str) -> float:
         raise ValueError(f"{name} must be a decimal number, got {raw!r}") from exc
 
 
-def _resolve_coordinates(env: Mapping[str, str]) -> tuple[Coordinates, bool]:
-    """The coordinates to use, and whether they are still a placeholder."""
+def _resolve_coordinates(env: Mapping[str, str]) -> Coordinates:
+    """The operator's pair if both variables are set, else the city centre."""
     if LAT_ENV_VAR not in env or LON_ENV_VAR not in env:
-        return PLACEHOLDER_COORDINATES, True
+        return SOURCED_CITY_CENTRE_COORDINATES
     # `Coordinates.__post_init__` range-checks, so a typo like -600 raises here.
-    return Coordinates(latitude=_coordinate(env, LAT_ENV_VAR), longitude=_coordinate(env, LON_ENV_VAR)), False
+    return Coordinates(latitude=_coordinate(env, LAT_ENV_VAR), longitude=_coordinate(env, LON_ENV_VAR))
 
 
 class StaticConfigRepository:
@@ -88,11 +96,10 @@ class StaticConfigRepository:
 
     def load(self) -> AlertConfig:
         """The full configuration for one alert cycle."""
-        coordinates, is_placeholder = _resolve_coordinates(self._env)
         return AlertConfig(
             city=CITY,
             city_slug=CITY_SLUG,
-            coordinates=coordinates,
+            coordinates=_resolve_coordinates(self._env),
             timezone=TIMEZONE,
             region=REGION,
             thresholds=THRESHOLDS,
@@ -100,5 +107,4 @@ class StaticConfigRepository:
             active_channel=ACTIVE_CHANNEL,
             forecast_hours=FORECAST_HOURS,
             dedup_lookback_hours=DEDUP_LOOKBACK_HOURS,
-            coordinates_are_placeholder=is_placeholder,
         )

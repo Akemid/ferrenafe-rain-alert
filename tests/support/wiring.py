@@ -49,7 +49,6 @@ DEFAULT_CONFIG = AlertConfig(
     active_channel="console",
     forecast_hours=48,
     dedup_lookback_hours=72,
-    coordinates_are_placeholder=True,
 )
 
 
