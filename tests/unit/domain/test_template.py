@@ -56,6 +56,20 @@ def _request(**overrides: object) -> MessageRequest:
     return MessageRequest(**defaults)  # type: ignore[arg-type]
 
 
+def _reason_bullets(body: str) -> list[str]:
+    """The bullet lines under `Motivos:`, and no others.
+
+    The checklist has bullets of its own, so counting every `- ` line cannot
+    tell whether a reason claimed a bullet it should not have.
+    """
+    lines = body.splitlines()
+    if "Motivos:" not in lines:
+        return []
+    start = lines.index("Motivos:") + 1
+    end = next((i for i in range(start, len(lines)) if not lines[i].startswith("- ")), len(lines))
+    return lines[start:end]
+
+
 class TestTemplateContent:
     def test_message_includes_city_level_and_every_reason_in_spanish(self) -> None:
         request = _request(
@@ -272,6 +286,14 @@ class TestDegradedDisclosure:
         message = MessageComposer().compose(request)
 
         assert message.body.count("no estuvo disponible") == 1
+        # The wording check above still passes if the reason emits a second
+        # bullet saying the same thing in different words. The structural
+        # claim is that the outage occupies no reason bullet at all: it is
+        # stated once, by the body's own dedicated sentence. Only the bullets
+        # under `Motivos:` count, since the checklist has bullets of its own.
+        assert _reason_bullets(message.body) == [
+            "- Se pronostican 15.0 mm de lluvia acumulada en 48 horas, con una probabilidad máxima de 75 %."
+        ]
 
     def test_available_senamhi_is_not_disclosed_as_unavailable(self) -> None:
         request = _request(senamhi_status="available")

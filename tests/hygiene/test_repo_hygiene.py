@@ -55,12 +55,32 @@ HOSTILE_TITLE_PLACEHOLDER = "+51 999 000 111"
 #: Where that placeholder legitimately appears, and why. The `repo-hygiene`
 #: scenario forgives "documented fixture placeholders"; this is that
 #: documentation, kept beside the check rather than in prose somewhere else.
+#: Entries are matched by *suffix*, not by exact path, so that archiving a
+#: change (which moves its folder under `openspec/changes/archive/`) does not
+#: silently strip forgiveness from files that still legitimately carry the
+#: placeholder. A suffix is still specific enough to name one file per change:
+#: it pins the change folder and the file name, only the parent moves.
 PLACEHOLDER_ALLOW_LIST: dict[str, str] = {
     "tests/hygiene/test_repo_hygiene.py": "this check's own declaration of the placeholder it forgives",
     "tests/unit/domain/test_template.py": "the hostile-title attack payload that proves the sanitizer strips it",
-    "openspec/changes/core-alert-cycle/apply-progress.md": "the end-to-end reproduction transcript of that attack",
-    "openspec/changes/core-alert-cycle/verify-report.md": "the verification quoting the same transcript",
+    "core-alert-cycle/apply-progress.md": "the end-to-end reproduction transcript of that attack",
+    "core-alert-cycle/verify-report.md": "the verification quoting the same transcript",
 }
+
+
+def _allow_list_entry(path: str) -> str | None:
+    """The allow-list entry covering `path`, matched by suffix, or `None`.
+
+    Suffix rather than equality because an archived change keeps its files and
+    its folder name while changing its parent directory. Requiring the full
+    path would turn archiving into a hygiene failure, and the reflex fix would
+    be to widen the pattern instead, which disarms the check everywhere.
+    """
+    for suffix, reason in PLACEHOLDER_ALLOW_LIST.items():
+        if path == suffix or path.endswith(f"/{suffix}"):
+            return reason
+    return None
+
 
 #: What must never be committed to a public repository (`repo-hygiene` →
 #: "No secrets or personal data ever committed"). Shapes rather than values:
@@ -149,7 +169,7 @@ def _offending_labels(path: str, text: str) -> list[str]:
         matches = {match.group() for match in re.finditer(pattern, text)}
         if not matches:
             continue
-        if path in PLACEHOLDER_ALLOW_LIST and matches <= FORGIVEN_MATCHES[label]:
+        if _allow_list_entry(path) is not None and matches <= FORGIVEN_MATCHES[label]:
             continue
         offended.append(label)
     return offended
@@ -346,11 +366,17 @@ def test_no_secret_or_personal_data_pattern_is_committed() -> None:
 def test_every_allow_listed_placeholder_line_still_exists() -> None:
     """An allow-list that outlives what it forgives silently stops protecting.
 
-    If the attack payload is renamed or moved, this fails and the entry has to
-    be revisited rather than left behind as a permanent hole.
+    If the attack payload is renamed or deleted, this fails and the entry has
+    to be revisited rather than left behind as a permanent hole. Moving a file
+    is not a rename here: entries match by suffix, so archiving a change keeps
+    its entries alive while still requiring the file to exist somewhere.
     """
     covered = {
-        hit.path for hit in _grep() if hit.path in PLACEHOLDER_ALLOW_LIST and HOSTILE_TITLE_PLACEHOLDER in hit.text
+        suffix
+        for hit in _grep()
+        if HOSTILE_TITLE_PLACEHOLDER in hit.text
+        for suffix in PLACEHOLDER_ALLOW_LIST
+        if hit.path == suffix or hit.path.endswith(f"/{suffix}")
     }
 
     assert covered == set(PLACEHOLDER_ALLOW_LIST), (
