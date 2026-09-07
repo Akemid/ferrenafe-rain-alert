@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from rain_alert.application.dependencies import CycleDependencies
-from rain_alert.domain.config import AlertConfig, RiskThresholds
+from rain_alert.domain.config import AlertConfig, CoordinatesSource, RiskThresholds
 from rain_alert.domain.entities import Contact, Forecast, HourlyPoint, Warning
 from rain_alert.domain.messages import AlertRecord, OutageRecord
 from rain_alert.domain.sources import Available, SourceResult
@@ -41,6 +41,7 @@ DEFAULT_THRESHOLDS = RiskThresholds(
 DEFAULT_CONFIG = AlertConfig(
     city="Ferreñafe",
     city_slug="ferrenafe",
+    coordinates_source=CoordinatesSource.PUBLIC_REFERENCE,
     coordinates=Coordinates(latitude=-6.636005, longitude=-79.789860),
     timezone="America/Lima",
     region="Lambayeque",

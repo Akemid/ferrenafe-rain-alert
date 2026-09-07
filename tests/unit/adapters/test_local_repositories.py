@@ -21,6 +21,7 @@ from rain_alert.adapters.local.static_config_repository import (
     StaticConfigRepository,
 )
 from rain_alert.adapters.local.static_contact_repository import StaticContactRepository
+from rain_alert.domain.config import CoordinatesSource
 from rain_alert.domain.messages import AlertMessage, AlertRecord, OutageRecord
 from rain_alert.domain.reasons import ForecastThresholdReason
 from rain_alert.domain.values import Level, SourceName, TimeWindow, WarningLevel
@@ -332,6 +333,22 @@ class TestStaticConfigRepository:
 
         assert not hasattr(config, "coordinates_are_placeholder")
 
+    def test_the_default_coordinates_declare_a_public_reference_source(self) -> None:
+        """Retiring the placeholder flag must not reduce the visible signal to
+        nothing. The pair travels with how it was obtained, so an operator can
+        tell a published value from one confirmed at the location.
+        """
+        config = StaticConfigRepository(env={}).load()
+
+        assert config.coordinates_source is CoordinatesSource.PUBLIC_REFERENCE
+
+    def test_nothing_claims_a_surveyed_source_yet(self) -> None:
+        """`SURVEYED` exists for a reading taken on the ground, which nobody has
+        taken. A code path asserting it today would be a false claim about a
+        safety-relevant fact."""
+        for env in ({}, {LAT_ENV_VAR: "-6.6377", LON_ENV_VAR: "-79.7889"}):
+            assert StaticConfigRepository(env=env).load().coordinates_source is not CoordinatesSource.SURVEYED
+
     def test_the_configured_city_and_region_drive_both_sources(self) -> None:
         config = StaticConfigRepository(env={}).load()
 
@@ -367,6 +384,9 @@ class TestStaticConfigRepository:
         config = StaticConfigRepository(env={LAT_ENV_VAR: "-6.6377", LON_ENV_VAR: "-79.7889"}).load()
 
         assert (config.coordinates.latitude, config.coordinates.longitude) == (-6.6377, -79.7889)
+        # An operator who supplies a pair is asserting it, which is a different
+        # claim from a published reference and must not be reported as one.
+        assert config.coordinates_source is CoordinatesSource.OPERATOR_SUPPLIED
 
     def test_only_one_of_the_two_overrides_falls_back_to_the_sourced_default(self) -> None:
         """Half an override is not a coordinate; silently pairing an operator's

@@ -138,6 +138,9 @@ class TestOutputOnEveryRun:
 
         assert "-6.6360" in output and "-79.7899" in output
         assert "PLACEHOLDER" not in output
+        # Retiring the flag must not leave the operator unable to tell a
+        # published point from one confirmed at the location.
+        assert "public_reference" in output
 
     def test_the_reasons_are_the_english_operator_audit_trail(self, capsys, tmp_path: Path) -> None:
         """The CLI is the operator's view, so it renders reasons through
@@ -307,6 +310,9 @@ class TestJsonOutput:
 
         assert (document["latitude"], document["longitude"]) == (-6.636005, -79.789860)
         assert "coordinates_are_placeholder" not in document
+        # This document is what a calibration log and the cloud deployment
+        # read, so the pair must not travel without its provenance.
+        assert document["coordinates_source"] == "public_reference"
 
     def test_json_mode_reports_when_the_cycle_ran_not_when_its_window_starts(self, capsys, tmp_path: Path) -> None:
         """W4: `evaluated_at` carried `assessment.window.start`.

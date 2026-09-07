@@ -167,7 +167,12 @@ def _message_lines(result: CycleResult) -> list[str]:
 
 def render(result: CycleResult, config: AlertConfig) -> str:
     """The operator's view of one cycle (design.md 9)."""
-    coordinates = f"({config.coordinates.latitude:.4f}, {config.coordinates.longitude:.4f})"
+    # Provenance is printed beside the pair, not inferred from it. An operator
+    # reading this during a real event has to be able to tell a point taken
+    # from a public reference from one confirmed at the location.
+    coordinates = (
+        f"({config.coordinates.latitude:.4f}, {config.coordinates.longitude:.4f})  [{config.coordinates_source.value}]"
+    )
     assessment = result.assessment
     degraded = "   [degraded]" if assessment.degraded else ""
 
@@ -206,6 +211,9 @@ def as_json(result: CycleResult, config: AlertConfig) -> str:
         "city_slug": config.city_slug,
         "latitude": config.coordinates.latitude,
         "longitude": config.coordinates.longitude,
+        # This document is what a calibration log or the cloud deployment reads,
+        # so the pair must not travel without saying how it was obtained.
+        "coordinates_source": config.coordinates_source.value,
         # The cycle clock, not the window start. The two are different facts and
         # the window start can precede the run by days on an official verdict.
         "evaluated_at": result.evaluated_at.isoformat(),

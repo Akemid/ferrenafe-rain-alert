@@ -34,7 +34,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 
-from rain_alert.domain.config import AlertConfig, RiskThresholds
+from rain_alert.domain.config import AlertConfig, CoordinatesSource, RiskThresholds
 from rain_alert.domain.values import Coordinates, WarningLevel
 
 LAT_ENV_VAR = "RAIN_ALERT_LAT"
@@ -80,12 +80,18 @@ def _coordinate(env: Mapping[str, str], name: str) -> float:
         raise ValueError(f"{name} must be a decimal number, got {raw!r}") from exc
 
 
-def _resolve_coordinates(env: Mapping[str, str]) -> Coordinates:
-    """The operator's pair if both variables are set, else the city centre."""
+def _resolve_coordinates(env: Mapping[str, str]) -> tuple[Coordinates, CoordinatesSource]:
+    """The operator's pair if both variables are set, else the city centre.
+
+    The provenance travels with the pair rather than being inferred later,
+    because the same two numbers mean different things depending on who chose
+    them and nothing downstream can tell them apart.
+    """
     if LAT_ENV_VAR not in env or LON_ENV_VAR not in env:
-        return SOURCED_CITY_CENTRE_COORDINATES
+        return SOURCED_CITY_CENTRE_COORDINATES, CoordinatesSource.PUBLIC_REFERENCE
     # `Coordinates.__post_init__` range-checks, so a typo like -600 raises here.
-    return Coordinates(latitude=_coordinate(env, LAT_ENV_VAR), longitude=_coordinate(env, LON_ENV_VAR))
+    supplied = Coordinates(latitude=_coordinate(env, LAT_ENV_VAR), longitude=_coordinate(env, LON_ENV_VAR))
+    return supplied, CoordinatesSource.OPERATOR_SUPPLIED
 
 
 class StaticConfigRepository:
@@ -96,10 +102,12 @@ class StaticConfigRepository:
 
     def load(self) -> AlertConfig:
         """The full configuration for one alert cycle."""
+        coordinates, source = _resolve_coordinates(self._env)
         return AlertConfig(
             city=CITY,
             city_slug=CITY_SLUG,
-            coordinates=_resolve_coordinates(self._env),
+            coordinates=coordinates,
+            coordinates_source=source,
             timezone=TIMEZONE,
             region=REGION,
             thresholds=THRESHOLDS,
