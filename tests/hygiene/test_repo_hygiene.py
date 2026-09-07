@@ -55,29 +55,61 @@ HOSTILE_TITLE_PLACEHOLDER = "+51 999 000 111"
 #: Where that placeholder legitimately appears, and why. The `repo-hygiene`
 #: scenario forgives "documented fixture placeholders"; this is that
 #: documentation, kept beside the check rather than in prose somewhere else.
-#: Entries are matched by *suffix*, not by exact path, so that archiving a
-#: change (which moves its folder under `openspec/changes/archive/`) does not
-#: silently strip forgiveness from files that still legitimately carry the
-#: placeholder. A suffix is still specific enough to name one file per change:
-#: it pins the change folder and the file name, only the parent moves.
+#: Entries are glob patterns, not exact paths, because archiving a change moves
+#: its folder and renames it with a date prefix. An exact path would turn
+#: archiving into a hygiene failure, and the reflex fix would be to widen the
+#: secret pattern instead, which disarms the check everywhere. Each pattern is
+#: still specific enough to name one file: the change name and the file name are
+#: both pinned, only the parent directory and the date prefix are free.
 PLACEHOLDER_ALLOW_LIST: dict[str, str] = {
     "tests/hygiene/test_repo_hygiene.py": "this check's own declaration of the placeholder it forgives",
     "tests/unit/domain/test_template.py": "the hostile-title attack payload that proves the sanitizer strips it",
-    "core-alert-cycle/apply-progress.md": "the end-to-end reproduction transcript of that attack",
-    "core-alert-cycle/verify-report.md": "the verification quoting the same transcript",
+    "openspec/**/*core-alert-cycle/apply-progress.md": "the end-to-end reproduction transcript of that attack",
+    "openspec/**/*core-alert-cycle/verify-report.md": "the verification quoting the same transcript",
 }
 
 
-def _allow_list_entry(path: str) -> str | None:
-    """The allow-list entry covering `path`, matched by suffix, or `None`.
+def _pattern_to_regex(pattern: str) -> re.Pattern[str]:
+    """One allow-list glob as an anchored regex.
 
-    Suffix rather than equality because an archived change keeps its files and
-    its folder name while changing its parent directory. Requiring the full
-    path would turn archiving into a hygiene failure, and the reflex fix would
-    be to widen the pattern instead, which disarms the check everywhere.
+    `**/` matches any number of directories, `*` matches a run of characters
+    within one path segment, and everything else is literal. Written out rather
+    than delegated to `fnmatch`, whose `*` also crosses `/` and would quietly
+    make these patterns broader than they read, or to `PurePosixPath.full_match`,
+    which needs Python 3.13 and this project targets 3.12.
     """
-    for suffix, reason in PLACEHOLDER_ALLOW_LIST.items():
-        if path == suffix or path.endswith(f"/{suffix}"):
+    parts = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**/", index):
+            parts.append("(?:[^/]+/)*")
+            index += 3
+        elif pattern[index] == "*":
+            parts.append("[^/]*")
+            index += 1
+        else:
+            parts.append(re.escape(pattern[index]))
+            index += 1
+    return re.compile("".join(parts) + r"\Z")
+
+
+ALLOW_LIST_MATCHERS: tuple[tuple[re.Pattern[str], str, str], ...] = tuple(
+    (_pattern_to_regex(pattern), pattern, reason) for pattern, reason in PLACEHOLDER_ALLOW_LIST.items()
+)
+
+
+def _allow_list_pattern(path: str) -> str | None:
+    """The allow-list pattern covering `path`, or `None`."""
+    for matcher, pattern, _ in ALLOW_LIST_MATCHERS:
+        if matcher.match(path):
+            return pattern
+    return None
+
+
+def _allow_list_entry(path: str) -> str | None:
+    """Why `path` is forgiven, or `None` if it is not."""
+    for matcher, _, reason in ALLOW_LIST_MATCHERS:
+        if matcher.match(path):
             return reason
     return None
 
@@ -372,11 +404,9 @@ def test_every_allow_listed_placeholder_line_still_exists() -> None:
     its entries alive while still requiring the file to exist somewhere.
     """
     covered = {
-        suffix
+        pattern
         for hit in _grep()
-        if HOSTILE_TITLE_PLACEHOLDER in hit.text
-        for suffix in PLACEHOLDER_ALLOW_LIST
-        if hit.path == suffix or hit.path.endswith(f"/{suffix}")
+        if HOSTILE_TITLE_PLACEHOLDER in hit.text and (pattern := _allow_list_pattern(hit.path)) is not None
     }
 
     assert covered == set(PLACEHOLDER_ALLOW_LIST), (

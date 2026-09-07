@@ -574,19 +574,20 @@ phases:
       fenced yaml", and routing parses only that envelope. The report's prose
       substance was preserved and its traceability updated to the measured
       counts.
-      One artifact inaccuracy is left uncorrected because it falls outside this
-      phase's write authority: the archive block below still says archive "must
-      not run until the verification remediation on chore/land-slice3-remainder
-      is merged". It is merged — pull requests 1 through 7 are all on main — so
-      that note should be cleared by whoever owns the archive block.
+      The archive block below carried a stale claim at that point, that archive
+      must not run until the verification remediation branch merged. It had
+      merged; pull requests 1 through 7 are all on main. The archive phase
+      rewrote that block, so the claim is gone.
   archive:
-    status: pending
+    status: done
     depends_on: [verify]
-    artifact: null
+    artifact: openspec/changes/archive/2026-09-07-core-alert-cycle/archive-report.md
+    archived_at: 2026-09-07T00:00:00Z
     note: >-
-      Must not run until the verification remediation on
-      chore/land-slice3-remainder is merged, because the archive record is
-      assembled from artifacts that branch changed.
+      Archive completed 2026-09-07. All change artifacts moved to
+      openspec/changes/archive/2026-09-07-core-alert-cycle/. Main specs synced
+      to openspec/specs/ (7 domains, 35 requirements, 67 scenarios). Verification
+      remediation merged (pull requests 1-7 all on main). Change is closed.
 
 next_recommended:
   - sdd-archive
