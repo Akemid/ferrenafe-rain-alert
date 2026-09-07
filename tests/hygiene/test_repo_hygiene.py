@@ -55,28 +55,52 @@ HOSTILE_TITLE_PLACEHOLDER = "+51 999 000 111"
 #: Where that placeholder legitimately appears, and why. The `repo-hygiene`
 #: scenario forgives "documented fixture placeholders"; this is that
 #: documentation, kept beside the check rather than in prose somewhere else.
-#: Entries are glob patterns, not exact paths, because archiving a change moves
-#: its folder and renames it with a date prefix. An exact path would turn
-#: archiving into a hygiene failure, and the reflex fix would be to widen the
-#: secret pattern instead, which disarms the check everywhere. Each pattern is
-#: still specific enough to name one file: the change name and the file name are
-#: both pinned, only the parent directory and the date prefix are free.
+#: Entries are patterns, not exact paths, because archiving a change moves its
+#: folder and renames it with a date prefix. An exact path would turn archiving
+#: into a hygiene failure, and the reflex fix would be to widen the secret
+#: pattern instead, which disarms the check everywhere. Only two things are left
+#: free: how deep the folder sits, and its date prefix. Everything else is
+#: literal, and there is no general wildcard, so a folder called
+#: `attacker-secrets-core-alert-cycle` inherits nothing.
 PLACEHOLDER_ALLOW_LIST: dict[str, str] = {
     "tests/hygiene/test_repo_hygiene.py": "this check's own declaration of the placeholder it forgives",
     "tests/unit/domain/test_template.py": "the hostile-title attack payload that proves the sanitizer strips it",
-    "openspec/**/*core-alert-cycle/apply-progress.md": "the end-to-end reproduction transcript of that attack",
-    "openspec/**/*core-alert-cycle/verify-report.md": "the verification quoting the same transcript",
+    "openspec/changes/**/<date>-core-alert-cycle/apply-progress.md": "the end-to-end reproduction transcript of that attack",
+    "openspec/changes/**/<date>-core-alert-cycle/verify-report.md": "the verification quoting the same transcript",
+}
+
+#: Paths that carried a forgiven placeholder before a file moved. The scan reads
+#: git history, so every path a file ever had must be forgivable, but only its
+#: *current* path has to still exist. Keeping these separate is what lets the
+#: liveness check above stay strict: a live entry that stops covering anything
+#: is a bug, while a historical entry covering nothing today is the normal
+#: outcome of a move. These are exact paths, never patterns.
+HISTORICAL_ALLOW_LIST: dict[str, str] = {
+    "openspec/changes/core-alert-cycle/apply-progress.md": "pre-archive path of the transcript",
+    "openspec/changes/core-alert-cycle/verify-report.md": "pre-archive path of the verification",
 }
 
 
-def _pattern_to_regex(pattern: str) -> re.Pattern[str]:
-    """One allow-list glob as an anchored regex.
+#: The only free-form token an allow-list pattern may use, spelled out so a
+#: reader knows exactly what it admits. An archived change folder gains a date
+#: prefix; nothing else about its name is negotiable, so the token is a date and
+#: not a general wildcard. A bare `*` would forgive `attacker-secrets-<change>`
+#: as readily as `2026-09-07-<change>`.
+_DATE_PREFIX_TOKEN = "<date>"
 
-    `**/` matches any number of directories, `*` matches a run of characters
-    within one path segment, and everything else is literal. Written out rather
-    than delegated to `fnmatch`, whose `*` also crosses `/` and would quietly
-    make these patterns broader than they read, or to `PurePosixPath.full_match`,
-    which needs Python 3.13 and this project targets 3.12.
+
+def _pattern_to_regex(pattern: str) -> re.Pattern[str]:
+    r"""One allow-list glob as an anchored regex.
+
+    Three constructs, and nothing else: `**/` matches any number of whole
+    directories, `<date>` matches an ISO calendar date, and every other
+    character is literal. There is deliberately no general `*`, because this
+    predicate decides which files may carry a secret-shaped string and a
+    wildcard there reads narrower than it behaves.
+
+    Written out rather than delegated to `fnmatch`, whose `*` also crosses `/`,
+    or to `PurePosixPath.full_match`, which needs Python 3.13 while this project
+    targets 3.12.
     """
     parts = []
     index = 0
@@ -84,9 +108,15 @@ def _pattern_to_regex(pattern: str) -> re.Pattern[str]:
         if pattern.startswith("**/", index):
             parts.append("(?:[^/]+/)*")
             index += 3
+        elif pattern.startswith(_DATE_PREFIX_TOKEN, index):
+            parts.append(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+            index += len(_DATE_PREFIX_TOKEN)
         elif pattern[index] == "*":
-            parts.append("[^/]*")
-            index += 1
+            # Fails loudly rather than compiling to something narrower or wider
+            # than the author meant. `**` that is not a whole segment lands here.
+            raise ValueError(
+                f"allow-list patterns take '**/' and '{_DATE_PREFIX_TOKEN}' only, not a bare '*': {pattern}"
+            )
         else:
             parts.append(re.escape(pattern[index]))
             index += 1
@@ -107,11 +137,15 @@ def _allow_list_pattern(path: str) -> str | None:
 
 
 def _allow_list_entry(path: str) -> str | None:
-    """Why `path` is forgiven, or `None` if it is not."""
+    """Why `path` is forgiven, or `None` if it is not.
+
+    Live patterns and historical exact paths both grant forgiveness; only the
+    live ones are required to still cover a file.
+    """
     for matcher, _, reason in ALLOW_LIST_MATCHERS:
         if matcher.match(path):
             return reason
-    return None
+    return HISTORICAL_ALLOW_LIST.get(path)
 
 
 #: What must never be committed to a public repository (`repo-hygiene` →
@@ -400,17 +434,27 @@ def test_every_allow_listed_placeholder_line_still_exists() -> None:
 
     If the attack payload is renamed or deleted, this fails and the entry has
     to be revisited rather than left behind as a permanent hole. Moving a file
-    is not a rename here: entries match by suffix, so archiving a change keeps
-    its entries alive while still requiring the file to exist somewhere.
-    """
-    covered = {
-        pattern
-        for hit in _grep()
-        if HOSTILE_TITLE_PLACEHOLDER in hit.text and (pattern := _allow_list_pattern(hit.path)) is not None
-    }
+    is not a rename here: a pattern spans the archive move, so archiving keeps
+    its entries alive while still requiring the file to exist.
 
-    assert covered == set(PLACEHOLDER_ALLOW_LIST), (
-        f"allow-list entries with no matching line: {sorted(set(PLACEHOLDER_ALLOW_LIST) - covered)}"
+    Each pattern must cover exactly one file. Counting only whether a pattern
+    covers *something* would let a decoy keep a dead entry alive after the real
+    payload was deleted, which is the liveness this test exists to enforce.
+    """
+    covering: dict[str, set[str]] = {pattern: set() for pattern in PLACEHOLDER_ALLOW_LIST}
+    for hit in _grep():
+        if HOSTILE_TITLE_PLACEHOLDER not in hit.text:
+            continue
+        pattern = _allow_list_pattern(hit.path)
+        if pattern is not None:
+            covering[pattern].add(hit.path)
+
+    assert {p for p, paths in covering.items() if not paths} == set(), (
+        f"allow-list entries with no matching line: {sorted(p for p, paths in covering.items() if not paths)}"
+    )
+    assert {p: sorted(paths) for p, paths in covering.items() if len(paths) != 1} == {}, (
+        "each allow-list pattern must cover exactly one file; a second match means "
+        "the entry would survive the real payload being deleted"
     )
 
 
