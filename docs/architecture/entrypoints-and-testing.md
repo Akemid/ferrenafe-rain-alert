@@ -77,7 +77,7 @@ Two output rules follow the specifications rather than convenience.
 
 `_note_lines` prints what each source set aside, prefixed with the source name. **This is the operator's only view of the multi-hazard filter.** `Level none` has two very different causes, nothing in force or everything in force filtered out, and a partial parse failure looks exactly like a calm page without it.
 
-The coordinates line prints `(PLACEHOLDER — pending confirmation)` whenever `config.coordinates_are_placeholder` is true, which it is unless both environment overrides are supplied.
+The coordinates line prints the configured latitude and longitude to four decimal places, and nothing else. It **used to append `(PLACEHOLDER — pending confirmation)`** while the shipped coordinates were an unsourced guess; they are now sourced, so the marker and the flag behind it are retired rather than left permanently false.
 
 #### The JSON view
 
@@ -87,7 +87,7 @@ The coordinates line prints `(PLACEHOLDER — pending confirmation)` whenever `c
 
 **Notes are emitted per source rather than flattened.** A calibration review needs to know which source filtered or lost something, not only that one did.
 
-The document also carries `coordinates_are_placeholder`, so a calibration log records whether the coordinates were confirmed at the time of the run.
+The document carries `latitude` and `longitude`, so a calibration log records the point the forecast was fetched for. It **used to carry `coordinates_are_placeholder`** too; with the coordinates sourced, that field would have been `false` in every document ever written, so it is gone. A future move of the coordinates is visible in `latitude`/`longitude` themselves.
 
 **`evaluated_at` is the cycle clock, not the window start.** It reads `CycleResult.evaluated_at`, which `RunAlertCycle` fills from the injected clock. It used to read `assessment.window.start`, which is a different fact: on an imminent-from-official verdict the window start is the aviso's own start date and can be days earlier than the run. It also duplicated `window_start` exactly, so the document carried no record of when the cycle actually ran — the one field that lets a reviewer correlate a verdict with the data available at that moment, in a document whose stated purpose is calibration logging.
 
