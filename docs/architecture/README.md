@@ -232,7 +232,7 @@ Notices    0 emitted
 
 Three things in that output are worth naming, because they are deliberate.
 
-The **coordinates are printed on every run**, because the point a forecast was fetched for is part of reading it. They are the sourced centre of the city, `6°38'10"S 79°47'23"W`, cited to two public references in `static_config_repository.py` and pinned by a test. They used to carry a `(PLACEHOLDER — pending confirmation)` marker while the value was an unsourced guess; that marker and the flag behind it are retired, and the remaining caveat — sourced from references, not surveyed on the ground — lives in the config module's docstring. See [adapters.md](./adapters.md).
+The **coordinates are printed on every run**, because the point a forecast was fetched for is part of reading it. They are the sourced centre of the city, `6°38'10"S 79°47'23"W`, cited to two public references in `static_config_repository.py` and pinned by a test. Each run also prints how the point was obtained, `[public_reference]` for the default. They used to carry a `(PLACEHOLDER — pending confirmation)` marker instead, while the value was an unsourced guess; that marker and the boolean behind it are retired, and provenance came back as an enum after a security review argued that leaving no visible signal was the wrong trade here. See [adapters.md](./adapters.md).
 
 The **reasons are English and the message body is Spanish**, in the same output. Those are two audiences. The `Reasons` block is the operator's audit trail with the numbers in it. The message body is what a community member would read.
 

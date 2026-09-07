@@ -199,11 +199,30 @@ community about rain that has already passed.
 
 ### Requirement: Coordinates come from configuration
 
-`ForecastProvider` MUST read the target latitude/longitude from `ConfigRepository` rather than a hard-coded value; the default coordinates in the local configuration MUST be sourced, with their references cited in the code, and MUST be pinned by a test.
+`ForecastProvider` MUST read the target latitude/longitude from `ConfigRepository` rather than a hard-coded value. The default coordinates in the local configuration MUST be sourced, with their references cited in the code, and MUST be pinned by a test.
 
-*Amended 2026-09-07 (sourced Ferrenafe coordinates).* The requirement previously said the local fake "MUST use a documented placeholder, not an unverified 'real' coordinate", and its scenario required the coordinates to be "marked, in code or comments, as a documented placeholder pending confirmation". The coordinates are now sourced — `6°38'10"S 79°47'23"W`, the centre of the city, agreed by two independent public references cited in `adapters/local/static_config_repository.py` — so `AlertConfig.coordinates_are_placeholder` and the CLI's `(PLACEHOLDER — pending confirmation)` marker are retired: a flag that can never be true again is dead configuration. A scenario describing retired behaviour is a defect, so the obligation moves from marking a guess to citing a source and pinning the value. What remains open is confirmation against a reading taken on the ground, which is carried by the module docstring and by the strict environment override rather than by a flag no code can set.
+The configuration MUST also carry how the coordinates were obtained, and both the operator output and the machine-readable document MUST show it. A value asserting a reading taken on the ground MUST NOT be produced by any code path until such a reading exists.
+
+*Amended 2026-09-07 (sourced Ferrenafe coordinates).* The requirement previously said the local fake "MUST use a documented placeholder, not an unverified 'real' coordinate", and its scenario required the coordinates to be "marked, in code or comments, as a documented placeholder pending confirmation". The coordinates are now sourced, `6°38'10"S 79°47'23"W`, the centre of the city, agreed by two independent public references cited in `adapters/local/static_config_repository.py`. So `AlertConfig.coordinates_are_placeholder` and the CLI's `(PLACEHOLDER — pending confirmation)` marker are retired: a flag that can never be true again is dead configuration.
+
+Retiring the flag first left no visible signal at all, which a security review judged wrong for a system whose job is warning people. Provenance therefore returns as `CoordinatesSource`, an enum rather than a boolean, because the useful question is how a point was obtained and that has three answers with different trust: a published reference, an operator who supplied it, and a reading taken on the ground. An operator during an event, and the deployment change that will write these into cloud configuration, both need the distinction.
 
 #### Scenario: Default coordinates are sourced and pinned
 - GIVEN the local `ConfigRepository`
 - WHEN its default coordinates are inspected
 - THEN they are the centre of the city of Ferreñafe, cited in the code to public references, and pinned by a test that fails if the value drifts
+
+#### Scenario: Provenance travels with the coordinates
+- GIVEN a cycle run against the default configuration
+- WHEN the operator output and the machine-readable document are read
+- THEN both state that the coordinates came from a published reference
+
+#### Scenario: An operator-supplied point is not reported as published
+- GIVEN both coordinate override variables set to a valid pair
+- WHEN the configuration is loaded
+- THEN the coordinates are the operator's, and their source says the operator supplied them
+
+#### Scenario: No code path claims a surveyed point
+- GIVEN any configuration this system can produce today
+- WHEN its coordinate source is inspected
+- THEN it is never the value reserved for a reading taken on the ground

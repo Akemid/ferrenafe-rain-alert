@@ -77,7 +77,9 @@ Two output rules follow the specifications rather than convenience.
 
 `_note_lines` prints what each source set aside, prefixed with the source name. **This is the operator's only view of the multi-hazard filter.** `Level none` has two very different causes, nothing in force or everything in force filtered out, and a partial parse failure looks exactly like a calm page without it.
 
-The coordinates line prints the configured latitude and longitude to four decimal places, and nothing else. It **used to append `(PLACEHOLDER — pending confirmation)`** while the shipped coordinates were an unsourced guess; they are now sourced, so the marker and the flag behind it are retired rather than left permanently false.
+The coordinates line prints the configured latitude and longitude to four decimal places, followed by how they were obtained, for example `[public_reference]`.
+
+It **used to append `(PLACEHOLDER — pending confirmation)`** while the shipped coordinates were an unsourced guess. They are now sourced, so that marker and the boolean behind it are retired rather than left permanently false. Retiring the boolean alone left no visible signal at all, which a security review judged wrong here: an operator reading this during a real event has to be able to tell a point taken from a published reference from one confirmed at the location. Provenance therefore returns as `CoordinatesSource`, an enum, because the useful question is how the point was obtained and that has three answers rather than two.
 
 #### The JSON view
 
@@ -87,7 +89,9 @@ The coordinates line prints the configured latitude and longitude to four decima
 
 **Notes are emitted per source rather than flattened.** A calibration review needs to know which source filtered or lost something, not only that one did.
 
-The document carries `latitude` and `longitude`, so a calibration log records the point the forecast was fetched for. It **used to carry `coordinates_are_placeholder`** too; with the coordinates sourced, that field would have been `false` in every document ever written, so it is gone. A future move of the coordinates is visible in `latitude`/`longitude` themselves.
+The document carries `latitude`, `longitude` and `coordinates_source`, so a calibration log records both the point the forecast was fetched for and how that point was chosen. This document is also what change 3 will read, so the pair must not travel without its provenance.
+
+It **used to carry `coordinates_are_placeholder`** instead; with the coordinates sourced, that boolean would have been `false` in every document ever written, so it is gone.
 
 **`evaluated_at` is the cycle clock, not the window start.** It reads `CycleResult.evaluated_at`, which `RunAlertCycle` fills from the injected clock. It used to read `assessment.window.start`, which is a different fact: on an imminent-from-official verdict the window start is the aviso's own start date and can be days earlier than the run. It also duplicated `window_start` exactly, so the document carried no record of when the cycle actually ran — the one field that lets a reviewer correlate a verdict with the data available at that moment, in a document whose stated purpose is calibration logging.
 
