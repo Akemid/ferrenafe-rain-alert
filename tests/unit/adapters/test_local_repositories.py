@@ -304,11 +304,21 @@ class TestStaticConfigRepository:
     def test_the_default_coordinates_are_the_sourced_city_centre_6_38_10_s_79_47_23_w(self) -> None:
         """weather-sources: Coordinates come from configuration.
 
-        6 deg 38' 10" S, 79 deg 47' 23" W is the centre of the city of
-        Ferrenafe in the two public references cited in the config module.
-        The decimal form is pinned here so a future edit cannot drift the
-        forecast location silently, and so a reader can redo the conversion:
-        6 + 38/60 + 10/3600 = 6.63611, 79 + 47/60 + 23/3600 = 79.78972.
+        The centre of the city of Ferrenafe in the two public references cited
+        in the config module. The decimal form is pinned here so a future edit
+        cannot drift the forecast location silently.
+
+        The references give both forms, and the decimal one is primary. A
+        reader who converts the rounded degrees-minutes-seconds display back
+        will land 12 m north and 15 m east of the pinned value, because a whole
+        second of arc is about 30 m:
+
+            6 + 38/60 + 10/3600 = 6.63611   vs the pinned 6.636005
+            79 + 47/60 + 23/3600 = 79.78972 vs the pinned 79.789860
+
+        Either form picks the same Open-Meteo grid cell, so the difference is
+        provenance rather than forecast. The decimal is pinned because it is
+        what the sources actually carry.
         """
         config = StaticConfigRepository(env={}).load()
 
