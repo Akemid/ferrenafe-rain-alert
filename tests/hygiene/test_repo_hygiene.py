@@ -9,6 +9,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENV_VAR_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 
@@ -70,6 +72,17 @@ SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
     ("AWS account id", r"\b[0-9]{12}\b"),
     ("GitHub token", r"gh[pousr]_[A-Za-z0-9]{20,}"),
     ("API secret key", r"\bsk-[A-Za-z0-9]{20,}"),
+    # The three shapes the next two changes actually introduce: the operator's
+    # Telegram bot, the cloud credentials, and a contacts table. Added before
+    # that code lands, because the first commit carrying one is too late.
+    ("Telegram bot token", r"\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b"),
+    ("AWS secret access key", r"(?i)aws.{0,24}secret.{0,24}['\"][A-Za-z0-9/+=]{40}['\"]"),
+    # Peruvian mobiles are nine digits starting with 9 and are written locally
+    # without any country code, which is how a real contact would be typed.
+    # This deliberately collides with ordinary nine-digit literals: the friction
+    # is cheaper than publishing a phone book.
+    ("Peruvian mobile, local form", r"\b9[0-9]{2}[ -]?[0-9]{3}[ -]?[0-9]{3}\b"),
+    ("Slack token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),
 )
 
 #: Per pattern, the exact substrings `HOSTILE_TITLE_PLACEHOLDER` produces under
@@ -142,9 +155,54 @@ def _offending_labels(path: str, text: str) -> list[str]:
     return offended
 
 
+#: What to tell someone whose secret this check just caught. Deleting the line
+#: and committing the deletion is the reflex, and it does not work: the blob
+#: stays reachable in history, so the credential stays live for anyone who
+#: clones. Only rotation revokes it.
+SCAN_FAILURE_ADVICE = (
+    "A committed credential is not removed by deleting the line: the blob stays "
+    "reachable in history and anyone who clones still has it. Rotate the credential "
+    "first, then rewrite the history that carries it."
+)
+
+
+def _grep_history(repo_root: Path = REPO_ROOT) -> list[Hit]:
+    """Every matching line in every reachable commit, not just the checkout.
+
+    The requirement is that nothing was *ever* committed, and on a public
+    repository history is the permanent part. A working-tree scan calls a
+    credential clean the moment someone deletes the line, which is exactly the
+    reflex that leaves it live.
+
+    The whole history is scanned on every run rather than only
+    `origin/main..HEAD`, because 82 commits cost about 0.4 s here. Move to the
+    incremental range only when that stops being true, and keep a full sweep in
+    continuous integration if you do.
+    """
+    revisions = subprocess.run(
+        ["git", "rev-list", "--all"], cwd=repo_root, capture_output=True, text=True, check=True
+    ).stdout.split()
+    if not revisions:
+        return []
+    args = ["git", "grep", "-nIP"]
+    for _, pattern in SECRET_PATTERNS:
+        args += ["-e", pattern]
+    result = subprocess.run(args + revisions, cwd=repo_root, capture_output=True, text=True, check=False)
+    assert result.returncode in (0, 1), result.stderr
+    hits = []
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        # `git grep <rev>...` prefixes every line with the revision it came from.
+        revision, path, number, text = line.split(":", 3)
+        hits.append(Hit(path, f"{number} (in {revision[:9]})", text))
+    return hits
+
+
 def _scan(repo_root: Path = REPO_ROOT) -> list[str]:
-    """Every offending `label: location: line` in the repository, sorted."""
-    return sorted({f"{label}: {hit}" for hit in _grep(repo_root) for label in _offending_labels(hit.path, hit.text)})
+    """Every offending `label: location: line`, working tree and history, sorted."""
+    hits = _grep(repo_root) + _grep_history(repo_root)
+    return sorted({f"{label}: {hit}" for hit in hits for label in _offending_labels(hit.path, hit.text)})
 
 
 def _sample(*fragments: str) -> str:
@@ -160,6 +218,22 @@ def _sample(*fragments: str) -> str:
 SAMPLE_AWS_ACCESS_KEY_ID = _sample("AKIA", "IOSFODNN7EXAMPLE")
 SAMPLE_MOBILE_GROUPED = _sample("98", "7 654 321")
 SAMPLE_MOBILE_INTERNATIONAL = _sample("+51", " ", SAMPLE_MOBILE_GROUPED)
+
+#: Committing inside a test repository must not depend on the developer having
+#: a global git identity, and must never borrow theirs.
+GIT_IDENTITY = (
+    "-c",
+    "user.name=Hygiene Test",
+    "-c",
+    # Assembled rather than written whole: this file is scanned by the check
+    # below, and a literal address here would be a committed email shape.
+    _sample("user.email=hygiene@", "example.invalid"),
+)
+
+
+def _git(repo: Path, *arguments: str) -> None:
+    """Run one git command inside `repo`, failing loudly if it does not work."""
+    subprocess.run(["git", "-C", str(repo), *arguments], capture_output=True, text=True, check=True)
 
 
 class TestTheAllowListForgivesTheMatchNotTheLine:
@@ -187,13 +261,71 @@ class TestTheAllowListForgivesTheMatchNotTheLine:
         assert "Peruvian phone number" in _offending_labels(self.ALLOW_LISTED, line)
 
 
-def test_forgiveness_is_granted_only_for_the_shape_the_placeholder_has() -> None:
-    """The allow-list was granted for a phone-shaped placeholder. Any other
-    pattern must be unforgivable everywhere, allow-listed file or not.
+#: The address is assembled too: written whole it is an `email address` hit in
+#: a file the allow-list does not cover for that shape, and the scan says so.
+GIT_IDENTITY = (
+    "-c",
+    "user.name=Hygiene Test",
+    "-c",
+    _sample("user.email=hygiene", "@", "example.invalid"),
+    "-c",
+    "commit.gpgsign=false",
+)
+
+
+@pytest.fixture
+def repo_with_a_deleted_secret(tmp_path: Path) -> Path:
+    """A repository where a credential was committed and then removed again.
+
+    This is the remediation reflex — delete the line, commit the deletion —
+    that leaves the credential in every clone forever.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    notes = repo / "deploy_notes.md"
+    _git(repo, "init", "--quiet")
+    notes.write_text(f"access key: {SAMPLE_AWS_ACCESS_KEY_ID}\n", encoding="utf-8")
+    _git(repo, "add", "deploy_notes.md")
+    _git(repo, *GIT_IDENTITY, "commit", "--quiet", "-m", "chore: add deploy notes")
+    notes.write_text("access key: see the password manager\n", encoding="utf-8")
+    _git(repo, "add", "deploy_notes.md")
+    _git(repo, *GIT_IDENTITY, "commit", "--quiet", "-m", "chore: remove the pasted key")
+    return repo
+
+
+class TestTheScanReachesHistoryNotOnlyTheWorkingTree:
+    """`git grep` with no revision searches the current checkout. The
+    requirement is that nothing was ever committed, and on a public repository
+    history is the permanent part: a key removed in a later commit is still
+    recoverable by anyone who clones.
+    """
+
+    def test_the_working_tree_pass_is_blind_to_the_deleted_credential(self, repo_with_a_deleted_secret: Path) -> None:
+        assert _grep(repo_with_a_deleted_secret) == []
+
+    def test_the_scan_reports_the_credential_the_deletion_left_behind(self, repo_with_a_deleted_secret: Path) -> None:
+        offenders = _scan(repo_with_a_deleted_secret)
+
+        assert [line for line in offenders if line.startswith("AWS access key id")], offenders
+
+    def test_the_failure_message_asks_for_rotation_not_deletion(self) -> None:
+        assert "rotate" in SCAN_FAILURE_ADVICE.lower()
+        assert "deleting" in SCAN_FAILURE_ADVICE.lower()
+
+
+def test_forgiveness_is_granted_only_for_the_shapes_the_placeholder_has() -> None:
+    """The allow-list was granted for one phone-shaped placeholder, which two
+    phone patterns match: the international form it is written in, and the
+    local form contained inside it. Every other pattern must be unforgivable
+    everywhere, allow-listed file or not.
+
+    This set is deliberately pinned rather than derived. Adding a pattern the
+    placeholder happens to match would silently widen what an allow-listed file
+    may carry, so the widening has to be written down here to happen at all.
     """
     granted = {label for label, matches in FORGIVEN_MATCHES.items() if matches}
 
-    assert granted == {"Peruvian phone number"}
+    assert granted == {"Peruvian phone number", "Peruvian mobile, local form"}
 
 
 def test_no_secret_or_personal_data_pattern_is_committed() -> None:
