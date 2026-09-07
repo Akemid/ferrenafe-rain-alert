@@ -68,21 +68,23 @@ Hexagonal, domain-first, strict TDD. The domain is pure Python with zero AWS/HTT
 
 Named scenarios from design spec 6.3, preserved verbatim, must pass as tests:
 
-- [ ] 2017-03-12, 29.8 mm forecast in 24 h, probability ≥ 70 % → **imminent**.
-- [ ] 10 mm in 48 h at ≥ 60 % with a SENAMHI yellow warning → **prepare**.
-- [ ] 9 mm in 48 h at ≥ 60 % with a SENAMHI yellow warning → **none** (below the 9.5 mm *Prepare* threshold).
-- [ ] SENAMHI unavailable, 15 mm in 48 h at 65 % → **none** (degraded mode requires 70 %).
+- [x] 2017-03-12, 29.8 mm forecast in 24 h, probability ≥ 70 % → **imminent**.
+- [x] 10 mm in 48 h at ≥ 60 % with a SENAMHI yellow warning → **prepare**.
+- [x] 9 mm in 48 h at ≥ 60 % with a SENAMHI yellow warning → **none** (below the 9.5 mm *Prepare* threshold).
+- [x] SENAMHI unavailable, 15 mm in 48 h at 65 % → **none** (degraded mode requires 70 %).
 
 Plus:
 
-- [ ] A SENAMHI HTML fixture with altered structure yields `unavailable`, never "available with zero warnings".
-- [ ] A healthy fixture with zero current warnings yields `available` with an empty warning list.
-- [ ] Re-running the cycle with the same level and window sends nothing (dedup); escalation sends; de-escalation sends nothing.
-- [ ] SENAMHI unavailable + qualifying forecast → alert body states the official source was unavailable, and one operator technical notice is emitted.
-- [ ] Both sources unavailable across three consecutive cycles → level `none`, zero community alerts, exactly **one** operator notice; the next cycle with one source back emits exactly one recovery notice.
-- [ ] `uv run pytest` and `uv run ruff check` pass; the domain package imports nothing from `adapters/`, `boto3`, `requests`, or any LLM SDK (enforced by test).
-- [ ] The CLI runs the full cycle against real SENAMHI and Open-Meteo and prints level, reasons, and the message that would have been sent, sending nothing.
-- [ ] `git grep` finds no phone numbers, emails, tokens, or AWS account IDs; `.env.example` contains names only.
+- [x] A SENAMHI HTML fixture with altered structure yields `unavailable`, never "available with zero warnings".
+- [x] A healthy fixture with zero current warnings yields `available` with an empty warning list.
+- [x] Re-running the cycle with the same level and window sends nothing (dedup); escalation sends; de-escalation sends nothing.
+- [x] SENAMHI unavailable + qualifying forecast → alert body states the official source was unavailable, and one operator technical notice is emitted.
+- [x] Both sources unavailable across three consecutive cycles → level `none`, zero community alerts, exactly **one** operator notice; the next cycle with one source back emits exactly one recovery notice.
+- [x] `uv run pytest` and `uv run ruff check` pass; the domain package imports nothing from `adapters/`, `boto3`, `requests`, or any LLM SDK (enforced by test).
+- [x] The CLI runs the full cycle against real SENAMHI and Open-Meteo and prints level, reasons, and the message that would have been sent, sending nothing.
+- [x] `git grep` finds no phone numbers, emails, tokens, or AWS account IDs; `.env.example` contains names only.
+
+*Ticked 2026-09-06 (verify finding S7). All twelve were individually traced to a passing test in `verify-report.md` → "Proposal success criteria"; task 3.16 had claimed the confirmation without the boxes ever being marked. Criterion 8 was `PARTIAL` at verification — both halves proven in different tests — and is now covered end to end in one cycle by `TestDegradedModeWiring::test_one_degraded_cycle_discloses_the_outage_and_notifies_the_operator`. Criterion 12 was manual at verification and now has an automated regression guard, `test_no_secret_or_personal_data_pattern_is_committed`.*
 
 ## Risks
 

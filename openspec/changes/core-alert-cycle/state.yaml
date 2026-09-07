@@ -2,7 +2,7 @@ schema: spec-driven
 change: core-alert-cycle
 title: Core Alert Cycle (Local, No Cloud)
 created: 2026-09-03
-updated: 2026-09-03
+updated: 2026-09-06
 
 artifact_store:
   mode: hybrid
@@ -67,13 +67,15 @@ phases:
     engram_topic_key: sdd/core-alert-cycle/tasks
     engram_saved: true
     note: >-
-      43 tasks across 3 phases mapped 1:1 to the design's PR slices. Review
+      44 tasks across 3 phases mapped 1:1 to the design's PR slices (43 as
+      planned, plus task 3.5b added during apply for the owner-approved
+      multi-hazard filter; the count said 43 until 2026-09-06). Review
       Workload Forecast: High risk, chained PRs recommended, chain strategy
       pending owner choice. Two design/spec placement ambiguities (AlertPolicy
       shell location, OutageNoticePolicy naming) recorded under "Open Items
       for Apply" rather than resolved.
   apply:
-    status: in_progress
+    status: complete
     depends_on: [tasks]
     artifact: openspec/changes/core-alert-cycle/apply-progress.md
     engram_topic_key: sdd/core-alert-cycle/apply-progress
@@ -83,7 +85,12 @@ phases:
         name: tooling-and-hygiene
         branch: feat/core-alert-cycle-1-tooling
         tasks: 1.1-1.5
-        status: complete
+        status: merged
+        pull_request:
+          number: 1
+          title: "build: scaffold tooling and repo hygiene for the alert core (slice 1 of 3)"
+          base: main
+          merged_at: 2026-09-04T15:51:21Z
         review: fresh-context review passed after one CRITICAL fix
           (architecture scanner ignored relative imports, fixed in c06a1a6)
         gate: pytest 10 passed, ruff check, ruff format --check, mypy all exit 0
@@ -95,7 +102,12 @@ phases:
         name: domain-ports-use-case
         branch: feat/core-alert-cycle-2-domain
         tasks: 2.1-2.22
-        status: apply_complete_review_remediated_pending_pr
+        status: merged
+        pull_request:
+          number: 2
+          title: "feat: add the alert domain, ports and cycle use case (slice 2 of 3)"
+          base: main
+          merged_at: 2026-09-04T20:12:57Z
         review: >-
           Fresh-context adversarial review run 2026-09-04. Returned 2 CRITICAL,
           6 WARNING and 3 suggestions; all fixed on the same branch under
@@ -108,13 +120,14 @@ phases:
           (re-run after remediation; was 98 passed before it, and 165 before
           the owner-approved pruning of 16 tautological tests)
         line_budget_risk: >-
-          High, still unresolved. Diff since main after remediation: 3151
+          High, resolved by owner-accepted size:exception at PR-2. Diff since
+          main after remediation: 3151
           insertions across 35 src/tests files, against the tasks.md ~400
           (source) / ~800 (with tests) estimate. Pruning 16 tautological tests
           removed some of it; the remediation added structured reasons, a
           boundary table, a monotonicity guard and a new policies test file.
-          Still needs an ask-on-risk decision before PR-2 opens: accept
-          size:exception, or split further.
+          The ask-on-risk decision was taken before PR-2 opened: accepted as a
+          size:exception rather than split further.
         open_items_resolved:
           - AlertPolicy port-bound shell placed in application/policies.py
           - OutageNoticePolicy is naming shorthand for the pure
@@ -145,7 +158,37 @@ phases:
         name: adapters-and-cli
         branch: feat/core-alert-cycle-3-adapters
         tasks: 3.1-3.16 plus 3.5b
-        status: apply_complete_review_remediated_pending_pr
+        status: merged
+        pull_requests:
+          # The line-budget decision below was resolved by splitting rather
+          # than by a third size:exception: slice 3 shipped as a chain of
+          # three PRs plus a fourth carrying the guide and the security fixes.
+          - number: 3
+            title: "feat: acquire and classify the live weather sources (slice 3a of 3)"
+            head: feat/core-alert-cycle-3a-sources
+            base: main
+            merged_at: 2026-09-05T16:55:08Z
+          - number: 4
+            title: "feat: add the console notifier and local persistence (slice 3b of 3)"
+            head: feat/core-alert-cycle-3b-persistence
+            base: feat/core-alert-cycle-3a-sources
+            merged_at: 2026-09-05T17:05:09Z
+          - number: 5
+            title: "feat: add the local alert-cycle CLI and live canaries (slice 3c of 3)"
+            head: feat/core-alert-cycle-3c-cli
+            base: feat/core-alert-cycle-3b-persistence
+            merged_at: 2026-09-05T17:05:58Z
+          - number: 6
+            title: >-
+              docs: add the architecture guide, fix the first security review,
+              land the remaining slice-3 commits
+            head: feat/core-alert-cycle-3c-cli
+            base: main
+            merged_at: 2026-09-06T03:19:31Z
+            carries: >-
+              The docs/architecture/ guide, the 2026-09-05 security review
+              remediation (see the security_remediation slice below) and the
+              slice-3 commits left over after the 3a/3b/3c chain.
         gate: >-
           Re-run after the review remediation on 2026-09-04: pytest 455 passed
           / 15 integration deselected, ruff check, ruff format --check, mypy
@@ -189,13 +232,15 @@ phases:
           zone) are now two rules answering two questions. New requirement
           with five scenarios in specs/risk-evaluation/spec.md.
         line_budget_risk: >-
-          High, unresolved, flagged not absorbed. Diff since main: 4507
-          insertions across 41 files (1739 src, 2639 tests including ~750
-          lines of captured fixtures, 129 openspec) against the tasks.md ~450
-          estimate. Drivers: the unplanned owner-approved filter (~500 lines
-          across source, tests and specs) and recorded fixture data. All eight
-          work-unit commits are independently reviewable and revertable, so a
-          further chained split is feasible instead of a third size:exception.
+          High, resolved by splitting rather than by a third size:exception.
+          Diff since main was 4507 insertions across 41 files (1739 src, 2639
+          tests including ~750 lines of captured fixtures, 129 openspec)
+          against the tasks.md ~450 estimate. Drivers: the unplanned
+          owner-approved filter (~500 lines across source, tests and specs) and
+          recorded fixture data. The work-unit commits were independently
+          reviewable, so the slice shipped as the 3a/3b/3c chain (PRs 3, 4, 5)
+          plus PR 6. Individual PRs were still over budget; the overrun is
+          recorded in tasks.md as accepted and not retroactively fixable.
         open_items_resolved:
           - >-
             Open-Meteo endpoint path and every query-parameter name in design
@@ -269,34 +314,209 @@ phases:
             comment next to the code; deliberately not implemented, because it
             needs a clock the port does not carry and change 3's DynamoDB
             adapter wants a TTL attribute rather than a rewrite.
+      - id: security-remediation
+        name: security-review-remediation
+        date: 2026-09-05
+        # Added 2026-09-06 (verify finding W6). This slice produced three
+        # source fixes and a new domain module and had no entry at all,
+        # although apply-progress.md carried the full record.
+        status: merged
+        shipped_in_pull_request: 6
+        trigger: >-
+          Fresh-context security review of the merged slice-3 code, run
+          2026-09-05. Returned one HIGH, one MEDIUM and one LOW; all three
+          fixed under strict TDD on feat/core-alert-cycle-3c-cli.
+        commits:
+          - bc25e4a fix(domain) stop a scraped aviso title from forging structure in the message
+          - b38ed34 fix(adapters) degrade the cycle on an anomalous forecast value, never abort it
+          - f611fce fix(entrypoints) give the --json document standard output to itself
+          - bcba50b docs record the security remediation in the guide and the openspec artifacts
+        findings:
+          - >-
+            HIGH. A scraped aviso title could forge structure inside the
+            Spanish community body. Reproduced end to end: a title carrying
+            newlines produced two Recomendaciones: sections, the forged one
+            ahead of the genuine one and formatted identically, plus a live
+            ANSI escape and a surviving U+202E override. New domain module
+            domain/sanitize.py, applied at all four rendering boundaries; the
+            invariant is stated on the MessageComposer port so change 2's
+            agent composer inherits it. Recorded in design section 3.3 on
+            2026-09-06 (verify finding W5b) — until then it was in tasks.md
+            and apply-progress.md only.
+          - >-
+            MEDIUM. An uncaught ValueError from a malformed forecast value
+            aborted the whole cycle. json.loads accepts bare NaN and Infinity;
+            Infinity millimetres was the quieter case, parsing as valid and
+            clearing imminent_mm_24h unconditionally. Range and finiteness are
+            now enforced in the adapter and on HourlyPoint, and both forecast
+            providers gained the catch-all the sibling scraper carried.
+          - >-
+            LOW. The --json document was unparseable whenever the run sent an
+            alert or emitted a notice, because ConsoleNotifier shared stdout.
+            The notifier now takes a stream and the CLI gives it stderr under
+            --json.
+        deviations_recorded:
+          - >-
+            domain/sanitize.py is an addition to design section 12's file
+            table. Recorded in tasks.md at the time, and in design sections
+            3.3 and 12 on 2026-09-06.
+        gate: >-
+          pytest 537 passed / 15 deselected, ruff check, ruff format --check,
+          mypy clean on 35 source files. All exit 0.
+      - id: verification-remediation
+        name: verify-findings-remediation
+        date: 2026-09-06
+        status: implemented_pending_push
+        branch: chore/land-slice3-remainder
+        trigger: >-
+          The sdd-verify findings in verify-report.md (0 CRITICAL, 8 WARNING,
+          11 SUGGESTION). Every finding is dispositioned in tasks.md under
+          "Added at the 2026-09-06 verification remediation"; fixed items name
+          what changed, deferred items name why and what would close them.
+        fixed_in_code: [W1, W2, W3, W4, S1, S2, S3b, S4, S5, S6, S6b, S8, S9]
+        fixed_in_artifacts: [W5, W5b, W6, W7, W8, S3, S7, S10, S11]
+        deferred:
+          - >-
+            S3 (partial). AlertConfig.forecast_hours does not move the
+            evaluation window; the horizons are module constants in
+            domain/risk.py. Design section 5 now says so and tasks.md carries
+            the open item. Not changed because making the horizons
+            configurable means deciding whether a threshold calibrated over
+            48 hours still means anything over 72 — a calibration question for
+            the first rainy season and an owner decision, not a refactor.
+        mutation_evidence: >-
+          W2 confirmed in both directions. With AlertRecord construction and
+          record_alert moved above send_alert, the two new ordering tests fail
+          (assert 9 < 8) and the rest pass; reverted, all pass. Before the
+          shared CallLog existed the same mutation left the whole suite green.
+        gate: >-
+          pytest 549 passed / 15 deselected, ruff check, ruff format --check,
+          mypy clean on 35 source files, uv run rain-alert-cycle exit 0 against
+          the live sources with both hazards in force correctly discarded.
+          The opt-in live suite needed two attempts on the final run: attempt 1
+          failed on a transient read timeout in test_open_meteo_live.py
+          (1 failed, 9 passed, 5 skipped, 6.89s), attempt 2 was clean
+          (10 passed, 5 skipped, 1.95s). The SENAMHI canary passed on both
+          attempts, which is what finding S9 addressed; the Open-Meteo live
+          test deliberately keeps the production timeout and can still flake.
+          Recorded honestly rather than reported as a single green run.
+        note: >-
+          Not pushed and no PR opened by the remediation run, by instruction;
+          the orchestrator owns the push. This is the only apply work in the
+          change that is not yet on main.
     note: >-
-      All three slices implemented as of 2026-09-04. Slice 3 (adapters, local
-      repositories, CLI) is complete on feat/core-alert-cycle-3-adapters with
-      the gate green and a clean live smoke run, and carries one
-      owner-approved contract change to the SENAMHI warning filter. PR-3 is
-      not open: fresh-context review and the line-budget decision are
-      outstanding, and no push or PR was made by this apply run.
-      Slice 1 of 3 complete on branch feat/core-alert-cycle-1-tooling
-      (chain strategy stacked-to-main, so PR-1 targets main). Slice 2
-      (domain, ports, RunAlertCycle) implemented on
-      feat/core-alert-cycle-2-domain, all Phase 2 tasks (2.1-2.22) complete,
-      fresh-context review run 2026-09-04 and every confirmed finding
-      remediated on the same branch with the gate green. PR-2 is not open:
-      the line-budget decision is still outstanding, and no push or PR was
-      made by the remediation run.
+      Apply is complete and all six pull requests are merged. Slice 1 shipped
+      as PR 1 (2026-09-04) and slice 2 as PR 2 (2026-09-04), both to main under
+      the stacked-to-main chain strategy with an owner-accepted size:exception
+      each. Slice 3 was too large for one PR, so it shipped as the chained
+      3a/3b/3c trio (PRs 3, 4 and 5, merged 2026-09-05) plus PR 6 (merged
+      2026-09-06), which also carried the docs/architecture/ guide and the
+      2026-09-05 security review remediation. The 2026-09-06 verification
+      remediation is implemented on chore/land-slice3-remainder and is the one
+      piece not yet on main.
+      This note said apply was in progress, that PR-2 and PR-3 were not open
+      and that no push had been made, until 2026-09-06 (verify finding W6).
   verify:
-    status: pending
+    status: done
     depends_on: [apply]
-    artifact: null
+    artifact: openspec/changes/core-alert-cycle/verify-report.md
+    engram_topic_key: sdd/core-alert-cycle/verify-report
+    engram_saved: false
+    verdict: PASS WITH FINDINGS
+    verified_on: 2026-09-06
+    verified_ref: chore/land-slice3-remainder @ bcba50b
+    gate: >-
+      uv run pytest 537 passed / 15 deselected; uv run ruff check . clean;
+      uv run ruff format --check . 78 files; uv run mypy clean on 35 source
+      files. All exit 0. Live CLI run clean, exit 0, nothing transmitted, both
+      hazards in force correctly discarded with stated reasons. The opt-in
+      integration suite needed three attempts: runs 1 and 2 failed on transient
+      TLS connect timeouts to the live sources, run 3 passed 10 / 5 skipped.
+    coverage: >-
+      35 requirements and 64 scenarios traced across the seven spec files.
+      34 of 35 requirements proven by a test that ran green; 63 of 64 scenarios
+      have a covering test. The uncovered scenario is repo-hygiene
+      "Grep check passes", which has no automated test — the property itself was
+      re-verified by hand during this run and is clean.
+    findings:
+      critical: 0
+      warning: 8
+      suggestion: 11
+    blocking: none
+    key_findings:
+      - >-
+        W1 MessageRequest.warning can name a warning the evaluator refused to
+        act on (_most_severe_warning ignores may_raise_imminent), and the field
+        has zero test coverage. Latent contract defect for change 2's composer;
+        no user-visible impact today because the template does not render it.
+      - >-
+        W2 The "in order" and "record only after notify" guarantees in
+        alert-cycle are unasserted, and tests/support/fakes.py has no shared
+        call log, so cross-port ordering is not observable at all.
+      - >-
+        W3 repo-hygiene "Grep check passes" is the only spec scenario with no
+        automated test. Verified manually and clean; no regression guard exists
+        on a public repository.
+      - >-
+        W4 The --json document's evaluated_at is the assessment window start,
+        not the cycle clock. Reproduced: a run at 2026-09-05T12:00Z reported
+        2026-09-04T05:00Z. The document carries no record of when the cycle ran.
+      - >-
+        W5 tasks.md still states forecast_days=3 at lines 67 and 91; code,
+        design section 8.1 and the architecture guide all say 4.
+      - >-
+        W5b domain/sanitize.py and the MessageComposer sanitization invariant
+        are not recorded in design.md; the module docstring cites section 3.2,
+        which is about forecast horizons.
+      - >-
+        W6 This state.yaml does not describe the shipped system: apply is still
+        in_progress, slices 2 and 3 say "PR not open / no push was made",
+        next_recommended is sdd-apply, and the 2026-09-05 security remediation
+        has no entry at all. The archive record is built from this file.
+      - >-
+        W7 risk-evaluation requires the evaluator to read coordinates from
+        configuration; RiskEvaluator only ever receives RiskThresholds. Spec
+        sentence broader than its own scenario and than anything the code can
+        satisfy.
+      - >-
+        W8 alert-cycle says the template must include "each reason"; the
+        template deliberately suppresses SenamhiUnavailableReason's line per
+        design section 3.1. The spec sentence was never amended.
+    note: >-
+      No source file was modified by this phase. Only verify-report.md and this
+      block were written. Findings W5, W5b and W6 are artifact-accuracy issues
+      and should be corrected before sdd-archive, because the archive record is
+      assembled from these artifacts.
+    remediation:
+      date: 2026-09-06
+      slice: verification-remediation
+      status: implemented_pending_push
+      outcome: >-
+        All 8 WARNINGs and all 11 SUGGESTIONs dispositioned. 13 fixed in code,
+        9 fixed in the artifacts, 1 (S3, partial) deferred with the reason and
+        the closing condition recorded in tasks.md. Every finding the report
+        raised about the artifacts not describing the shipped system — W5, W5b,
+        W6 — is corrected here, so the archive record can now be assembled
+        truthfully. Coverage after remediation: 35 of 35 requirements and 64 of
+        64 scenarios have a covering test; repo-hygiene "Grep check passes" is
+        no longer manual.
   archive:
     status: pending
     depends_on: [verify]
     artifact: null
+    note: >-
+      Must not run until the verification remediation on
+      chore/land-slice3-remainder is merged, because the archive record is
+      assembled from artifacts that branch changed.
 
 next_recommended:
-  - sdd-apply
+  - sdd-archive
 
-blocked_reasons: []
+blocked_reasons:
+  - >-
+    The 2026-09-06 verification remediation is implemented but unpushed on
+    chore/land-slice3-remainder (9 commits ahead of origin/main). Push, open
+    the PR and merge it; then clear this reason and run sdd-archive.
 
 resolved_decisions:
   - id: threshold-contradiction

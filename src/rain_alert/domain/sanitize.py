@@ -1,5 +1,5 @@
 """The single sanitizer every source-derived free text passes through before
-it is rendered for a human (design.md 3.2).
+it is rendered for a human (design.md 3.3).
 
 **Why this is a domain module and not a helper in each adapter.** The text
 that needs it comes from one place — a scraped SENAMHI aviso title — but it

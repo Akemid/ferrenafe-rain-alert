@@ -89,6 +89,8 @@ The coordinates line prints `(PLACEHOLDER — pending confirmation)` whenever `c
 
 The document also carries `coordinates_are_placeholder`, so a calibration log records whether the coordinates were confirmed at the time of the run.
 
+**`evaluated_at` is the cycle clock, not the window start.** It reads `CycleResult.evaluated_at`, which `RunAlertCycle` fills from the injected clock. It used to read `assessment.window.start`, which is a different fact: on an imminent-from-official verdict the window start is the aviso's own start date and can be days earlier than the run. It also duplicated `window_start` exactly, so the document carried no record of when the cycle actually ran — the one field that lets a reviewer correlate a verdict with the data available at that moment, in a document whose stated purpose is calibration logging.
+
 **Under `--json`, standard output carries the document and nothing else.**
 
 `ConsoleNotifier` also defaulted to standard output, so on any run that sent an alert or emitted an operator notice, the document was preceded by a `[DRY-RUN ALERT]` or `[OPERATOR NOTICE]` block and `json.loads` failed. The flag is documented as machine-readable output for calibration logging, so it broke on precisely the runs worth logging — a send and a degraded cycle are the two things a calibration log exists to record.
@@ -101,10 +103,10 @@ Passing the CLI's own stream on the human-readable path also closes a smaller la
 
 ## Part 2: the test architecture
 
-537 tests run by default, in about half a second. 15 more are deselected because they need the network.
+549 tests run by default, in about half a second. 15 more are deselected because they need the network.
 
 ```bash
-uv run pytest                # the 537 offline tests
+uv run pytest                # the 549 offline tests
 uv run pytest -m integration # the 15 live canaries
 ```
 
@@ -114,13 +116,13 @@ The deselection comes from `addopts = "-q -m 'not integration'"` in `pyproject.t
 
 | Directory | Tests | What it checks |
 |---|---|---|
-| `tests/unit/domain/` | 212 | Every rule, value object and rendering, including the sanitizer. |
-| `tests/unit/adapters/` | 264 | Parsing, classification, persistence, notification, serialization, offline sources. |
-| `tests/unit/application/` | 16 | The lookback range, and the cycle's call order. |
-| `tests/unit/entrypoints/` | 35 | The CLI output, the stream split, exit codes, clocks and wiring. |
+| `tests/unit/domain/` | 213 | Every rule, value object and rendering, including the sanitizer. |
+| `tests/unit/adapters/` | 265 | Parsing, classification, persistence, notification, serialization, offline sources. |
+| `tests/unit/application/` | 23 | The lookback range, the warning summary's agreement with the verdict, and the cycle's call order. |
+| `tests/unit/entrypoints/` | 36 | The CLI output, the stream split, exit codes, clocks and wiring. |
 | `tests/unit/test_package_smoke.py` | 2 | The package and its five layer sub-packages import under their expected names. |
 | `tests/architecture/` | 4 | The layer boundary, by static analysis. |
-| `tests/hygiene/` | 4 | Public-repository constraints. |
+| `tests/hygiene/` | 6 | Public-repository constraints, including the committed-secrets scan. |
 | `tests/integration/` | 15 | The live SENAMHI page and the live Open-Meteo API. |
 
 The heaviest single files are `test_senamhi_classification.py` at 61, `test_local_repositories.py` at 59, `test_open_meteo.py` at 56 and `test_risk.py` at 43.
@@ -153,16 +155,24 @@ Two of the four tests are triangulation. They build a fake package under `tmp_pa
 
 ### `tests/hygiene/test_repo_hygiene.py`
 
-Four checks that guard the public-repository constraints.
+Six checks that guard the public-repository constraints.
 
 | Test | Asserts |
 |---|---|
 | `test_license_file_contains_apache_2_0_text` | `LICENSE` carries the Apache License 2.0 text. |
 | `test_readme_contains_the_required_disclaimers` | `README.md` names SENAMHI and INDECI, disclaims warranty, and states the Open-Meteo non-commercial terms. |
-| `test_gitignore_excludes_local_secrets_and_state` | `.gitignore` excludes `.env`, `.local-state/` and `.venv/`. |
+| `test_gitignore_excludes_local_secrets_and_state` | `git check-ignore` says `.env`, `.local-state/` and `.venv/` would not be tracked. |
 | `test_env_example_lists_variable_names_with_no_values` | Every non-comment line of `.env.example` is a bare variable name with an empty value. |
+| `test_no_secret_or_personal_data_pattern_is_committed` | No tracked line matches any of six secret shapes, outside a named allow-list. |
+| `test_every_allow_listed_placeholder_line_still_exists` | Every allow-list entry still forgives a line that exists. |
 
-The last one is the interesting one. It parses each line at the first `=` and asserts the right side is empty, so a real value can never be committed to `.env.example` by accident.
+**The `.gitignore` check asks git rather than reading the file.** A substring scan passes on a `.gitignore` that only mentions `.env.example`, or only carries the comment "never commit .env". The scenario is about what git would track, so `git check-ignore -q` answers it from the ignore rules alone — the paths need not exist, so nothing is created and the local environment file is never read.
+
+**The secrets scan is the regression guard for the highest-stakes hygiene requirement.** Six shape patterns — Peruvian phone numbers, email addresses, AWS access key ids, AWS account ids, GitHub tokens and API secret keys — run through `git grep -nIE`, so the file set is git's rather than the filesystem's and binaries are skipped. Until this existed, "no secrets, ever, at any commit" was verified only by hand, twice, on a public repository.
+
+The allow-list is deliberately narrow: three named files plus the **exact** hostile-title placeholder string, so a real number in an allow-listed file still fails. Loosening the pattern instead would have disarmed the check for every future file. A second test fails if an allow-list entry outlives the line it forgives, because an entry left behind after its payload moves is a permanent hole with nothing to notice it.
+
+The `.env.example` check parses each line at the first `=` and asserts the right side is empty, so a real value can never be committed there by accident.
 
 ### `tests/integration/`, the live canaries
 
@@ -178,6 +188,8 @@ These are opt-in, and they exist because **nothing offline can notice the live s
 - Every live title carrying a known family stem classifies into that family, checked per row and parametrized per stem. A family absent from today's page is skipped rather than asserted, because the page's mix is seasonal.
 - Every warning the parser returns is flood-relevant, and none is wind.
 - The port-level result the cycle actually consumes is `Available`.
+
+**The page is fetched once per session, on a patient timeout.** Every test above used to call `_live_page()` and `_live_titles()` fetched again on top, so the file made roughly eight live requests for one page that cannot change between them, each under the production 3-second connect budget. Two of three verification runs failed on transient TLS connect timeouts, on a different test each time — and an unreliable canary is an ignored canary, which would leave the project with no drift detector at all. `_live_page` is now `lru_cache`d and uses `CANARY_TIMEOUT`, which is generous because a canary is not making the production availability decision that `DEFAULT_TIMEOUT` encodes. `test_the_scraper_reports_available_against_the_live_page` deliberately still fetches for itself on the production timeout, because it asserts what the real cycle would get.
 
 ### `tests/fixtures/`
 
@@ -236,7 +248,7 @@ The division is visible in the test docstrings and is worth naming, because it i
 
 | Command | What it enforces |
 |---|---|
-| `uv run pytest` | The 537 offline tests. |
+| `uv run pytest` | The 549 offline tests. |
 | `uv run pytest -m integration` | The 15 live canaries. |
 | `uv run ruff check .` | Lint rules `E`, `W`, `F`, `I`, `B`, `C4`, `UP`, `SIM`, with `E501` ignored and a 120 column limit. |
 | `uv run ruff format --check .` | Formatting. |

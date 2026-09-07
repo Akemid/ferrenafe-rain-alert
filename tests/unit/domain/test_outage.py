@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from rain_alert.domain.messages import OutageRecord
 from rain_alert.domain.outage import OutageDecision, evaluate_outage
 from rain_alert.domain.sources import Available, Unavailable
-from rain_alert.domain.values import NoticeKind, SourceName, UnavailableReason
+from rain_alert.domain.values import Level, NoticeKind, SourceName, UnavailableReason
 
 NOW = datetime(2026, 9, 3, 12, tzinfo=UTC)
 CITY_SLUG = "ferrenafe"
@@ -179,7 +179,16 @@ def test_no_recovery_notice_without_a_prior_outage() -> None:
 
 
 def test_notices_use_a_distinct_kind_from_a_community_alert() -> None:
-    """NoticeKind values are distinct from Level values — there is no shared vocabulary."""
+    """NoticeKind values are distinct from Level values — there is no shared vocabulary.
+
+    S5: the assertion used to be `kind in set(NoticeKind)`, which cannot fail
+    while `NoticeKind` has two members and did not test the docstring's claim
+    at all. The disjointness is the property worth pinning: a notice tagged
+    `imminent` would be indistinguishable from a community alert wherever the
+    two are routed by their tag, which is what `ConsoleNotifier` and change 3's
+    delivery layer both do.
+    """
     decision = evaluate_outage(_unavailable(SourceName.SENAMHI), _available(), None, CITY_SLUG, NOW)
 
-    assert decision.notices[0].kind in {NoticeKind.SOURCE_UNAVAILABLE, NoticeKind.SOURCES_RECOVERED}
+    assert decision.notices[0].kind is NoticeKind.SOURCE_UNAVAILABLE
+    assert {kind.value for kind in NoticeKind}.isdisjoint({level.value for level in Level})

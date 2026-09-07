@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.policies import AlertPolicy
@@ -28,6 +29,7 @@ from rain_alert.domain.messages import (
     WarningSummary,
 )
 from rain_alert.domain.outage import evaluate_outage
+from rain_alert.domain.reasons import WarningReason
 from rain_alert.domain.risk import IMMINENT_HORIZON_HOURS, evaluated_horizon
 from rain_alert.domain.sources import Available, SourceResult
 from rain_alert.domain.values import WarningLevel
@@ -45,6 +47,11 @@ class CycleResult:
     report on one cycle, whether or not a send was authorized."""
 
     config_city: str
+    #: The cycle clock — when this cycle ran, not when its window starts. The
+    #: `--json` calibration document previously reported `window.start` here,
+    #: which on an imminent-from-official verdict is the aviso's own start date
+    #: and can be days in the past.
+    evaluated_at: datetime
     senamhi: SourceResult[tuple[Warning, ...]]
     open_meteo: SourceResult[Forecast]
     assessment: RiskAssessment
@@ -54,6 +61,28 @@ class CycleResult:
     sent: bool
     recipients_count: int
     notices: tuple[OperatorNotice, ...]
+
+
+def _warnings_behind(assessment: RiskAssessment, warnings: tuple[Warning, ...]) -> tuple[Warning, ...]:
+    """The warnings that actually earned the level, read back off the verdict.
+
+    The alternative was to re-derive the rule here — "the ones in
+    `imminent_warning_levels` that also satisfy `may_raise_imminent` when the
+    level is imminent, the ones in `prepare_warning_levels` otherwise". That is
+    a second copy of the evaluator's branch conditions living in the
+    application layer, and a second copy is exactly how this defect arose: this
+    function remembered flood relevance and forgot `may_raise_imminent` when
+    §5.1.1 added it.
+
+    Reading the contributors back off `assessment.reasons` cannot drift,
+    because the branch that decided the level is the same code that built those
+    reasons (`domain/risk.py` says so in as many words). When no branch cited a
+    warning — a forecast-only verdict, or `none` — the answer is *no warnings*,
+    and the request carries no `WarningSummary` at all rather than an aviso the
+    reasons do not support.
+    """
+    cited = {(reason.level, reason.title) for reason in assessment.reasons if isinstance(reason, WarningReason)}
+    return tuple(warning for warning in warnings if (warning.level, warning.title) in cited)
 
 
 def _most_severe_warning(warnings: tuple[Warning, ...]) -> Warning | None:
@@ -86,7 +115,7 @@ def _build_message_request(
 
     warning_summary: WarningSummary | None = None
     if isinstance(warnings, Available):
-        chosen = _most_severe_warning(warnings.data)
+        chosen = _most_severe_warning(_warnings_behind(assessment, warnings.data))
         if chosen is not None:
             warning_summary = WarningSummary(
                 source_id=chosen.source_id, level=chosen.level, title=chosen.title, window=chosen.window
@@ -165,6 +194,7 @@ class RunAlertCycle:
 
         return CycleResult(
             config_city=config.city,
+            evaluated_at=now,
             senamhi=warnings,
             open_meteo=forecast,
             assessment=assessment,

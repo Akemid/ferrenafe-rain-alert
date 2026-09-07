@@ -383,6 +383,21 @@ class TestHighlandsRainIsAnEarlySignalNotAnImminentClaim:
 
         assert assessment.level == Level.IMMINENT
 
+    def test_a_coastal_red_warning_raises_imminent(self) -> None:
+        """S4: the requirement says "orange **or red**", and every other RED
+        case in this file asserts a *negative* — the highlands ones. A red
+        coastal warning raising `imminent` is the single most consequential
+        positive behaviour in the system, so it is asserted directly rather
+        than inferred from orange sharing a `frozenset` membership check."""
+        evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
+
+        assessment = evaluator.evaluate(_zoned_warnings((WarningLevel.RED, Zone.COAST)), _unavailable_forecast(), NOW)
+
+        assert assessment.level == Level.IMMINENT
+        assert [reason.level for reason in assessment.reasons if isinstance(reason, WarningReason)] == [
+            WarningLevel.RED
+        ]
+
     def test_a_coast_and_highlands_warning_behaves_as_coastal(self) -> None:
         evaluator = RiskEvaluator(DEFAULT_THRESHOLDS)
 

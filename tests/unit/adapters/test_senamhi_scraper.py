@@ -141,6 +141,26 @@ class TestTheMultiHazardFilter:
         assert isinstance(result, Available)
         assert result.data == ()
 
+    def test_the_article_variant_of_the_heat_warning_is_discarded_too(self) -> None:
+        """S3b: the article variant is the exact wording that defeated the
+        filter once — `INCREMENTO DE LA TEMPERATURA` is not a substring of
+        `INCREMENTO DE TEMPERATURA`, so it classified as `UNKNOWN` and reached
+        the evaluator as if it were rain. Proven at the classifier, and now
+        through the scraper as well, because everything between the two is
+        where a filter gets forgotten.
+        """
+        mutated = _html(SENAMHI_ACTIVE_WARNING).replace(
+            "INCREMENTO DE TEMPERATURA DIURNA", "INCREMENTO DE LA TEMPERATURA DIURNA"
+        )
+
+        result = SenamhiWarningScraper(StubHtmlFetcher(mutated)).fetch_current_warnings(REGION, NOW)
+
+        assert isinstance(result, Available)
+        assert result.data == ()
+        assert any(
+            "INCREMENTO DE LA TEMPERATURA DIURNA" in note and "high_temperature" in note for note in result.notes
+        ), result.notes
+
     def test_the_heat_warning_is_recorded_as_discarded_with_its_reason(self) -> None:
         """weather-sources: Exclusions are auditable. An empty result from a
         filter must stay distinguishable from an empty result from breakage."""

@@ -304,6 +304,22 @@ class TestJsonOutput:
 
         assert document["coordinates_are_placeholder"] is True
 
+    def test_json_mode_reports_when_the_cycle_ran_not_when_its_window_starts(self, capsys, tmp_path: Path) -> None:
+        """W4: `evaluated_at` carried `assessment.window.start`.
+
+        On an imminent-from-official verdict the window start is the aviso's
+        own start date, which can be days in the past, and it duplicated
+        `window_start` exactly — so a document whose stated purpose is
+        calibration logging held no record of when the cycle actually ran, the
+        one field that correlates a verdict with the data available then.
+        """
+        _, output = _run(capsys, tmp_path, "--json", senamhi=SENAMHI_PRECIPITATION_COAST)
+
+        document = json.loads(output)
+
+        assert document["evaluated_at"] == NOW_DT.isoformat()
+        assert document["evaluated_at"] != document["window_start"]
+
 
 class TestTheJsonDocumentOwnsStandardOutputAlone:
     """`--json` is documented as machine-readable output for calibration

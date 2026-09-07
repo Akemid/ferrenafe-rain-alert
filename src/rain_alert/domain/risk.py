@@ -8,6 +8,11 @@ ordered branches are the readable, debuggable form. Each branch's condition
 lives in a small named helper returning a verdict or `None`, so the reasons
 tuple is produced by the same code that made the decision — the audit trail
 cannot drift from the verdict.
+
+Branch numbers in this module are design.md section 5's, and there is exactly
+one numbering: 1 imminent/official, 2 imminent/forecast, 3 prepare/combined,
+4 prepare/forecast-only, 5 prepare/degraded, 6 none. Six branches means five
+named helpers plus the fallthrough at the end of `evaluate`.
 """
 
 from __future__ import annotations
@@ -170,14 +175,14 @@ class RiskEvaluator:
         warnings: SourceResult[tuple[Warning, ...]],
         forecast: SourceResult[Forecast],
     ) -> _Verdict | None:
-        """Branch 5: SENAMHI is available but published no qualifying warning.
+        """Branch 4: SENAMHI is available but published no qualifying warning.
 
         Without this branch, breaking the SENAMHI scraper made the system more
         likely to warn than a healthy one: the same forecast yielded `none`
         with a healthy, silent SENAMHI but `prepare` with an unavailable one
-        (branch 4). A broken source must never buy extra sensitivity, so the
+        (branch 5). A broken source must never buy extra sensitivity, so the
         forecast alone may fire `prepare` here too — at the same stricter
-        probability threshold branch 4 uses, never at the combined-rule 60%,
+        probability threshold branch 5 uses, never at the combined-rule 60%,
         because there is no official confirmation to combine with.
         """
         if not isinstance(warnings, Available) or not isinstance(forecast, Available):

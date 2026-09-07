@@ -139,9 +139,11 @@ When both SENAMHI and Open-Meteo are `unavailable`, the evaluator MUST return le
 - WHEN the evaluator runs
 - THEN the level is `none`
 
-### Requirement: Thresholds and coordinates come from configuration
+### Requirement: Thresholds come from configuration
 
-The evaluator MUST read thresholds and coordinates from `ConfigRepository` at evaluation time and MUST NOT hard-code them.
+The evaluator MUST read its thresholds from `ConfigRepository` at evaluation time and MUST NOT hard-code them.
+
+*Amended 2026-09-06 (verify finding W7).* The sentence previously said "thresholds **and coordinates**". The evaluator never receives coordinates and must not: they are a `ForecastProvider` concern, already required by `specs/weather-sources/spec.md` → "Coordinates come from configuration". The requirement was broader than its own scenario and broader than anything the code could satisfy, so it is narrowed to the property that is real. Design section 5 has always shown `RiskEvaluator(thresholds)` taking thresholds alone.
 
 #### Scenario: Threshold source
 - GIVEN a `ConfigRepository` fake with a documented threshold set

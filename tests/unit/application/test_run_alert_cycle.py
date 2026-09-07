@@ -8,10 +8,12 @@ section 10) — no `unittest.mock`.
 from datetime import datetime, timedelta
 
 from rain_alert.application.run_alert_cycle import RunAlertCycle
-from rain_alert.domain.entities import Forecast, HourlyPoint
+from rain_alert.domain.entities import Forecast, HourlyPoint, Warning
+from rain_alert.domain.hazards import Phenomenon, Zone
 from rain_alert.domain.messages import AlertMessage, AlertRecord
+from rain_alert.domain.reasons import WarningReason
 from rain_alert.domain.sources import Available, Unavailable
-from rain_alert.domain.values import Level, NoticeKind, SourceName, TimeWindow, UnavailableReason
+from rain_alert.domain.values import Level, NoticeKind, SourceName, TimeWindow, UnavailableReason, WarningLevel
 from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
 
 NOW = DEFAULT_NOW
@@ -28,6 +30,25 @@ def _forecast(hours: int, *, mm_total: float, probability_pct: int, now: datetim
 
 def _unavailable(source: SourceName, *, now: datetime = NOW) -> Unavailable:
     return Unavailable(source=source, reason=UnavailableReason.TIMEOUT, detail="timed out", observed_at=now)
+
+
+def _precipitation_warning(level: WarningLevel, zone: Zone, *, title: str, source_id: str) -> Warning:
+    """A rainfall warning whose geography is stated, so `may_raise_imminent`
+    answers on the value itself rather than on the permissive default."""
+    return Warning(
+        source_id=source_id,
+        title=title,
+        level=level,
+        region=DEFAULT_CONFIG.region,
+        window=TimeWindow(start=NOW, end=NOW + timedelta(hours=6)),
+        emitted_at=NOW,
+        phenomenon=Phenomenon.PRECIPITATION,
+        zone=zone,
+    )
+
+
+def _cited_warning_titles(result_reasons: tuple[object, ...]) -> list[str]:
+    return [reason.title for reason in result_reasons if isinstance(reason, WarningReason)]
 
 
 def _record(level: Level, window: TimeWindow) -> AlertRecord:
@@ -69,6 +90,56 @@ class TestAuthorizedSendRunsTheFullChain:
         assert result.message.level == Level.IMMINENT
 
 
+class TestTheCycleRunsItsStepsInTheSpecifiedOrder:
+    """The `alert-cycle` requirement says the steps run **in order**, and that
+    recording happens **only after** `Notifier` delivery (W2).
+
+    Neither was assertable before: every spy owned a private call list, so
+    cross-port order was invisible and moving `record_alert` above `send_alert`
+    left the whole suite green. A recorded-but-undelivered alert makes the next
+    cycle believe the community was told, so the genuine alert is deduplicated
+    away and never sent.
+    """
+
+    def test_an_authorized_send_calls_the_ports_in_the_order_the_spec_lists(self) -> None:
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70))
+
+        RunAlertCycle(deps).execute()
+
+        assert deps.notifier.log.steps == (
+            ("config", "load"),
+            ("warnings", "fetch_current_warnings"),
+            ("forecast", "fetch_forecast"),
+            ("alerts", "get_active_outage"),
+            ("evaluator", "evaluate"),
+            ("alerts", "alerts_with_window_start_between"),
+            ("composer", "compose"),
+            ("contacts", "list_active"),
+            ("notifier", "send_alert"),
+            ("alerts", "record_alert"),
+        )
+
+    def test_the_alert_is_recorded_only_after_the_notifier_delivered_it(self) -> None:
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70))
+
+        RunAlertCycle(deps).execute()
+
+        log = deps.notifier.log
+        assert log.position_of("notifier", "send_alert") < log.position_of("alerts", "record_alert")
+
+    def test_each_logged_call_carries_the_detail_that_identifies_it(self) -> None:
+        """Order alone would be satisfied by a log of bare port names. The
+        detail is what lets a reader of a failure see *which* alert was
+        delivered and *which* one was recorded."""
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70))
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.message is not None
+        assert ("notifier", "send_alert", result.message.title) in deps.notifier.log.entries
+        assert ("alerts", "record_alert", result.assessment.level.value) in deps.notifier.log.entries
+
+
 class TestRecordAfterNotify:
     def test_recorded_alert_carries_level_window_and_message(self) -> None:
         forecast = _forecast(24, mm_total=29.8, probability_pct=70)
@@ -81,6 +152,73 @@ class TestRecordAfterNotify:
         assert recorded.level == result.assessment.level
         assert recorded.window == result.assessment.window
         assert recorded.message == result.message
+
+
+class TestTheWarningSummaryAgreesWithTheVerdict:
+    """`MessageRequest.warning` must name a warning the verdict actually rested
+    on (W1).
+
+    Choosing by `WarningLevel` alone let the request name the highlands warning
+    branch 1 refused to act on while `assessment.reasons` named the coastal one
+    that earned the level. Nothing renders `warning` today, but it is a pinned
+    contract and change 2's composer reads it, so the message would quote one
+    aviso while the reasons quote another.
+    """
+
+    def test_an_imminent_verdict_names_the_coastal_warning_that_earned_it(self) -> None:
+        highlands = _precipitation_warning(
+            WarningLevel.RED, Zone.HIGHLANDS, title="SIERRA-RED", source_id="senamhi-sierra"
+        )
+        coast = _precipitation_warning(WarningLevel.ORANGE, Zone.COAST, title="COSTA-ORANGE", source_id="senamhi-costa")
+        deps = build_fake_deps(warnings=Available(data=(highlands, coast), fetched_at=NOW))
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.assessment.level == Level.IMMINENT
+        assert _cited_warning_titles(result.assessment.reasons) == ["COSTA-ORANGE"]
+        summary = result.message_request.warning
+        assert summary is not None
+        assert (summary.title, summary.level, summary.source_id) == (
+            "COSTA-ORANGE",
+            WarningLevel.ORANGE,
+            "senamhi-costa",
+        )
+
+    def test_a_prepare_verdict_names_the_most_severe_warning_that_contributed(self) -> None:
+        """The combined branch counts a highlands warning, so on `prepare` the
+        highlands red *is* the right answer — the rule is "most severe among
+        the contributors", not "never highlands"."""
+        highlands = _precipitation_warning(
+            WarningLevel.RED, Zone.HIGHLANDS, title="SIERRA-RED", source_id="senamhi-sierra"
+        )
+        coast = _precipitation_warning(WarningLevel.YELLOW, Zone.COAST, title="COSTA-YELLOW", source_id="senamhi-costa")
+        deps = build_fake_deps(
+            warnings=Available(data=(highlands, coast), fetched_at=NOW),
+            forecast=_forecast(48, mm_total=10.0, probability_pct=60),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.assessment.level == Level.PREPARE
+        assert _cited_warning_titles(result.assessment.reasons) == ["SIERRA-RED", "COSTA-YELLOW"]
+        summary = result.message_request.warning
+        assert summary is not None
+        assert summary.title == "SIERRA-RED"
+
+    def test_a_forecast_only_verdict_names_no_warning_at_all(self) -> None:
+        """A yellow aviso is on the page but no branch used it. Naming it would
+        hand the composer an aviso the reasons do not support."""
+        coast = _precipitation_warning(WarningLevel.YELLOW, Zone.COAST, title="COSTA-YELLOW", source_id="senamhi-costa")
+        deps = build_fake_deps(
+            warnings=Available(data=(coast,), fetched_at=NOW),
+            forecast=_forecast(24, mm_total=29.8, probability_pct=70),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.assessment.level == Level.IMMINENT
+        assert _cited_warning_titles(result.assessment.reasons) == []
+        assert result.message_request.warning is None
 
 
 class TestShortHorizonForecastsDoNotCrashTheCycle:
@@ -207,3 +345,24 @@ class TestDegradedModeWiring:
         assert result.message is not None
         assert "SENAMHI" in result.message.body
         assert "no estuvo disponible" in result.message.body
+
+    def test_one_degraded_cycle_discloses_the_outage_and_notifies_the_operator(self) -> None:
+        """Proposal success criterion 8, end to end in a single cycle (S6b).
+
+        Both halves were proven before — the body disclosure here, the operator
+        notice in the CLI tests — but never together, and the criterion is
+        written as one cycle doing both. `test_a_degraded_cycle_still_exits_zero`
+        runs exactly this scenario and asserts only the exit code.
+        """
+        forecast = _forecast(48, mm_total=15.0, probability_pct=75)
+        deps = build_fake_deps(warnings=_unavailable(SourceName.SENAMHI), forecast=forecast)
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.assessment.senamhi_status == "unavailable"
+        assert result.sent is True
+        assert result.message is not None
+        assert "no estuvo disponible" in result.message.body
+        assert [notice.kind for notice in result.notices] == [NoticeKind.SOURCE_UNAVAILABLE]
+        assert len(deps.notifier.notice_calls) == 1
+        assert deps.notifier.notice_calls[0].sources == frozenset({SourceName.SENAMHI})

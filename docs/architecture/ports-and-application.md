@@ -105,6 +105,7 @@ Clamping only ever widens the range, so the lookback still governs short windows
 | Field | Notes |
 |---|---|
 | `config_city` | The city name from configuration. |
+| `evaluated_at` | The cycle clock — when this cycle ran. Distinct from `assessment.window.start`, which on an official verdict is the aviso's own start date and can be days earlier. |
 | `senamhi` | The raw `SourceResult`, so the caller can read notes and outage detail. |
 | `open_meteo` | Likewise. |
 | `assessment` | The `RiskAssessment`. |
@@ -161,7 +162,9 @@ if decision.send and not outage_decision.suppress_community_alert:
     deps.alerts.record_alert(record)
 ```
 
-**The record is written after the notification, not before.** If the notifier raises, nothing is recorded, and the next cycle will try again. Recording first would mark an undelivered alert as sent.
+**The record is written after the notification, not before.** If the notifier raises, nothing is recorded, and the next cycle will try again. Recording first would mark an undelivered alert as sent — and because the record is a *dedup* record, the next cycle would deduplicate the genuine alert away and the community would never be told.
+
+That ordering is now asserted rather than asserted-about. Every fake in `tests/support/fakes.py` appends to one shared `CallLog`, and `TestTheCycleRunsItsStepsInTheSpecifiedOrder` pins both the full port sequence and `send_alert` preceding `record_alert`. Before the shared log existed, swapping those two lines left the entire suite green.
 
 The record is written with `composer="template"` unconditionally, because the deterministic template is the only composer that exists in this change.
 
@@ -183,7 +186,11 @@ Builds the composer's input from the config, the assessment and the two source r
 
 The forecast summary is built only when the forecast is `Available`. The horizons are clamped through `evaluated_horizon` against what the forecast actually covers, so a short series summarises truthfully instead of raising. `mm_24h` uses `IMMINENT_HORIZON_HOURS` from the domain. `mm_48h` uses `config.forecast_hours`. The peak is taken over the full clamped horizon.
 
-The warning summary is built only when warnings are `Available` and there is at least one. `_most_severe_warning` picks the highest by `_WARNING_SEVERITY_ORDER`, which ranks yellow, orange and red as 1, 2 and 3. This is a separate ordering from `LEVEL_RANK` in the domain, because it ranks `WarningLevel`, not `Level`.
+The warning summary is built only when warnings are `Available` **and at least one of them actually earned the level**. `_warnings_behind` reads the contributors back off `assessment.reasons` — the warnings the deciding branch cited as `WarningReason` values — and `_most_severe_warning` picks the highest of those by `_WARNING_SEVERITY_ORDER`, which ranks yellow, orange and red as 1, 2 and 3. That is a separate ordering from `LEVEL_RANK` in the domain, because it ranks `WarningLevel`, not `Level`.
+
+**Why it reads the reasons instead of re-deriving the rule.** Choosing by `WarningLevel` alone was the original implementation, and it went wrong the moment `may_raise_imminent` was added: on a page carrying a highlands RED and a coastal ORANGE, the verdict was `imminent` earned by the coastal warning, `assessment.reasons` said so, and the summary handed to the composer named the highlands warning the evaluator had explicitly refused to act on. Nothing renders `MessageRequest.warning` today, but it is a pinned contract and change 2's composer reads it, so the message would have quoted one aviso while the reasons quoted another.
+
+Re-deriving the branch conditions here would be a second copy of the evaluator's rules living in the application layer, which is exactly how the defect arose. Reading them back off the verdict cannot drift, because the branch that decided the level is the same code that built those reasons. A forecast-only verdict — or `none` — therefore carries **no** `WarningSummary` at all, rather than an aviso the reasons do not support.
 
 `checklist`, `timezone` and `city` come straight from the configuration.
 

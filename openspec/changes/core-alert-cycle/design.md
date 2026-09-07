@@ -237,6 +237,24 @@ The property that mattered is preserved: the branch that made the decision still
 - Callers that tolerate a short series clamp first, via `risk.evaluated_horizon(forecast, requested_hours)`, and report the clamped value. Clamping is conservative: an accumulation reached in fewer hours also clears the same threshold over a longer horizon, and max probability over fewer hours can only be lower or equal — so a truncated forecast can never make the system warn where a full one would not.
 - `precipitation_window(hours)` ends **one hour after the last sample's timestamp**, because an hourly sample stamped 14:00 describes 14:00–15:00. The previous end-at-last-timestamp form under-reported coverage by an hour, so `AlertMessage.valid_until` declared expiry before the data ran out. A 48-point forecast now yields a 48-hour window, and a one-point cloudburst yields a valid one-hour window instead of aborting the cycle on `TimeWindow.end must be strictly after start`.
 
+### 3.3 Source-derived free text is sanitized at every rendering boundary (*contract*)
+
+*Added 2026-09-06, recording the 2026-09-05 security remediation (verify finding W5b). The code shipped on 2026-09-05; this section is the design record that was missing, and it is **contractual for changes 2 and 3**.*
+
+**The rule.** Every source-derived free text MUST pass through `domain/sanitize.sanitize_source_text` before it is rendered for a human. "Source-derived" means the system did not write it — today that is the scraped SENAMHI aviso title, carried on `WarningReason.title` and `WarningSummary.title`. It excludes operator-owned configuration (`city`, `timezone`, `checklist`) and the evaluator's own numbers.
+
+**Why it is a domain module rather than a helper per adapter.** The text comes from one place and is rendered at **four** boundaries: the Spanish community body (`domain/template.py`), the English operator audit line (`domain/reasons.render_reason_en`), the operator's `Notes` block (`senamhi_scraper.parse_notes`), and the persisted / `--json` audit document (`serialization.reason_to_dict`). Escaping applied per adapter is escaping that one boundary will eventually be added without. Sanitizing is a rule about what the system is willing to *say*, so the rule lives in the domain and each boundary calls it.
+
+**The defect it closes, reproduced end to end.** `AlertMessage.body` is assembled with `"\n".join` and its grammar is `- ` bullets and `Motivos:` / `Recomendaciones:` headers, so a title containing newlines writes that grammar itself. The body came out with **two** `Recomendaciones:` sections, the forged one ahead of the genuine one and formatted identically, plus a live ANSI escape sequence and a surviving right-to-left override. A reader deciding what to do in a flood cannot tell forged instructions from the system's own, and that is the whole value of the message.
+
+**Four transformations, in this order**: whitespace runs (newlines and tabs included) collapse to one space; C0/C1 control characters are removed; Unicode bidi controls (U+202A–U+202E, U+2066–U+2069) are removed; length is capped at `MAX_SOURCE_TEXT_LENGTH` (200) with a **visible** truncation marker. The function is idempotent, because more than one boundary applies it and those boundaries must not have to know about each other. It is deliberately **not** an allow-list of characters: aviso titles are Spanish, accented, and carry em dashes and parentheses, so a non-ASCII strip would mangle every real one.
+
+**The title is still stored raw**, on purpose. It is the record of what SENAMHI actually published, and the last normalize-on-ingest attempt put `EXTENSION` in front of recipients. Sanitizing is a rendering concern.
+
+**Why the port carries it.** The invariant is stated on the `MessageComposer` port docstring, so change 2's agent-backed composer inherits it. A model asked to quote a title will quote it verbatim, newlines included, and prompt text arriving from a scraped page is exactly the input a composer must not be handed unfiltered. An agent composer does not weaken this rule and does not replace it.
+
+**`json.dumps` escaping is not a substitute.** It escapes control characters but, under this project's `ensure_ascii=False`, writes bidi overrides through verbatim — which is why the `--json` path sanitizes rather than relying on the encoder.
+
 ---
 
 ## 4. Ports (*contract* — `typing.Protocol`, structural, fakes do not subclass)
@@ -252,6 +270,8 @@ class ForecastProvider(Protocol):
     def fetch_forecast(self, location: Coordinates, hours: int, now: datetime) -> SourceResult[Forecast]: ...
 
 class MessageComposer(Protocol):
+    # Carries the §3.3 sanitization invariant in its docstring, so change 2's
+    # agent-backed composer inherits it. Additive; the signature is unchanged.
     def compose(self, request: MessageRequest) -> AlertMessage: ...
 
 class ContactRepository(Protocol):
@@ -296,6 +316,8 @@ Why a **range** query rather than "give me the last alert": overlap and escalati
 
 The local `JsonFileAlertRepository` persists the same two collections (`alerts: [...]`, `active_outage: {...} | null`), so the file adapter and the DynamoDB adapter are shape-identical.
 
+**`TimeWindow.key()` already exists and is tested, with no production caller** (`domain/values.py`, verify finding S11). It renders the `<window_start ISO8601 UTC>#<level>` sort key in the table above. It is a change-3 affordance on purpose — nothing local needs a composite key — and it is named here so change 3 does not rediscover it and write a second one.
+
 ---
 
 ## 5. Configuration and `RiskEvaluator`
@@ -332,9 +354,11 @@ Evaluation order (short-circuit, most severe first):
 | 3 | Prepare / combined | both available, warning level ∈ `prepare_warning_levels`, `accumulated_mm(48) >= prepare_mm_48h`, `max_probability_pct(48) >= prepare_probability_pct` | union(warning window, `precipitation_window(48)`) |
 | 4 | Prepare / forecast-only | SENAMHI **available** with **no** warning level ∈ `prepare_warning_levels`, Open-Meteo available, `accumulated_mm(48) >= prepare_mm_48h`, `max_probability_pct(48) >= prepare_probability_pct_degraded` | `precipitation_window(48)` |
 | 5 | Prepare / degraded | SENAMHI **unavailable**, Open-Meteo available, `accumulated_mm(48) >= prepare_mm_48h`, `max_probability_pct(48) >= prepare_probability_pct_degraded` | `precipitation_window(48)` |
-| 6 | None | anything else, including both sources unavailable | the evaluated horizon from `now` |
+| 6 | None | anything else, including both sources unavailable | `now` → `now + PREPARE_HORIZON_HOURS` (48 h) |
 
-Every `48` and `24` above is the **requested** horizon; the evaluator clamps it to `forecast.horizon_hours` first and reports the clamped value (§3.2).
+Every `48` and `24` above is the **requested** horizon; the evaluator clamps it to `forecast.horizon_hours` first and reports the clamped value (§3.2). Branch 6 has no forecast to clamp against — it is the branch reached when nothing else fired, including with both sources down — so its window is a flat 48 hours from `now`. *Amended 2026-09-06 to match the code (verify finding S3); the row previously said "the evaluated horizon from `now`", which cannot be computed without an `Available` forecast.*
+
+`IMMINENT_HORIZON_HOURS = 24` and `PREPARE_HORIZON_HOURS = 48` are module constants in `domain/risk.py`, deliberately **not** read from `AlertConfig.forecast_hours`: they are the horizons the *rules* are calibrated over, while `forecast_hours` governs what is fetched and what the message summarizes. The open question that follows from that split — the knob currently implies it moves the evaluation window and it does not — is carried in `tasks.md` Open Items.
 
 Branches 1 and 2 are independent, so `imminent` still fires when the other source is down (spec 6.3). `prepare` cannot fire without forecast data. Both unavailable falls through to 6 by construction — there is no branch that can be reached without at least one `Available`. `degraded=True` whenever either status is `unavailable`; in branch 5 the reasons tuple always includes the explicit `SenamhiUnavailableReason`, which the template surfaces in the body as one Spanish sentence.
 
@@ -612,7 +636,7 @@ sequenceDiagram
 | "Current" filter | `window.start <= now <= window.end`. Historical rows still prove the parse worked, so they count toward the row check but are excluded from the returned tuple. This is what separates *healthy page, zero current warnings* → `Available(())` from *nothing parsed* → `Unavailable` |
 | `Unavailable` when (spec 6.4) | table not found; header signature unrecognized → `STRUCTURE_UNRECOGNIZED`; zero data rows extracted → `NO_ROWS_EXTRACTED`; more than half of the extracted rows unparseable → `STRUCTURE_UNRECOGNIZED`; transport error/timeout → `TRANSPORT_ERROR` / `TIMEOUT`. Never `Available` with an empty list from a failed parse |
 | Detail pages | **not fetched** in this change; `Warning.source_id` carries the ID so change 2's `get_warning_detail` tool can use it |
-| Fixtures | `tests/fixtures/senamhi/`: `active_warning.html`, `history_only.html` (well-formed, none current), `broken_structure.html` (headers renamed / table replaced by divs), `empty_table.html` (headers present, zero rows). Captured verbatim once from the live page and pinned; a short `tests/fixtures/senamhi/README.md` records the capture date, URL and refresh procedure. A `@pytest.mark.integration` canary asserts the live page still matches the header signature — the early warning for breakage |
+| Fixtures | `tests/fixtures/senamhi/`, **five files, amended 2026-09-06 to the shipped set** (verify finding S10; the planned four included an `active_warning.html` that does not exist): `warnings_table.html` (the verbatim capture — its one row in force is the RED heat aviso, which is why §5.1 exists), `precipitation_coast_current.html` (added to exercise the positive path the capture could not), `history_only.html` (well-formed, none current), `empty_table.html` (headers present, zero rows), `broken_structure.html` (headers renamed / table replaced by divs). The last three are derived from the capture. `tests/fixtures/senamhi/README.md` records the capture date, URL and refresh procedure. A `@pytest.mark.integration` canary asserts the live page still matches the header signature — the early warning for breakage (§10.2 on its reliability) |
 
 ### 8.3 Other adapters
 
@@ -667,7 +691,7 @@ Notices    1 emitted — source_unavailable (senamhi)
 | Layer | What | How |
 |---|---|---|
 | Domain rules | evaluator branches, dedup rules, the eight outage transitions, template content | `@pytest.mark.parametrize` over frozen case dataclasses; `ids=` carry the **spec scenario names** so a failure names the requirement it broke. No fakes, no I/O, milliseconds |
-| Use case | order of steps, dedup short-circuit, degraded wiring, record-after-notify, dual-outage suppression | `build_fake_deps(**overrides)` + hand-written recording spies that append typed call records. `unittest.mock` deliberately avoided: `Mock` satisfies any Protocol and would hide exactly the drift we care about |
+| Use case | order of steps, dedup short-circuit, degraded wiring, record-after-notify, dual-outage suppression | `build_fake_deps(**overrides)` + hand-written recording spies that append typed call records **and share one ordered `CallLog`** (§10.1). `unittest.mock` deliberately avoided: `Mock` satisfies any Protocol and would hide exactly the drift we care about |
 | Open-Meteo adapter | success slice, timeout, bad status, malformed payload, short horizon | `httpx.MockTransport` — offline, no extra dependency (D4) |
 | SENAMHI parser | active warning, history-only, broken structure, empty table, unknown level token, unparseable dates | the four pinned fixtures + a stub `HtmlFetcher`. Parsing never touches the network |
 | Repositories | round-trip, outage upsert/clear, atomic write | `tmp_path` fixture for the JSON adapter; the in-memory one is exercised by every use-case test |
@@ -680,9 +704,33 @@ Notices    1 emitted — source_unavailable (senamhi)
 **Fake sharing between tests and the CLI** — two distinct categories, deliberately separated:
 
 - **Local adapters that ship in `src/`** (`adapters/local/*`, `console_notifier`): real, supported implementations the CLI depends on. Tested like any adapter.
-- **Recording spies that live in `tests/support/`** (`fakes.py`, `wiring.py`): test-only, they assert call order and arguments. Exposed through `conftest.py` fixtures.
+- **Recording spies that live in `tests/support/`** (`fakes.py`, `wiring.py`): test-only, they let tests assert call order and arguments. Exposed through `conftest.py` fixtures.
 
 Both `tests/support/wiring.build_fake_deps()` and `entrypoints/wiring.build_local_deps()` return the same `CycleDependencies` type, so the object graph the CLI runs is the object graph the tests exercise — only the leaves differ. This is the reason D6 exists.
+
+### 10.1 Cross-port call order is observable, not asserted by claim
+
+*Added 2026-09-06, from the `sdd-verify` findings (W2).*
+
+The original spies each owned a **private** call list. That is enough to answer "what was this port given" and not enough to answer "what happened before what", so the two ordering guarantees in `specs/alert-cycle/spec.md` — the steps run in the stated order, and an alert is recorded **only after** `Notifier` delivery — had no test that could fail. Verification proved it: moving `deps.alerts.record_alert(record)` above `deps.notifier.send_alert(...)` left all 537 tests green. That reordering is exactly the defect the requirement exists to prevent — an alert recorded but never delivered makes the next cycle believe the community was told, so the genuine alert is deduplicated away and never sent.
+
+**Rule**: `build_fake_deps` creates one `CallLog` and hands the same instance to every leaf. Each spy appends `(port, method, detail)` to it in addition to its own typed list; `detail` is a short identifying string (city slug, level, message title) so a failure names which call it was. `CallLog.steps` gives the whole `(port, method)` sequence for a full-order assertion and `CallLog.position_of(port, method)` gives a relative-order one. The log is reachable from any leaf, e.g. `deps.notifier.log`.
+
+The evaluator is part of the order the spec states, so `LoggingRiskEvaluator` **subclasses** `RiskEvaluator` and delegates the verdict to `super().evaluate(...)`. Subclassing rather than duck-typing keeps `CycleDependencies.evaluator_factory`'s declared return type honest, and delegating means the fake wiring never evaluates risk differently from production.
+
+The per-port lists are kept. The two answer different questions, and collapsing them into the shared log would make every existing argument assertion read through a filter.
+
+### 10.2 The live canary fetches once, on a patient timeout
+
+*Added 2026-09-06, from the `sdd-verify` findings (S9).*
+
+`test_senamhi_canary.py` called `_live_page()` inside every test and `_live_titles()` fetched again on top, so a six-test file made roughly eight live requests for one page that cannot change between them — each under the production `DEFAULT_TIMEOUT` with its 3-second connect budget. Two of verification's three runs failed on transient TLS connect timeouts, on a different test each time.
+
+That matters more than the minutes lost. This canary is the change's **only** detector for SENAMHI page drift; nothing offline can notice the live page changing. A canary that fails at random will be ignored, and an ignored canary leaves the project with no detector at all.
+
+**Rule**: `_live_page` is cached for the session and fetches on a `CANARY_TIMEOUT` generous enough for a slow handshake; `_live_titles` returns an immutable tuple, because a cached value is shared by every caller. `DEFAULT_TIMEOUT`'s short connect budget stays a *production* decision — no retries exist (D12), so a slow SENAMHI must become `Unavailable` quickly — and `test_the_scraper_reports_available_against_the_live_page` therefore keeps fetching for itself on the production timeout, because it is the one test here asserting what the real cycle would get. No assertion was weakened; only the number of chances to hit a transient failure. Measured after: 10 passed, 5 skipped in 1.95–2.05 s, down from 28–37 s.
+
+**`test_open_meteo_live.py` is knowingly left flaky**, and it flaked once on the final verification run with a transient read timeout (attempt 1 failed, attempt 2 clean). Its whole subject is whether the *production* adapter, on its production `DEFAULT_TIMEOUT`, gets a usable 48-hour forecast from the real API. Lending it a longer timeout would make it assert something the deployed system does not do. The right resolution is a change-3 decision about retry and backoff (D12 defers it until the Lambda timeout budget is known), not a test-side patch — carried in `tasks.md` Open Items.
 
 ---
 
@@ -736,7 +784,19 @@ LICENSE  README.md  .gitignore  .env.example
 | `src/rain_alert/entrypoints/{wiring,cli}.py` | Create | 3 |
 | `tests/unit/adapters/**`, `tests/fixtures/senamhi/**`, `tests/integration/**` | Create | 3 |
 
-No file is modified or deleted outside this change's own slices; `openspec/` and `docs/` are untouched.
+**Additions this table did not plan for**, all shipped and all previously recorded only in `tasks.md` Open Items. Listed here because §12 is the artifact a reader consults for "what exists":
+
+| Path | Action | Slice | Why it was not planned |
+|---|---|---|---|
+| `src/rain_alert/domain/reasons.py` | Create | 2 | §3.1 — reasons became structured values with a renderer per audience |
+| `src/rain_alert/domain/hazards.py` | Create | 3 | §5.1 — the page is a multi-hazard feed |
+| `src/rain_alert/domain/sanitize.py` | Create | 3 | §3.3 — the 2026-09-05 security remediation (verify finding W5b) |
+| `src/rain_alert/application/policies.py` | Create | 2 | §6 — the port-bound `AlertPolicy` shell, kept out of the pure `domain/dedup.py` |
+| `src/rain_alert/adapters/serialization.py` | Create | 3 | §4.1 — the persisted document shape, shared with change 3's DynamoDB adapter, so not under `local/` |
+| `src/rain_alert/adapters/senamhi_classification.py` | Create | 3 | §5.1 — the source's Spanish vocabulary belongs to the adapter |
+| `src/rain_alert/adapters/local/offline_sources.py` | Create | 3 | §9 — the `--offline-fixtures` fetch leaves, mandated by §9 and missing here |
+
+No file is modified or deleted outside this change's own slices. `openspec/` and `docs/` were untouched **by the source slices**; the change's own openspec artifacts and the `docs/architecture/` guide are maintained alongside it and were amended by the 2026-09-05 security remediation and the 2026-09-06 verification remediation.
 
 ---
 
