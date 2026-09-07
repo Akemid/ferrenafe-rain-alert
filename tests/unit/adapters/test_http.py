@@ -33,9 +33,9 @@ def test_fetch_text_sends_the_query_parameters_it_was_given() -> None:
         return httpx.Response(200, text="ok")
 
     with _client(handler) as client:
-        fetch_text(client, URL, params={"latitude": -6.64, "hourly": "precipitation"})
+        fetch_text(client, URL, params={"latitude": -6.636005, "hourly": "precipitation"})
 
-    assert seen == ["https://example.test/page?latitude=-6.64&hourly=precipitation"]
+    assert seen == ["https://example.test/page?latitude=-6.636005&hourly=precipitation"]
 
 
 @pytest.mark.parametrize(

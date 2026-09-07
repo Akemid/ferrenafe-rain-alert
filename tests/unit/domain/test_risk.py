@@ -31,7 +31,7 @@ from rain_alert.domain.values import (
 )
 
 NOW = datetime(2026, 9, 3, 12, tzinfo=UTC)
-COORDS = Coordinates(latitude=-6.64, longitude=-79.79)
+COORDS = Coordinates(latitude=-6.636005, longitude=-79.789860)
 
 DEFAULT_THRESHOLDS = RiskThresholds(
     prepare_mm_48h=9.5,

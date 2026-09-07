@@ -41,7 +41,7 @@ DEFAULT_THRESHOLDS = RiskThresholds(
 DEFAULT_CONFIG = AlertConfig(
     city="Ferreñafe",
     city_slug="ferrenafe",
-    coordinates=Coordinates(latitude=-6.64, longitude=-79.79),
+    coordinates=Coordinates(latitude=-6.636005, longitude=-79.789860),
     timezone="America/Lima",
     region="Lambayeque",
     thresholds=DEFAULT_THRESHOLDS,

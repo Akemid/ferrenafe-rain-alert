@@ -22,7 +22,7 @@ from rain_alert.domain.sources import Available, Unavailable
 from rain_alert.domain.values import Coordinates, SourceName, UnavailableReason
 from tests.support.fixtures import OPEN_METEO_PAYLOAD
 
-LOCATION = Coordinates(latitude=-6.64, longitude=-79.79)
+LOCATION = Coordinates(latitude=-6.636005, longitude=-79.789860)
 DAY_START = datetime(2026, 9, 4, 0, tzinfo=UTC)
 
 
@@ -120,8 +120,8 @@ class TestSuccessfulFetch:
         assert str(seen[0]).startswith(API_URL)
         query = parse_qs(urlparse(str(seen[0])).query)
         assert query == {
-            "latitude": ["-6.64"],
-            "longitude": ["-79.79"],
+            "latitude": ["-6.636005"],
+            "longitude": ["-79.78986"],
             "hourly": ["precipitation,precipitation_probability"],
             "forecast_days": ["4"],
             "timezone": ["UTC"],

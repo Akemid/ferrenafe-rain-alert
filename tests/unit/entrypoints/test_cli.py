@@ -56,8 +56,8 @@ def _open_meteo_payload(*, mm: float, probability: int, at_hour: int = 0, hours:
     stamps = [(NOW_DT - timedelta(hours=12) + timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M") for h in range(hours)]
     return json.dumps(
         {
-            "latitude": -6.64,
-            "longitude": -79.79,
+            "latitude": -6.636005,
+            "longitude": -79.789860,
             "hourly_units": {"time": "iso8601", "precipitation": "mm", "precipitation_probability": "%"},
             "hourly": {
                 "time": stamps,

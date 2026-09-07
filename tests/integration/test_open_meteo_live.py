@@ -20,7 +20,7 @@ from rain_alert.adapters.open_meteo import FORECAST_DAYS, OpenMeteoForecastProvi
 from rain_alert.domain.sources import Available
 from rain_alert.domain.values import Coordinates
 
-LOCATION = Coordinates(latitude=-6.64, longitude=-79.79)
+LOCATION = Coordinates(latitude=-6.636005, longitude=-79.789860)
 REQUIRED_FORWARD_HOURS = 48
 
 pytestmark = pytest.mark.integration

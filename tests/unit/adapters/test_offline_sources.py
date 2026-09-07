@@ -18,7 +18,7 @@ from rain_alert.adapters.local.offline_sources import FileHtmlFetcher, OfflineOp
 from rain_alert.domain.sources import Available, Unavailable
 from rain_alert.domain.values import Coordinates, SourceName, UnavailableReason
 
-LOCATION = Coordinates(latitude=-6.64, longitude=-79.79)
+LOCATION = Coordinates(latitude=-6.636005, longitude=-79.789860)
 DAY_START = datetime(2026, 9, 4, 0, tzinfo=UTC)
 
 
