@@ -199,9 +199,11 @@ community about rain that has already passed.
 
 ### Requirement: Coordinates come from configuration
 
-`ForecastProvider` MUST read the target latitude/longitude from `ConfigRepository` rather than a hard-coded value; the local fake MUST use a documented placeholder, not an unverified "real" coordinate.
+`ForecastProvider` MUST read the target latitude/longitude from `ConfigRepository` rather than a hard-coded value; the default coordinates in the local configuration MUST be sourced, with their references cited in the code, and MUST be pinned by a test.
 
-#### Scenario: Placeholder coordinates documented
-- GIVEN the local `ConfigRepository` fake
-- WHEN its coordinates are inspected
-- THEN they are marked, in code or comments, as a documented placeholder pending confirmation (design spec section 12)
+*Amended 2026-09-07 (sourced Ferrenafe coordinates).* The requirement previously said the local fake "MUST use a documented placeholder, not an unverified 'real' coordinate", and its scenario required the coordinates to be "marked, in code or comments, as a documented placeholder pending confirmation". The coordinates are now sourced — `6°38'10"S 79°47'23"W`, the centre of the city, agreed by two independent public references cited in `adapters/local/static_config_repository.py` — so `AlertConfig.coordinates_are_placeholder` and the CLI's `(PLACEHOLDER — pending confirmation)` marker are retired: a flag that can never be true again is dead configuration. A scenario describing retired behaviour is a defect, so the obligation moves from marking a guess to citing a source and pinning the value. What remains open is confirmation against a reading taken on the ground, which is carried by the module docstring and by the strict environment override rather than by a flag no code can set.
+
+#### Scenario: Default coordinates are sourced and pinned
+- GIVEN the local `ConfigRepository`
+- WHEN its default coordinates are inspected
+- THEN they are the centre of the city of Ferreñafe, cited in the code to public references, and pinned by a test that fails if the value drifts
