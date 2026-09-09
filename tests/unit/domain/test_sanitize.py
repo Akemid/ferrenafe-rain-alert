@@ -15,6 +15,7 @@ import pytest
 from rain_alert.domain.sanitize import (
     MAX_SOURCE_TEXT_LENGTH,
     TRUNCATION_MARKER,
+    has_unsafe_characters,
     sanitize_source_text,
 )
 
@@ -115,6 +116,48 @@ class TestTheFunctionIsSafeToApplyTwice:
         once = sanitize_source_text("Aviso\n\x1b[31m‮de lluvias" + "B" * 5_000)
 
         assert sanitize_source_text(once) == once
+
+
+class TestTheUnsafeCharacterPredicate:
+    """`has_unsafe_characters` answers "would the sanitizer have to remove
+    something from this?" without removing it. The message validator needs the
+    question, not the transformation: an agent-composed body carrying a control
+    character is rejected outright, never quietly cleaned up.
+
+    It exposes the *existing* `_REMOVED` class rather than letting a second
+    module copy the regex. Two copies of that class is how a bidi override
+    eventually gets through one of them (design.md section 6, rule 7).
+    """
+
+    def test_ordinary_accented_spanish_is_not_unsafe(self) -> None:
+        assert has_unsafe_characters("Alerta de lluvias — Ferreñafe — prepárate") is False
+
+    def test_an_empty_text_is_not_unsafe(self) -> None:
+        assert has_unsafe_characters("") is False
+
+    def test_the_escape_byte_of_an_ansi_sequence_is_unsafe(self) -> None:
+        assert has_unsafe_characters("Aviso \x1b[31mde lluvias\x1b[0m") is True
+
+    @pytest.mark.parametrize("control", ["\x00", "\x07", "\n", "\r", "\t", "\x7f", "\x9f"])
+    def test_every_control_character_is_unsafe(self, control: str) -> None:
+        """Newline included: the predicate reports the character class, and it
+        is the caller that knows whether a line break is legitimate where it
+        is looking. A title has no legitimate line break; a body does."""
+        assert has_unsafe_characters(f"Aviso{control}de lluvias") is True
+
+    @pytest.mark.parametrize("control", BIDI_CONTROLS)
+    def test_every_bidi_control_is_unsafe(self, control: str) -> None:
+        assert has_unsafe_characters(f"Aviso {control}de lluvias") is True
+
+    def test_it_agrees_with_the_sanitizer_on_what_it_would_remove(self) -> None:
+        """Triangulation against the transformation the predicate mirrors:
+        anything the predicate calls safe survives sanitizing unchanged, apart
+        from the whitespace collapsing and trimming the predicate never claims
+        to cover."""
+        safe = "PRECIPITACIONES DE MODERADA A FUERTE INTENSIDAD (EXTENSION DEL AVISO 335)"
+
+        assert has_unsafe_characters(safe) is False
+        assert sanitize_source_text(safe) == safe
 
     def test_an_empty_text_stays_empty(self) -> None:
         assert sanitize_source_text("") == ""

@@ -73,6 +73,36 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 _REMOVED = re.compile(r"[\x00-\x1f\x7f-\x9f‪-‮⁦-⁩]")
 
 
+def has_unsafe_characters(value: str) -> bool:
+    """True when `value` carries a control or bidi character.
+
+    The question `sanitize_source_text` answers by transforming, asked without
+    transforming. `domain.message_validation` needs it that way: a body a
+    language model composed is rejected when it carries one of these, never
+    quietly cleaned up, because a draft that produced a bidi override produced
+    something else wrong too.
+
+    Exposing the predicate rather than letting the validator copy `_REMOVED`
+    keeps the character class in one place. Two copies of it is how a bidi
+    override eventually gets through one of them.
+
+    Args:
+        value: Any text about to be rendered for a human.
+
+    Returns:
+        True when at least one C0/C1 control, DEL, or Unicode bidi control is
+        present. Newlines and tabs count: the caller knows whether a line
+        break is legitimate where it is looking, and this function does not.
+
+    Example:
+        >>> has_unsafe_characters("Aviso de lluvias")
+        False
+        >>> has_unsafe_characters("Aviso\\x1b[31m")
+        True
+    """
+    return _REMOVED.search(value) is not None
+
+
 def sanitize_source_text(value: str) -> str:
     """`value` reduced to one trimmed, control-free, length-capped line.
 
