@@ -102,10 +102,27 @@ phases:
       MAX_TITLE_LENGTH value (design proposes 200; the spec only pins the
       body cap at 1500).
   apply:
-    status: pending
+    status: in_progress
     depends_on: [tasks]
-    artifact: null
+    artifact: openspec/changes/composer-agent/apply-progress.md
     engram_topic_key: sdd/composer-agent/apply-progress
+    engram_saved: true
+    pr_slice: 1
+    pr_slices_planned: 5
+    tasks_completed: [1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, 1.16]
+    note: >-
+      PR 1 of five: the pure validator only — nine rules, the Violation type,
+      and invariant V0, plus the has_unsafe_characters predicate rule 7 needs.
+      Tests only; nothing is wired into the cycle and agent/ was not created.
+      Phase 1's remaining tasks (1.1-1.6 provenance, 1.17-1.20 seam and fakes,
+      1.21-1.40 fallback composer and mutation proof, 1.41-1.44 RunAlertCycle
+      wiring, 1.45-1.46 review and gate) are unstarted and split across PRs
+      2-5. Gate green: 638 tests, ruff check, ruff format --check, mypy — all
+      exit 0. Landed at 942 additions against a ~500 target; the overrun is
+      reported in apply-progress.md rather than absorbed, and no task beyond
+      1.16 was started. Five contradictions between spec and design are
+      recorded there, one of which (probability_threshold_pct in the allowed
+      number set) needs an owner decision.
   verify:
     status: pending
     depends_on: [apply]
