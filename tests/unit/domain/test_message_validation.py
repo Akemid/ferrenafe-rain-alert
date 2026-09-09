@@ -30,7 +30,7 @@ from rain_alert.domain.message_validation import (
     ValidationRule,
     validate_message,
 )
-from rain_alert.domain.messages import AlertMessage, MessageRequest
+from rain_alert.domain.messages import AlertMessage, ForecastSummary, MessageRequest, WarningSummary
 from rain_alert.domain.reasons import ForecastThresholdReason, WarningReason
 from rain_alert.domain.template import MessageComposer
 from rain_alert.domain.values import Level, TimeWindow, WarningLevel
@@ -244,3 +244,120 @@ class TestSectionHeadersAreCountedAsWholeLines:
         plain = replace(composed(message_request), body=f"Alerta de lluvias en {CITY}.")
 
         assert ValidationRule.FORGED_SECTION_HEADER not in rules_for(message_request, plain)
+
+
+# NOW renders locally as 07:00 on 03/09/2026; the window ends at 07:00 on
+# 05/09/2026; the forecast peak below lands at 16:00 on 03/09/2026.
+FORECAST = ForecastSummary(mm_24h=18.0, mm_48h=25.5, peak_at=NOW + timedelta(hours=9), peak_probability_pct=75)
+AVISO_TITLE = "AVISO 335: LLUVIAS INTENSAS EN LA COSTA NORTE"
+WARNING = WarningSummary(source_id="335", level=WarningLevel.ORANGE, title=AVISO_TITLE, window=WINDOW)
+CHECKLIST_WITH_A_NUMBER = ("Prepara viveres para 72 horas",)
+
+
+def spoken(message_request: MessageRequest, body_text: str) -> AlertMessage:
+    """A candidate whose body is `body_text` and nothing else the rules care
+    about — the city line keeps rule 4 out of the way."""
+    return replace(composed(message_request), body=f"Ciudad: {CITY}\n{body_text}")
+
+
+NUMBER_CASES = [
+    pytest.param({}, "Se pronostican 12,4 mm de lluvia acumulada.", set(), id="spanish-decimal-comma-is-accepted"),
+    pytest.param({}, "Se pronostican 12,40 mm de lluvia.", set(), id="a-trailing-zero-is-the-same-quantity"),
+    pytest.param({}, "La ventana empieza a las 07:00.", set(), id="a-window-time-is-accepted"),
+    pytest.param({}, "La ventana empieza el 03/09/2026.", set(), id="a-window-date-is-accepted"),
+    pytest.param({}, "Probabilidad maxima de 60 %.", set(), id="a-reason-probability-is-accepted"),
+    pytest.param(
+        {"forecast": FORECAST, "reasons": ()},
+        "Se esperan lluvias en las proximas 24 horas.",
+        set(),
+        id="a-horizon-constant-is-accepted",
+    ),
+    pytest.param(
+        {"forecast": FORECAST, "reasons": ()},
+        "El pico se espera a las 16:00 con 75 % de probabilidad.",
+        set(),
+        id="a-forecast-peak-time-and-probability-are-accepted",
+    ),
+    pytest.param(
+        {"warning": WARNING},
+        f'El SENAMHI informa: "{AVISO_TITLE}".',
+        set(),
+        id="a-digit-inside-a-verbatim-quoted-title-is-accepted",
+    ),
+    pytest.param(
+        {"checklist": CHECKLIST_WITH_A_NUMBER},
+        "Recuerda: Prepara viveres para 72 horas.",
+        set(),
+        id="a-digit-inside-a-verbatim-quoted-checklist-item-is-accepted",
+    ),
+    pytest.param(
+        {}, "Se esperan 80 mm de lluvia.", {ValidationRule.UNKNOWN_NUMBER}, id="an-invented-number-is-rejected"
+    ),
+    pytest.param(
+        {"warning": WARNING},
+        'El SENAMHI informa: "AVISO 335".',
+        {ValidationRule.UNKNOWN_NUMBER},
+        id="a-partial-quote-of-the-title-grants-no-exemption",
+    ),
+    pytest.param(
+        {"checklist": CHECKLIST_WITH_A_NUMBER},
+        "Prepara viveres para 72 h.",
+        {ValidationRule.UNKNOWN_NUMBER},
+        id="a-paraphrased-checklist-item-grants-no-exemption",
+    ),
+    pytest.param(
+        {}, "El aviso vence el 12/03/2027.", {ValidationRule.UNKNOWN_NUMBER}, id="an-unrelated-date-is-rejected"
+    ),
+    pytest.param(
+        {}, "La lluvia empieza a las 23:45.", {ValidationRule.UNKNOWN_NUMBER}, id="an-unrelated-time-is-rejected"
+    ),
+]
+
+
+class TestEveryNumberInTheBodyIsTraceableToTheRequest:
+    """Rule 8 (design D17). The threat is an invented rainfall figure, so the
+    only numbers a body may state are the ones the request already carries, or
+    ones sitting inside text the system itself supplied."""
+
+    @pytest.mark.parametrize(("overrides", "body_text", "expected"), NUMBER_CASES)
+    def test_the_expected_rules_fire_and_no_others(self, overrides, body_text, expected) -> None:
+        message_request = request(**overrides)
+
+        assert rules_for(message_request, spoken(message_request, body_text)) == expected
+
+    def test_a_date_is_one_candidate_and_not_three_numbers(self) -> None:
+        """Dates and times are extracted whole before the scan for bare
+        decimals. Without that, `12/03/2027` is `12`, `03` and `2027`, and a
+        day that happens to match some unrelated field launders the rest."""
+        message_request = request()
+
+        violations = validate_message(message_request, spoken(message_request, "El aviso vence el 12/03/2027."))
+
+        assert len(violations) == 1
+        assert "12/03/2027" in violations[0].detail
+
+    def test_an_invented_number_wearing_a_real_title_is_still_rejected(self) -> None:
+        """The attack the full-quote requirement exists to stop: the body
+        reproduces the aviso title almost exactly and swaps the digits, so a
+        fragment-tolerant exemption would launder `80` through it."""
+        message_request = request(warning=WARNING)
+        forged = "AVISO 80: LLUVIAS INTENSAS EN LA COSTA NORTE"
+
+        assert rules_for(message_request, spoken(message_request, forged)) == {ValidationRule.UNKNOWN_NUMBER}
+
+    def test_an_operator_only_threshold_is_in_the_allowed_set(self) -> None:
+        """The spec lists `probability_threshold_pct` among the allowed values
+        and the spec is the authority here. Design.md section 6 rule 8 argues
+        the opposite — it wants the value excluded because it is operator-only
+        and never enters the prompt. Recorded as a contradiction in
+        apply-progress rather than resolved silently in either direction.
+        """
+        message_request = request(
+            reasons=(
+                ForecastThresholdReason(
+                    accumulated_mm=12.4, hours=24, probability_pct=60, probability_threshold_pct=70
+                ),
+            )
+        )
+
+        assert rules_for(message_request, spoken(message_request, "El umbral era de 70 %.")) == set()

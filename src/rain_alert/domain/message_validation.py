@@ -25,12 +25,17 @@ agent. `tests/unit/domain/test_message_validation.py` pins it.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from zoneinfo import ZoneInfo
 
 from rain_alert.domain.messages import AlertMessage, MessageRequest
-from rain_alert.domain.sanitize import has_unsafe_characters
+from rain_alert.domain.reasons import ForecastThresholdReason, WarningReason
+from rain_alert.domain.sanitize import has_unsafe_characters, sanitize_source_text
 
 #: Pinned by the spec with measured justification: the template's own body is
 #: about 570 characters with the five-item Ferreñafe checklist, so this leaves
@@ -63,6 +68,7 @@ class ValidationRule(StrEnum):
     BODY_TOO_LONG = "body_too_long"
     FORGED_SECTION_HEADER = "forged_section_header"
     UNSAFE_CHARACTER = "unsafe_character"
+    UNKNOWN_NUMBER = "unknown_number"
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +99,126 @@ def _body_lines(body: str) -> list[str]:
     to catch.
     """
     return body.split("\n")
+
+
+#: Dates and times are matched *whole*, and before bare decimals, so
+#: `12/03/2027` is never read as the three independent numbers `12`, `03` and
+#: `2027` — a day that happens to match some unrelated field would otherwise
+#: launder the rest of the date past the rule.
+_CANDIDATE_NUMBER = re.compile(r"\d{1,2}/\d{1,2}/\d{4}|\d{1,2}:\d{2}|\d+(?:[.,]\d+)?")
+
+_LOCAL_DATE_FORMAT = "%d/%m/%Y"
+_LOCAL_TIME_FORMAT = "%H:%M"
+
+
+def _verbatim_spans(request: MessageRequest) -> tuple[str, ...]:
+    """The strings the system itself supplied, which a body may reproduce.
+
+    Only a full, exact reproduction counts. A paraphrase is no longer a match,
+    so any number inside it faces the full rule — which is deliberate: a
+    fragment-tolerant exemption is how an invented figure gets laundered
+    through a title the model half-quoted.
+    """
+    spans = [*request.checklist, request.city, request.timezone]
+    if request.warning is not None:
+        spans.append(sanitize_source_text(request.warning.title))
+    spans.extend(sanitize_source_text(reason.title) for reason in request.reasons if isinstance(reason, WarningReason))
+    return tuple(span for span in spans if span)
+
+
+def _residue(request: MessageRequest, candidate: AlertMessage) -> str:
+    """Title and body with every verbatim span removed — what the model wrote.
+
+    Longest first, so a short span nested inside a longer one cannot break the
+    longer one apart. Removed spans become a space rather than nothing: welding
+    the neighbouring characters together would invent numbers that were never
+    written.
+    """
+    text = f"{candidate.title}\n{candidate.body}"
+    for span in sorted(_verbatim_spans(request), key=len, reverse=True):
+        text = text.replace(span, " ")
+    return text
+
+
+def _canonical(token: str) -> Decimal | None:
+    """`12,4`, `12.4`, `12.40` and `012.4` are one quantity, and `None` is a
+    token that is not a quantity at all."""
+    try:
+        return Decimal(token.replace(",", "."))
+    except InvalidOperation:  # pragma: no cover - the tokenizer cannot emit one
+        return None
+
+
+def _allowed_numbers(request: MessageRequest) -> set[Decimal]:
+    """Every quantity the request itself carries.
+
+    Millimetre amounts are added twice, raw and at one decimal place, because
+    `domain/template.py` prints `{value:.1f}` and a model told "12.4 mm" may
+    legitimately write `12,4`.
+    """
+    allowed: set[Decimal] = set()
+
+    def add_mm(value: float) -> None:
+        allowed.update({Decimal(str(value)), Decimal(f"{value:.1f}")})
+
+    forecast = request.forecast
+    if forecast is not None:
+        add_mm(forecast.mm_24h)
+        add_mm(forecast.mm_48h)
+        allowed.add(Decimal(forecast.peak_probability_pct))
+        # The forecast's own fixed horizons, which its summary is computed over.
+        allowed.update({Decimal(24), Decimal(48)})
+    for reason in request.reasons:
+        if isinstance(reason, ForecastThresholdReason):
+            add_mm(reason.accumulated_mm)
+            allowed.update({Decimal(reason.hours), Decimal(reason.probability_pct)})
+            if reason.probability_threshold_pct is not None:
+                allowed.add(Decimal(reason.probability_threshold_pct))
+    return allowed
+
+
+def _allowed_moments(request: MessageRequest) -> tuple[set[str], set[str]]:
+    """The local dates and local times the request's own instants render as."""
+    zone = ZoneInfo(request.timezone)
+    moments: list[datetime] = [request.window.start, request.window.end]
+    if request.warning is not None:
+        moments.extend((request.warning.window.start, request.warning.window.end))
+    if request.forecast is not None:
+        moments.append(request.forecast.peak_at)
+    local = [moment.astimezone(zone) for moment in moments]
+    return (
+        {moment.strftime(_LOCAL_DATE_FORMAT) for moment in local},
+        {moment.strftime(_LOCAL_TIME_FORMAT) for moment in local},
+    )
+
+
+def _normalized_date(token: str) -> str:
+    """`3/9/2026` written the way `strftime` would have written it."""
+    day, month, year = token.split("/")
+    return f"{int(day):02d}/{int(month):02d}/{year}"
+
+
+def _normalized_time(token: str) -> str:
+    """`7:00` written the way `strftime` would have written it."""
+    hour, minute = token.split(":")
+    return f"{int(hour):02d}:{minute}"
+
+
+def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ...]:
+    """Every candidate number in `residue` that the request cannot account for."""
+    allowed_numbers = _allowed_numbers(request)
+    allowed_dates, allowed_times = _allowed_moments(request)
+    unknown: list[str] = []
+    for token in _CANDIDATE_NUMBER.findall(residue):
+        if "/" in token:
+            traceable = _normalized_date(token) in allowed_dates
+        elif ":" in token:
+            traceable = _normalized_time(token) in allowed_times
+        else:
+            traceable = _canonical(token) in allowed_numbers
+        if not traceable:
+            unknown.append(token)
+    return tuple(unknown)
 
 
 def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[Violation, ...]:
@@ -170,5 +296,11 @@ def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[
         violations.append(
             Violation(ValidationRule.UNSAFE_CHARACTER, "title or body carries a control or bidi character")
         )
+
+    residue = _residue(request, candidate)
+    violations.extend(
+        Violation(ValidationRule.UNKNOWN_NUMBER, f"{token!r} traces to no value on the request")
+        for token in _untraceable_numbers(request, residue)
+    )
 
     return tuple(violations)
