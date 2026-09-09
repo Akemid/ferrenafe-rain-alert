@@ -173,8 +173,10 @@ def _allowed_numbers(request: MessageRequest) -> set[Decimal]:
         if isinstance(reason, ForecastThresholdReason):
             add_mm(reason.accumulated_mm)
             allowed.update({Decimal(reason.hours), Decimal(reason.probability_pct)})
-            if reason.probability_threshold_pct is not None:
-                allowed.add(Decimal(reason.probability_threshold_pct))
+            # `probability_threshold_pct` is deliberately absent. The Spanish
+            # template never renders it, only the English operator view does,
+            # so it never reaches the prompt and a model cannot legitimately
+            # know it. A recipient body carrying it has no honest reason to.
     return allowed
 
 

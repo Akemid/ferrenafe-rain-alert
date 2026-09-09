@@ -350,12 +350,16 @@ class TestEveryNumberInTheBodyIsTraceableToTheRequest:
 
         assert rules_for(message_request, spoken(message_request, forged)) == {ValidationRule.UNKNOWN_NUMBER}
 
-    def test_an_operator_only_threshold_is_in_the_allowed_set(self) -> None:
-        """The spec lists `probability_threshold_pct` among the allowed values
-        and the spec is the authority here. Design.md section 6 rule 8 argues
-        the opposite — it wants the value excluded because it is operator-only
-        and never enters the prompt. Recorded as a contradiction in
-        apply-progress rather than resolved silently in either direction.
+    def test_an_operator_only_threshold_is_not_in_the_allowed_set(self) -> None:
+        """The spec and the design disagreed here, and the design was right.
+
+        The Spanish template never renders `probability_threshold_pct`: it
+        drops it deliberately, because the internal threshold is operator
+        detail rather than something a recipient can act on, and only the
+        English operator rendering prints it. The value therefore never
+        reaches the prompt, so a model cannot legitimately know it, and a
+        recipient body carrying it has no honest reason to. The spec was
+        amended to match.
         """
         message_request = request(
             reasons=(
@@ -365,7 +369,9 @@ class TestEveryNumberInTheBodyIsTraceableToTheRequest:
             )
         )
 
-        assert rules_for(message_request, spoken(message_request, "El umbral era de 70 %.")) == set()
+        assert rules_for(message_request, spoken(message_request, "El umbral era de 70 %.")) == {
+            ValidationRule.UNKNOWN_NUMBER
+        }
 
 
 WORD_NUMBER_CASES = [
