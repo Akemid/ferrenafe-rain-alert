@@ -69,6 +69,7 @@ class ValidationRule(StrEnum):
     FORGED_SECTION_HEADER = "forged_section_header"
     UNSAFE_CHARACTER = "unsafe_character"
     UNKNOWN_NUMBER = "unknown_number"
+    WORD_NUMBER = "word_number"
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +222,72 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
     return tuple(unknown)
 
 
+#: Spanish numerals, accent-stripped: `veintidós` and `veintidos` are the same
+#: word to a reader. The lexicon is never parsed into an integer — parsing
+#: `veintidós mil cuatrocientos` is a grammar, and every bug in that grammar
+#: fails lax. A word-number here already means the draft disobeyed the prompt's
+#: instruction to render quantities in digits, which is enough to refuse it.
+_NUMERAL_WORDS = frozenset({
+    "cero", "un", "uno", "una", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve",
+    "diez", "once", "doce", "trece", "catorce", "quince", "dieciseis", "diecisiete", "dieciocho", "diecinueve",
+    "veinte", "veintiun", "veintiuno", "veintiuna", "veintidos", "veintitres", "veinticuatro", "veinticinco",
+    "veintiseis", "veintisiete", "veintiocho", "veintinueve",
+    "treinta", "cuarenta", "cincuenta", "sesenta", "setenta", "ochenta", "noventa",
+    "cien", "ciento", "doscientos", "doscientas", "trescientos", "trescientas", "cuatrocientos", "cuatrocientas",
+    "quinientos", "quinientas", "seiscientos", "seiscientas", "setecientos", "setecientas",
+    "ochocientos", "ochocientas", "novecientos", "novecientas", "mil", "millon", "millones",
+})  # fmt: skip
+
+#: The units this system actually reports. The rule is deliberately narrower
+#: than the digit rule: a word-number quantifying anything else — days, or
+#: objects in the operator's checklist — is not this rule's concern, and an
+#: unconditioned version would reject the template's own body.
+_REPORTED_UNITS = frozenset({"mm", "milimetro", "milimetros", "hora", "horas", "h", "porciento"})
+
+#: Words that may sit between a numeral and its unit without breaking the link.
+_NUMERAL_CONNECTORS = frozenset({"y", "de", "con", "coma", "punto"})
+
+_WORD_OR_NUMBER = re.compile(r"[a-z]+|\d+|%")
+
+
+def _fold(text: str) -> str:
+    """Accent-stripped and casefolded, so one spelling is one word."""
+    decomposed = unicodedata.normalize("NFD", text.casefold())
+    return "".join(character for character in decomposed if not unicodedata.combining(character))
+
+
+def _quantifies_a_reported_unit(tokens: list[str], start: int) -> str | None:
+    """The unit `tokens[start]` quantifies, or `None` when it quantifies none.
+
+    Intervening numerals and connectors are skipped, so `treinta y cinco
+    milimetros` links `treinta` to `milimetros`. `por ciento` is matched as a
+    phrase because `ciento` is itself a numeral.
+    """
+    index = start + 1
+    while index < len(tokens) and (tokens[index] in _NUMERAL_WORDS or tokens[index] in _NUMERAL_CONNECTORS):
+        index += 1
+    if index >= len(tokens):
+        return None
+    if tokens[index] in _REPORTED_UNITS or tokens[index] == "%":
+        return tokens[index]
+    if tokens[index] == "por" and index + 1 < len(tokens) and tokens[index + 1] == "ciento":
+        return "por ciento"
+    return None
+
+
+def _word_numbers_quantifying_a_unit(residue: str) -> tuple[tuple[str, str], ...]:
+    """Every `(numeral, unit)` pair the residue states in words."""
+    tokens = _WORD_OR_NUMBER.findall(_fold(residue))
+    found: list[tuple[str, str]] = []
+    for index, token in enumerate(tokens):
+        if token not in _NUMERAL_WORDS:
+            continue
+        unit = _quantifies_a_reported_unit(tokens, index)
+        if unit is not None:
+            found.append((token, unit))
+    return tuple(found)
+
+
 def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[Violation, ...]:
     """Every rule `candidate` breaks with respect to `request`.
 
@@ -301,6 +368,10 @@ def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[
     violations.extend(
         Violation(ValidationRule.UNKNOWN_NUMBER, f"{token!r} traces to no value on the request")
         for token in _untraceable_numbers(request, residue)
+    )
+    violations.extend(
+        Violation(ValidationRule.WORD_NUMBER, f"{word!r} quantifies {unit!r} in words instead of digits")
+        for word, unit in _word_numbers_quantifying_a_unit(residue)
     )
 
     return tuple(violations)

@@ -361,3 +361,52 @@ class TestEveryNumberInTheBodyIsTraceableToTheRequest:
         )
 
         assert rules_for(message_request, spoken(message_request, "El umbral era de 70 %.")) == set()
+
+
+WORD_NUMBER_CASES = [
+    pytest.param("Se esperan ochenta milimetros de lluvia.", True, id="a-rainfall-amount-written-in-words-is-rejected"),
+    pytest.param("Se esperan ochenta milímetros de lluvia.", True, id="the-accented-form-is-the-same-word"),
+    pytest.param("Se esperan ochenta mm de lluvia.", True, id="the-abbreviated-unit-counts-too"),
+    pytest.param("La probabilidad es de setenta por ciento.", True, id="a-probability-written-in-words-is-rejected"),
+    pytest.param("Llovera durante veinticuatro horas.", True, id="an-hour-count-written-in-words-is-rejected"),
+    pytest.param("Se esperan treinta y cinco milimetros.", True, id="a-compound-number-word-is-rejected"),
+    pytest.param(
+        "Almacena agua potable para al menos dos dias.", False, id="the-checklists-own-wording-is-not-rejected"
+    ),
+    pytest.param("Ten a mano una linterna y un botiquin.", False, id="the-spanish-indefinite-article-is-not-a-number"),
+    pytest.param(
+        "Hay una probabilidad maxima de 60 % de lluvia.",
+        False,
+        id="an-article-in-front-of-a-digit-quantity-is-not-a-number",
+    ),
+    pytest.param("Protege documentos y aparatos electricos.", False, id="ordinary-prose-is-left-alone"),
+]
+
+
+class TestAMeasurementWrittenInWordsIsRejected:
+    """Rule 9. The digit rule cannot see a quantity spelled out, so a model
+    could write "ochenta milímetros" and escape it entirely.
+
+    The rule is deliberately narrow: it fires only when a Spanish number word
+    directly quantifies a unit this system reports — millimetres, a
+    percentage, or hours. An unconditioned version would reject the shipped
+    template's own checklist wording ("al menos dos días", "un botiquín",
+    "una linterna"), and `un`/`una` are the ordinary indefinite articles, so
+    it would fire on almost any sentence.
+    """
+
+    @pytest.mark.parametrize(("body_text", "rejected"), WORD_NUMBER_CASES)
+    def test_only_a_word_number_quantifying_a_reported_unit_is_rejected(self, body_text, rejected) -> None:
+        message_request = request()
+
+        fired = ValidationRule.WORD_NUMBER in rules_for(message_request, spoken(message_request, body_text))
+
+        assert fired is rejected
+
+    def test_the_violation_names_the_word_and_the_unit(self) -> None:
+        message_request = request()
+
+        violations = validate_message(message_request, spoken(message_request, "Se esperan ochenta milimetros."))
+
+        assert [violation.rule for violation in violations] == [ValidationRule.WORD_NUMBER]
+        assert "ochenta" in violations[0].detail
