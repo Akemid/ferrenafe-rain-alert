@@ -1,0 +1,282 @@
+# Agent Message Composition Specification
+
+## Purpose
+
+A second `MessageComposer` (`ports/__init__.py`) implementation: a single structured-output agent call, no tools, invoked only after the dedup policy authorizes a send. Its output is validated before acceptance; every failure mode falls back to `domain.template.MessageComposer`'s output for the identical `MessageRequest`. Design spec section 7; proposal "Accepted consequence" and "Prompt injection" sections.
+
+## Requirements
+
+### Requirement: Invocation only after send authorization
+
+The agent composer MUST be invoked only when the cycle's dedup policy has already authorized sending for the current `MessageRequest`. A deduplicated cycle MUST invoke the agent invocation seam zero times.
+
+#### Scenario: Deduplicated cycle invokes nothing
+- GIVEN the dedup policy does not authorize sending
+- WHEN the cycle runs
+- THEN the agent invocation seam is called zero times
+
+#### Scenario: Authorized cycle invokes the seam once
+- GIVEN the dedup policy authorizes sending and the agent composer is selected
+- WHEN the cycle composes the message
+- THEN the agent invocation seam is called exactly once, with no retry
+
+### Requirement: Prompt content is limited to MessageRequest and excludes recipients
+
+The prompt MUST be built solely from fields already present on `MessageRequest` (city, level, window, reasons, forecast summary, warning summary, source statuses, checklist). It MUST NOT contain any contact identifier, token, or account id.
+
+#### Scenario: Prompt fields are a subset of MessageRequest
+- GIVEN a `MessageRequest`
+- WHEN the prompt is constructed
+- THEN every data value in the prompt traces to a field on that `MessageRequest`
+
+#### Scenario: Recipient data never reaches the prompt
+- GIVEN a cycle with active contacts
+- WHEN the prompt is constructed
+- THEN it contains no contact identifier, token, or account id
+
+### Requirement: Source-derived text is sanitized before entering the prompt
+
+Every title carried by `WarningSummary.title` or any `WarningReason.title` among `request.reasons` MUST pass through `domain.sanitize.sanitize_source_text` before being interpolated into the prompt string, per the `MessageComposer` port docstring invariant. `city`, `timezone`, and `checklist` are operator-owned and are not subject to this rule.
+
+#### Scenario: Hostile title is sanitized in the prompt
+- GIVEN a hostile aviso-title fixture (control characters, embedded newlines) from change 1
+- WHEN the prompt is constructed
+- THEN the prompt string contains no control character and no newline originating from that title
+
+#### Scenario: Operator-owned text is not sanitized
+- GIVEN a `MessageRequest` with a checklist item and a city name
+- WHEN the prompt is constructed
+- THEN the checklist item and city text appear unmodified by `sanitize_source_text`
+
+### Requirement: The agent has no side-effect capability
+
+The agent MUST be given no tool, no send capability, and no write path. Its return value is text consumed by the validator; it cannot itself send, notify, or record anything.
+
+#### Scenario: Agent execution reaches no side effect
+- GIVEN the agent runs to completion
+- WHEN its output is received
+- THEN no notification was sent and no record was written before validation ran, and both remain exclusively under `RunAlertCycle`'s control
+
+### Requirement: Accepted agent messages satisfy the same structural invariants as the template body
+
+Before an agent-composed `AlertMessage` is accepted: `level` MUST equal `request.level`; `valid_until` MUST equal `request.window.end`; the body MUST contain `request.city`; the body length MUST NOT exceed the configured maximum; and the body MUST NOT contain more than one `Motivos:` line or more than one `Recomendaciones:` line.
+
+#### Scenario: A compliant agent body is accepted
+- GIVEN an agent-returned body meeting every invariant above
+- WHEN validation runs
+- THEN the message is accepted and `AlertRecord.composer` reads `"agent"`
+
+#### Scenario: A disagreeing valid_until is rejected
+- GIVEN the agent returns `valid_until` different from `request.window.end`
+- WHEN validation runs
+- THEN the message is rejected and the template's output is sent instead
+
+### Requirement: Every number in the body is traceable to MessageRequest
+
+A **candidate number** is a date token (`DD/MM/YYYY`), a time token (`HH:MM`), or a decimal/integer token (comma or dot as decimal separator, optionally followed by `%`); dates and times are extracted whole before scanning for bare decimal/integer tokens, so a date's day/month/year are never evaluated as three independent numbers.
+
+A candidate is **allowed** when, after normalizing its decimal separator and comparing at the precision the source value was computed at (one decimal place for millimetre amounts), it equals one of: the local date or time of `window.start`, `window.end`, `warning.window.start`/`.end` (if `warning` is set), or `forecast.peak_at` (if `forecast` is set); `forecast.mm_24h`, `forecast.mm_48h`, `forecast.peak_probability_pct`, or the literal `24`/`48` (if `forecast` is set); or any reason's `accumulated_mm`, `hours`, `probability_pct`, or `probability_threshold_pct` (when present). A candidate is also allowed, regardless of the sets above, when it falls inside a contiguous body span that reproduces **verbatim, in full**, `sanitize_source_text(warning.title)`, one `WarningReason.title`'s sanitized text, or one `request.checklist` item — a partial or paraphrased quote grants no exemption. Any candidate matching none of the above is rejected.
+
+*Left to design*: the exact tokenizer implementation, the rounding-equivalence rule for values expressed at a precision other than one decimal place, and whether the exemption should extend to a title/checklist fragment shorter than the full string. This spec fixes only the boundary stated above.
+
+#### Scenario: Spanish decimal comma is accepted
+- GIVEN `ForecastThresholdReason.accumulated_mm = 12.4`
+- WHEN the body states "12,4 mm"
+- THEN the number is accepted as matching `accumulated_mm`
+
+#### Scenario: A window time is accepted
+- GIVEN `request.window.start` renders locally as `14:00`
+- WHEN the body states "14:00"
+- THEN the number is accepted as matching the window start
+
+#### Scenario: A window date is accepted
+- GIVEN `request.window.start` renders locally as `12/03/2026`
+- WHEN the body states "12/03/2026"
+- THEN the number is accepted as matching the window start
+
+#### Scenario: A horizon constant is accepted
+- GIVEN `request.forecast` is set
+- WHEN the body states "en las próximas 24 horas"
+- THEN "24" is accepted as the forecast's fixed 24-hour horizon
+
+#### Scenario: A digit inside a verbatim-quoted title is accepted
+- GIVEN a sanitized aviso title containing "AVISO 335" and the body quotes that sanitized title in full
+- WHEN validation runs
+- THEN "335" is accepted because it sits inside the verbatim-quoted title span
+
+#### Scenario: A digit inside a verbatim-quoted checklist item is accepted
+- GIVEN a checklist item "Prepara víveres para 72 horas" reproduced verbatim in the body
+- WHEN validation runs
+- THEN "72" is accepted because it sits inside the verbatim-quoted checklist span
+
+#### Scenario: An invented number is rejected
+- GIVEN no structured field and no verbatim-quoted title or checklist span contains "80"
+- WHEN the body states "se esperan 80 mm"
+- THEN the message is rejected and the template's output is sent instead
+
+### Requirement: A measurement written in words is rejected
+
+The digit rule above cannot see a quantity spelled out, so a model could write "ochenta milímetros" and escape it entirely. The validator MUST therefore reject a body in which a Spanish number word directly quantifies a **unit this system reports**: a millimetre amount, a percentage, or an hour count. The prompt MUST separately instruct the model to render every quantity in digits; that instruction is not enforcement.
+
+*Amended 2026-09-09, before implementation.* The rule first read "a Spanish number word standing for a quantity", with no unit condition, and that was wrong in a way the shipped system proves. The deterministic template's own body contains three word-numbers today, from the operator checklist: `dos` in "al menos dos días", and `un`/`una` in "un botiquín" and "una linterna". The unconditional rule would have rejected the system's own text, and the design's invariant pinning the validator against the template output would have failed on the first run. Worse, `un` and `una` are the ordinary Spanish indefinite articles, so an unconditioned detector fires on almost any sentence.
+
+Narrowing to a reported unit targets the actual threat, which is inventing a rainfall or probability figure, and leaves ordinary prose alone. It is deliberately narrower than the digit rule: a word-number that quantifies anything else, such as days or objects, is not this requirement's concern.
+
+#### Scenario: A rainfall amount written in words is rejected
+- GIVEN a candidate body states "ochenta milímetros" instead of a digit form
+- WHEN validation runs
+- THEN the message is rejected and the template's output is sent instead
+
+#### Scenario: A probability written in words is rejected
+- GIVEN a candidate body states "setenta por ciento"
+- WHEN validation runs
+- THEN the message is rejected and the template's output is sent instead
+
+#### Scenario: The template's own checklist wording is not rejected
+- GIVEN a body reproducing the checklist item "Almacena agua potable para al menos dos días."
+- WHEN validation runs
+- THEN "dos" raises no violation, because "días" is not a unit this system reports
+
+#### Scenario: The Spanish indefinite article is not read as a number
+- GIVEN a body containing "una linterna" and "un botiquín"
+- WHEN validation runs
+- THEN neither raises a violation
+
+#### Scenario: The deterministic template always passes this rule
+- GIVEN any `MessageRequest` the system can produce
+- WHEN the template's own output is validated
+- THEN it raises no violation, so the fallback can never be rejected by the rule that guards the agent
+
+#### Scenario: The prompt instructs digit rendering
+- GIVEN a `MessageRequest`
+- WHEN the prompt is constructed
+- THEN it contains an explicit instruction to render every quantity in digits
+
+### Requirement: Every composer failure mode falls back to the template
+
+On any of the following, the composer MUST return `domain.template.MessageComposer`'s output for the same `MessageRequest`, unchanged, and `AlertRecord.composer` MUST read `"template"`.
+
+#### Scenario: Deadline exceeded
+- GIVEN the invocation seam exceeds the hard deadline
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+#### Scenario: Transport error
+- GIVEN the invocation seam raises a transport error
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+#### Scenario: Unsuccessful runtime response
+- GIVEN the invocation seam returns an unsuccessful response
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+#### Scenario: Unparseable response body
+- GIVEN the invocation seam returns a body that cannot be parsed into the output contract
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+#### Scenario: Missing required field
+- GIVEN the parsed response omits a required output field
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+#### Scenario: Disagreeing level
+- GIVEN the agent's `level` differs from `request.level`
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+#### Scenario: Body omits the city
+- GIVEN the agent's body does not contain `request.city`
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+#### Scenario: Body over the length cap
+- GIVEN the agent's body exceeds the configured maximum length
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+#### Scenario: The cap leaves room for the template the configuration can produce
+- GIVEN the maximum body length is 1500 characters
+- WHEN the deterministic template's output is measured for every request fixture
+- THEN every one is under the cap with room to spare
+
+*The cap is pinned here at 1500 because the design asked the spec to settle it. The measured template body today is about 570 characters with the five-item Ferreñafe checklist, so 1500 leaves room for a checklist that roughly doubles. The number matters less than the relationship: the cap MUST stay above the longest body the configuration can produce, or the fallback would fail the rule that guards the agent. The invariant asserting the template always passes the validator is what enforces that, so a checklist that outgrows the cap fails a test rather than an alert.*
+
+#### Scenario: The title cap leaves room for a real aviso title
+- GIVEN the maximum title length is 200 characters
+- WHEN the deterministic template's title is measured for every request fixture
+- THEN every one is under the cap with room to spare
+
+*The title cap is pinned at 200, the value the design proposed and left for the spec. Measured: the template's own title runs about 47 characters, and the longest aviso title on the live page is 79, "INCREMENTO DE TEMPERATURA DIURNA EN LA COSTA Y SIERRA (EXTENSIÓN DEL AVISO 335)". A title is a subject line, not prose, so 200 is generous while still refusing a body smuggled into the title field. The same relationship as the body cap applies, and the same invariant enforces it.*
+
+#### Scenario: Body contains a number absent from the input
+- GIVEN the agent's body contains a number outside the allowed set
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+#### Scenario: Body contains a forged section header
+- GIVEN the agent's body contains a second `Motivos:` or `Recomendaciones:` line
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+#### Scenario: Empty body
+- GIVEN the agent's body is empty
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+#### Scenario: Invoker raises an unexpected exception type
+- GIVEN the invocation seam raises an exception type not otherwise anticipated
+- WHEN the cycle composes
+- THEN the template's output is sent and `composer == "template"`
+
+### Requirement: Operator is notified exactly once per fallback, never on success
+
+When the composer falls back to the template, the system MUST emit exactly one operator notice of a fallback kind through `Notifier.send_operator_notice`. When the agent's output is accepted, it MUST emit none.
+
+#### Scenario: One notice per fallback
+- GIVEN any fault from the fallback table above
+- WHEN the cycle composes
+- THEN exactly one operator notice of the fallback kind is emitted
+
+#### Scenario: No notice on acceptance
+- GIVEN the agent's output is accepted
+- WHEN the cycle composes
+- THEN no fallback notice is emitted
+
+### Requirement: The alert record states which composer produced the message
+
+`AlertRecord.composer` MUST read `"agent"` when the accepted message came from the agent composer, and `"template"` in every other case, including every fallback path.
+
+#### Scenario: Accepted agent output is attributed
+- GIVEN the agent's output is accepted
+- WHEN the alert is recorded
+- THEN `AlertRecord.composer == "agent"`
+
+#### Scenario: Any fallback is attributed to the template
+- GIVEN any fault from the fallback table above
+- WHEN the alert is recorded
+- THEN `AlertRecord.composer == "template"`
+
+### Requirement: Composer selection defaults to the template
+
+The system MUST select `domain.template.MessageComposer` as the active composer unless configuration explicitly selects the agent composer. With no configuration change, cycle behavior MUST be identical to behavior before this change.
+
+#### Scenario: Default configuration never invokes the agent
+- GIVEN configuration does not select the agent composer
+- WHEN the cycle runs an authorized send
+- THEN the agent invocation seam is called zero times and `composer == "template"`
+
+#### Scenario: Explicit selection enables the agent composer
+- GIVEN configuration selects the agent composer and the dedup policy authorizes sending
+- WHEN the cycle runs
+- THEN the agent invocation seam is called, subject to the same validation and fallback rules above
+
+### Requirement: The offline test suite requires no model, network, or credentials
+
+Every scenario in this capability that does not explicitly require a live agent MUST be provable against an injected fake seam, with zero network calls, zero model calls, and no credentials present.
+
+#### Scenario: Default suite run is offline
+- GIVEN the default test command
+- WHEN it runs
+- THEN every requirement above except any scenario explicitly marked live/opt-in is proven with no network call, no model call, and no credential
