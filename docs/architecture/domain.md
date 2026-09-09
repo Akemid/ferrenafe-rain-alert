@@ -193,11 +193,11 @@ Two frozen dataclasses, both injected rather than imported.
 
 `RiskThresholds` holds `prepare_mm_48h`, `prepare_probability_pct`, `prepare_probability_pct_degraded`, `prepare_warning_levels`, `imminent_mm_24h`, `imminent_probability_pct`, `imminent_warning_levels`.
 
-`AlertConfig` holds the whole per-city configuration: `city`, `city_slug`, `coordinates`, `timezone`, `region`, `thresholds`, `checklist`, `active_channel`, `forecast_hours`, `dedup_lookback_hours`, `coordinates_are_placeholder`.
+`AlertConfig` holds the whole per-city configuration: `city`, `city_slug`, `coordinates`, `coordinates_source`, `timezone`, `region`, `thresholds`, `checklist`, `active_channel`, `forecast_hours`, `dedup_lookback_hours`.
 
 `RiskEvaluator` is constructor-injected with `RiskThresholds`. **No threshold, coordinate or probability literal appears anywhere in `risk.py`.** That is what allows the thresholds to be calibrated during the first rainy season without touching the rules, and it is what change 3 needs in order to move them into Parameter Store. The shipped values live in `adapters/local/static_config_repository.py`, described in [adapters.md](./adapters.md).
 
-`coordinates_are_placeholder` exists because Ferreñafe's exact coordinates are still an open decision. It travels all the way to the CLI, which prints a marker beside the coordinates on every run.
+`AlertConfig` **carried a `coordinates_are_placeholder` flag, and no longer does.** It existed because the shipped coordinates were an unsourced guess, and it travelled all the way to the CLI, which printed a marker beside them on every run. The coordinates are now sourced to two public references, so the flag could never be true again — a field nothing ever sets is dead configuration, which is the smell this project's own verification has flagged before. What replaced it is `coordinates_source`, a `CoordinatesSource` enum rather than a boolean. A security review agreed the boolean had to go and argued that leaving no visible signal was wrong for a system whose job is warning people, so the provenance is printed beside the pair and included in the machine-readable document. The enum has three members because the honest question has three answers: a published reference, an operator who supplied the pair, and a reading taken at the location. Nothing sets the last, and a test fails if anything starts to. See [adapters.md](./adapters.md).
 
 ## `reasons.py`
 

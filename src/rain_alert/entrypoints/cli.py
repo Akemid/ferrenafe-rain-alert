@@ -62,7 +62,6 @@ from rain_alert.entrypoints.wiring import (
 __all__ = ["OPEN_METEO_FIXTURE_NAME", "SENAMHI_FIXTURE_NAME", "default_now", "main", "parse_now"]
 
 _LABEL_WIDTH = 11
-_PLACEHOLDER_MARKER = "(PLACEHOLDER — pending confirmation)"
 _PREVIEW_LABEL = "PREVIEW (NOT SENT)"
 
 EXIT_OK = 0
@@ -168,8 +167,12 @@ def _message_lines(result: CycleResult) -> list[str]:
 
 def render(result: CycleResult, config: AlertConfig) -> str:
     """The operator's view of one cycle (design.md 9)."""
-    coordinates = f"({config.coordinates.latitude:.4f}, {config.coordinates.longitude:.4f})"
-    placeholder = f"  {_PLACEHOLDER_MARKER}" if config.coordinates_are_placeholder else ""
+    # Provenance is printed beside the pair, not inferred from it. An operator
+    # reading this during a real event has to be able to tell a point taken
+    # from a public reference from one confirmed at the location.
+    coordinates = (
+        f"({config.coordinates.latitude:.4f}, {config.coordinates.longitude:.4f})  [{config.coordinates_source.value}]"
+    )
     assessment = result.assessment
     degraded = "   [degraded]" if assessment.degraded else ""
 
@@ -182,7 +185,7 @@ def render(result: CycleResult, config: AlertConfig) -> str:
         decision += f" ({result.recipients_count} recipient(s))"
 
     lines = [
-        f"{result.config_city}  {coordinates}{placeholder}",
+        f"{result.config_city}  {coordinates}",
         *_block("Sources", [_source_line("senamhi", result.senamhi), _source_line("open_meteo", result.open_meteo)]),
         *_block("Notes", _note_lines(result)),
         *_block("Level", [f"{assessment.level.value}{degraded}"]),
@@ -208,7 +211,9 @@ def as_json(result: CycleResult, config: AlertConfig) -> str:
         "city_slug": config.city_slug,
         "latitude": config.coordinates.latitude,
         "longitude": config.coordinates.longitude,
-        "coordinates_are_placeholder": config.coordinates_are_placeholder,
+        # This document is what a calibration log or the cloud deployment reads,
+        # so the pair must not travel without saying how it was obtained.
+        "coordinates_source": config.coordinates_source.value,
         # The cycle clock, not the window start. The two are different facts and
         # the window start can precede the run by days on an official verdict.
         "evaluated_at": result.evaluated_at.isoformat(),

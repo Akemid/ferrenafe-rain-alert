@@ -56,8 +56,8 @@ def _open_meteo_payload(*, mm: float, probability: int, at_hour: int = 0, hours:
     stamps = [(NOW_DT - timedelta(hours=12) + timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M") for h in range(hours)]
     return json.dumps(
         {
-            "latitude": -6.64,
-            "longitude": -79.79,
+            "latitude": -6.636005,
+            "longitude": -79.789860,
             "hourly_units": {"time": "iso8601", "precipitation": "mm", "precipitation_probability": "%"},
             "hourly": {
                 "time": stamps,
@@ -130,14 +130,17 @@ class TestOutputOnEveryRun:
         assert "Nivel: sin riesgo" in output
         assert "Recomendaciones:" in output
 
-    def test_the_placeholder_coordinate_marker_is_printed(self, capsys, tmp_path: Path) -> None:
-        """weather-sources: Placeholder coordinates documented. An operator
-        must never read a forecast without being told the location is a
-        guess."""
+    def test_the_sourced_coordinates_are_printed_without_a_marker(self, capsys, tmp_path: Path) -> None:
+        """weather-sources: Coordinates come from configuration. The operator
+        must see the point the forecast was fetched for; the coordinates are
+        now sourced, so a marker calling them provisional would be false."""
         _, output = _run(capsys, tmp_path)
 
-        assert "-6.6400" in output and "-79.7900" in output
-        assert "PLACEHOLDER" in output
+        assert "-6.6360" in output and "-79.7899" in output
+        assert "PLACEHOLDER" not in output
+        # Retiring the flag must not leave the operator unable to tell a
+        # published point from one confirmed at the location.
+        assert "public_reference" in output
 
     def test_the_reasons_are_the_english_operator_audit_trail(self, capsys, tmp_path: Path) -> None:
         """The CLI is the operator's view, so it renders reasons through
@@ -297,12 +300,19 @@ class TestJsonOutput:
         assert "forecast_threshold" in kinds
         assert any("mm / " in line for line in document["reasons_en"])
 
-    def test_json_mode_reports_the_placeholder_flag(self, capsys, tmp_path: Path) -> None:
+    def test_json_mode_reports_the_coordinates_and_no_placeholder_flag(self, capsys, tmp_path: Path) -> None:
+        """A calibration log needs the point the forecast was fetched for. It
+        must not carry a placeholder flag: the coordinates are sourced, so the
+        field would be dead configuration in every document."""
         _, output = _run(capsys, tmp_path, "--json")
 
         document = json.loads(output)
 
-        assert document["coordinates_are_placeholder"] is True
+        assert (document["latitude"], document["longitude"]) == (-6.636005, -79.789860)
+        assert "coordinates_are_placeholder" not in document
+        # This document is what a calibration log and the cloud deployment
+        # read, so the pair must not travel without its provenance.
+        assert document["coordinates_source"] == "public_reference"
 
     def test_json_mode_reports_when_the_cycle_ran_not_when_its_window_starts(self, capsys, tmp_path: Path) -> None:
         """W4: `evaluated_at` carried `assessment.window.start`.

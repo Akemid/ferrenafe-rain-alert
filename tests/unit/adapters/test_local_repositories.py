@@ -1,5 +1,5 @@
 """The local repositories (design.md 8.3, 4.1; weather-sources spec
-"Placeholder coordinates documented"; repo-hygiene spec "No secrets or
+"Coordinates come from configuration"; repo-hygiene spec "No secrets or
 personal data").
 """
 
@@ -17,10 +17,11 @@ from rain_alert.adapters.local.json_alert_repository import JsonFileAlertReposit
 from rain_alert.adapters.local.static_config_repository import (
     LAT_ENV_VAR,
     LON_ENV_VAR,
-    PLACEHOLDER_COORDINATES,
+    SOURCED_CITY_CENTRE_COORDINATES,
     StaticConfigRepository,
 )
 from rain_alert.adapters.local.static_contact_repository import StaticContactRepository
+from rain_alert.domain.config import CoordinatesSource
 from rain_alert.domain.messages import AlertMessage, AlertRecord, OutageRecord
 from rain_alert.domain.reasons import ForecastThresholdReason
 from rain_alert.domain.values import Level, SourceName, TimeWindow, WarningLevel
@@ -301,14 +302,52 @@ class TestJsonFilePersistence:
 
 
 class TestStaticConfigRepository:
-    def test_the_coordinates_are_flagged_as_a_placeholder(self) -> None:
-        """weather-sources: Placeholder coordinates documented. The exact
-        Ferrenafe coordinates are an open decision, so the config must say so
-        rather than presenting a guess as verified."""
+    def test_the_default_coordinates_are_the_sourced_city_centre_6_38_10_s_79_47_23_w(self) -> None:
+        """weather-sources: Coordinates come from configuration.
+
+        The centre of the city of Ferrenafe in the two public references cited
+        in the config module. The decimal form is pinned here so a future edit
+        cannot drift the forecast location silently.
+
+        The references give both forms, and the decimal one is primary. A
+        reader who converts the rounded degrees-minutes-seconds display back
+        will land 12 m north and 15 m east of the pinned value, because a whole
+        second of arc is about 30 m:
+
+            6 + 38/60 + 10/3600 = 6.63611   vs the pinned 6.636005
+            79 + 47/60 + 23/3600 = 79.78972 vs the pinned 79.789860
+
+        Either form picks the same Open-Meteo grid cell, so the difference is
+        provenance rather than forecast. The decimal is pinned because it is
+        what the sources actually carry.
+        """
         config = StaticConfigRepository(env={}).load()
 
-        assert config.coordinates == PLACEHOLDER_COORDINATES
-        assert config.coordinates_are_placeholder is True
+        assert config.coordinates == SOURCED_CITY_CENTRE_COORDINATES
+        assert (config.coordinates.latitude, config.coordinates.longitude) == (-6.636005, -79.789860)
+
+    def test_the_configuration_carries_no_placeholder_flag(self) -> None:
+        """The coordinates are sourced, so a flag claiming they are provisional
+        would be a field nothing ever sets — dead configuration."""
+        config = StaticConfigRepository(env={}).load()
+
+        assert not hasattr(config, "coordinates_are_placeholder")
+
+    def test_the_default_coordinates_declare_a_public_reference_source(self) -> None:
+        """Retiring the placeholder flag must not reduce the visible signal to
+        nothing. The pair travels with how it was obtained, so an operator can
+        tell a published value from one confirmed at the location.
+        """
+        config = StaticConfigRepository(env={}).load()
+
+        assert config.coordinates_source is CoordinatesSource.PUBLIC_REFERENCE
+
+    def test_nothing_claims_a_surveyed_source_yet(self) -> None:
+        """`SURVEYED` exists for a reading taken on the ground, which nobody has
+        taken. A code path asserting it today would be a false claim about a
+        safety-relevant fact."""
+        for env in ({}, {LAT_ENV_VAR: "-6.6377", LON_ENV_VAR: "-79.7889"}):
+            assert StaticConfigRepository(env=env).load().coordinates_source is not CoordinatesSource.SURVEYED
 
     def test_the_configured_city_and_region_drive_both_sources(self) -> None:
         config = StaticConfigRepository(env={}).load()
@@ -345,25 +384,20 @@ class TestStaticConfigRepository:
         config = StaticConfigRepository(env={LAT_ENV_VAR: "-6.6377", LON_ENV_VAR: "-79.7889"}).load()
 
         assert (config.coordinates.latitude, config.coordinates.longitude) == (-6.6377, -79.7889)
+        # An operator who supplies a pair is asserting it, which is a different
+        # claim from a published reference and must not be reported as one.
+        assert config.coordinates_source is CoordinatesSource.OPERATOR_SUPPLIED
 
-    def test_explicit_coordinates_clear_the_placeholder_flag(self) -> None:
-        """An operator who supplies coordinates is asserting them, so the CLI
-        must stop printing the placeholder marker."""
-        config = StaticConfigRepository(env={LAT_ENV_VAR: "-6.6377", LON_ENV_VAR: "-79.7889"}).load()
-
-        assert config.coordinates_are_placeholder is False
-
-    def test_only_one_of_the_two_overrides_is_ignored_and_stays_a_placeholder(self) -> None:
-        """Half an override is not a coordinate; silently pairing a real
-        latitude with a placeholder longitude would forecast for the wrong
-        place while claiming to be configured."""
+    def test_only_one_of_the_two_overrides_falls_back_to_the_sourced_default(self) -> None:
+        """Half an override is not a coordinate; silently pairing an operator's
+        latitude with the default longitude would forecast for the wrong place
+        while claiming to be configured."""
         config = StaticConfigRepository(env={LAT_ENV_VAR: "-6.6377"}).load()
 
-        assert config.coordinates == PLACEHOLDER_COORDINATES
-        assert config.coordinates_are_placeholder is True
+        assert config.coordinates == SOURCED_CITY_CENTRE_COORDINATES
 
     def test_an_unparseable_override_fails_loudly(self) -> None:
-        """Falling back to the placeholder would hide an operator typo and
+        """Falling back to the sourced default would hide an operator typo and
         forecast for the wrong city without saying so."""
         with pytest.raises(ValueError, match=LAT_ENV_VAR):
             StaticConfigRepository(env={LAT_ENV_VAR: "north-ish", LON_ENV_VAR: "-79.7889"}).load()

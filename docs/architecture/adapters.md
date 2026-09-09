@@ -12,7 +12,7 @@ This document covers every module in `src/rain_alert/adapters/`, including the s
 | `senamhi_classification.py` | none directly | Translates SENAMHI's Spanish title vocabulary into domain hazard terms. |
 | `console_notifier.py` | `Notifier` | Prints, and structurally cannot transmit. |
 | `serialization.py` | none directly | The persisted document shape, carried forward for DynamoDB. |
-| `local/static_config_repository.py` | `ConfigRepository` | The calibrated thresholds and the placeholder coordinates. |
+| `local/static_config_repository.py` | `ConfigRepository` | The calibrated thresholds and the sourced city-centre coordinates. |
 | `local/static_contact_repository.py` | `ContactRepository` | One synthetic contact whose handle is `stdout`. |
 | `local/in_memory_alert_repository.py` | `AlertRepository` | The whole query rule, with no I/O. |
 | `local/json_alert_repository.py` | `AlertRepository` | The same store, persisted atomically to one file. |
@@ -284,7 +284,7 @@ Both `match` statements in this module end in `assert_never`. Without that guard
 | `ACTIVE_CHANNEL` | `console` |
 | `FORECAST_HOURS` | 48 |
 | `DEDUP_LOOKBACK_HOURS` | 72 |
-| `PLACEHOLDER_COORDINATES` | latitude `-6.64`, longitude `-79.79` |
+| `SOURCED_CITY_CENTRE_COORDINATES` | latitude `-6.636005`, longitude `-79.789860` |
 
 The thresholds in `THRESHOLDS`:
 
@@ -298,17 +298,26 @@ The thresholds in `THRESHOLDS`:
 | `imminent_probability_pct` | 70 | |
 | `imminent_warning_levels` | orange, red | |
 
-### The coordinates are a documented placeholder
+### The coordinates are sourced, not surveyed
 
-They are approximate, not a verified location. Ferreñafe's exact latitude and longitude is still an open decision in the design specification. The config says so through `coordinates_are_placeholder=True`, and the CLI prints `(PLACEHOLDER — pending confirmation)` beside them on every run. Presenting a guess as verified would put a forecast for the wrong place under the project's own name.
+The default is the centre of the city of Ferreñafe, the provincial capital, where the community this system serves lives: `6°38'10"S 79°47'23"W`, which is latitude `-6.636005` and longitude `-79.789860`. Two independent public references agree on it, and both are cited in the module docstring:
 
-Two environment overrides let an operator supply real coordinates without a code change, `RAIN_ALERT_LAT` and `RAIN_ALERT_LON`. They are treated strictly.
+- <https://en.wikipedia.org/wiki/Ferre%C3%B1afe_District>
+- <https://www.deperu.com/infoperu/lambayeque/ferrenafe/>
 
-**Both or neither.** Half an override is not a coordinate. Pairing a real latitude with a placeholder longitude would forecast for a point in the ocean while claiming to be configured. If either variable is missing, both are ignored.
+**Sourced is not surveyed.** These come from public references, not from a reading taken on the ground, and they name the administrative centre rather than any particular point on the river. They are good enough to calibrate against — the whole city sits well inside one Open-Meteo grid cell — and they should be confirmed against a real reading before change 3 writes them into Parameter Store. `test_the_default_coordinates_are_the_sourced_city_centre_6_38_10_s_79_47_23_w` pins the decimal pair and carries the degree-minute-second arithmetic, so the location cannot drift silently.
 
-**Unparseable or out of range raises.** A non-numeric value raises `ValueError` naming the variable. An out-of-range value raises through `Coordinates.__post_init__`. Falling back to the placeholder would hide an operator typo and forecast for the wrong city silently.
+The earlier value, `-6.64, -79.79`, was never sourced. It sat about 430 m south of this one, well inside Open-Meteo's grid resolution, so the forecasts observed during early calibration were right by luck rather than by rigour. It travelled with a `coordinates_are_placeholder` flag and a CLI marker, both now **retired**: once the coordinates are sourced the flag can never be true, and a field nothing ever sets is dead configuration.
 
-**A complete override clears the placeholder flag**, because an operator who supplies coordinates is asserting them.
+Retiring that boolean and stopping there would have left no visible signal at all, which a security review judged the wrong trade for a system whose whole job is warning people. Provenance therefore comes back as `CoordinatesSource` in `domain/config.py`, an enum rather than a boolean, and it is printed beside the pair and included in the machine-readable document.
+
+The useful question was never whether the coordinates are provisional but how they were obtained, and that already has three answers with different trust: `PUBLIC_REFERENCE` for a published value, `OPERATOR_SUPPLIED` for a pair someone configured and is therefore asserting, and `SURVEYED` for a reading taken at the location. Nothing sets the last one, and `test_nothing_claims_a_surveyed_source_yet` fails if anything starts to, because claiming it today would be a false statement about a safety-relevant fact.
+
+Two environment overrides let an operator supply a better point without a code change, `RAIN_ALERT_LAT` and `RAIN_ALERT_LON`. They are treated strictly, and that matters more now that the default is no longer self-evidently provisional.
+
+**Both or neither.** Half an override is not a coordinate. Pairing an operator's latitude with the default longitude would forecast for a point neither of them chose while claiming to be configured. If either variable is missing, both are ignored.
+
+**Unparseable or out of range raises.** A non-numeric value raises `ValueError` naming the variable. An out-of-range value raises through `Coordinates.__post_init__`. Falling back to the default would hide an operator typo and forecast for the wrong city silently.
 
 `CHECKLIST` is the one place in this codebase where copy is Spanish by contract, because it is rendered into the community message body. The five items are quoted in [domain.md](./domain.md).
 

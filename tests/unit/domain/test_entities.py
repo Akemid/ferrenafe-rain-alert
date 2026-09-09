@@ -62,12 +62,12 @@ class TestHourlyPointInvariants:
 class TestForecast:
     def test_accumulated_mm_sums_precipitation_over_the_window(self) -> None:
         points = _hourly_points(4, mm=2.5, probability=50)
-        forecast = Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
+        forecast = Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=points)
         assert forecast.accumulated_mm(4) == pytest.approx(10.0)
 
     def test_accumulated_mm_only_counts_the_requested_hours(self) -> None:
         points = _hourly_points(4, mm=2.5, probability=50)
-        forecast = Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
+        forecast = Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=points)
         assert forecast.accumulated_mm(2) == pytest.approx(5.0)
 
     def test_max_probability_pct_is_the_maximum_not_the_mean(self) -> None:
@@ -76,7 +76,7 @@ class TestForecast:
             HourlyPoint(at=_utc(1), precipitation_mm=1.0, probability_pct=90),
             HourlyPoint(at=_utc(2), precipitation_mm=1.0, probability_pct=40),
         )
-        forecast = Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
+        forecast = Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=points)
         assert forecast.max_probability_pct(3) == 90
 
     def test_peak_hour_is_the_point_with_highest_precipitation(self) -> None:
@@ -85,14 +85,14 @@ class TestForecast:
             HourlyPoint(at=_utc(1), precipitation_mm=9.0, probability_pct=90),
             HourlyPoint(at=_utc(2), precipitation_mm=2.0, probability_pct=40),
         )
-        forecast = Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
+        forecast = Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=points)
         assert forecast.peak_hour(3) == points[1]
 
     def test_precipitation_window_covers_the_sampled_period_not_only_the_sample_starts(self) -> None:
         """An hourly sample at 14:00 describes 14:00-15:00, so a window over
         three samples ends one hour after the last sample's timestamp."""
         points = _hourly_points(4, mm=1.0, probability=50)
-        forecast = Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
+        forecast = Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=points)
         window = forecast.precipitation_window(3)
         assert window.start == points[0].at
         assert window.end == points[2].at + timedelta(hours=1)
@@ -101,7 +101,7 @@ class TestForecast:
         """W5: `AlertMessage.valid_until` is the window end, so an off-by-one
         hour here declares expiry before the data runs out."""
         points = _hourly_points(48, mm=1.0, probability=50)
-        forecast = Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
+        forecast = Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=points)
         window = forecast.precipitation_window(48)
         assert window.end - window.start == timedelta(hours=48)
 
@@ -109,14 +109,14 @@ class TestForecast:
         """A one-hour cloudburst must produce a valid window, not a
         `TimeWindow(start == end)` ValueError that aborts the whole cycle."""
         points = _hourly_points(1, mm=25.0, probability=80)
-        forecast = Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
+        forecast = Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=points)
         window = forecast.precipitation_window(1)
         assert window.start == points[0].at
         assert window.end == points[0].at + timedelta(hours=1)
 
     def test_horizon_hours_reports_how_many_hours_the_forecast_covers(self) -> None:
         points = _hourly_points(24, mm=1.0, probability=50)
-        forecast = Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
+        forecast = Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=points)
         assert forecast.horizon_hours == 24
 
     @pytest.mark.parametrize("hours", [0, -1, 25], ids=["zero-hours", "negative-hours", "beyond-the-horizon"])
@@ -124,7 +124,7 @@ class TestForecast:
         """W1: a 24-point forecast must not answer a 48-hour question, and a
         zero-hour slice must not reach `max()` with an empty sequence."""
         points = _hourly_points(24, mm=1.0, probability=50)
-        forecast = Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
+        forecast = Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=points)
         for accessor in (
             forecast.accumulated_mm,
             forecast.max_probability_pct,
@@ -138,7 +138,7 @@ class TestForecast:
         """The documented "48 contiguous hourly points" invariant must be
         defended where it is claimed, not left for `peak_hour` to trip over."""
         with pytest.raises(ValueError, match="empty"):
-            Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=())
+            Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=())
 
     def test_non_contiguous_points_raise(self) -> None:
         points = (
@@ -146,7 +146,7 @@ class TestForecast:
             HourlyPoint(at=_utc(2), precipitation_mm=1.0, probability_pct=30),
         )
         with pytest.raises(ValueError, match="contiguous"):
-            Forecast(location=Coordinates(latitude=-6.64, longitude=-79.79), points=points)
+            Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=points)
 
 
 class TestWarningFloodRelevance:

@@ -48,9 +48,9 @@ class TestIsEscalation:
 
 class TestCoordinates:
     def test_valid_coordinates_construct(self) -> None:
-        coords = Coordinates(latitude=-6.64, longitude=-79.79)
-        assert coords.latitude == -6.64
-        assert coords.longitude == -79.79
+        coords = Coordinates(latitude=-6.636005, longitude=-79.789860)
+        assert coords.latitude == -6.636005
+        assert coords.longitude == -79.789860
 
     @pytest.mark.parametrize(
         "latitude",

@@ -143,7 +143,7 @@ These are the decisions that are not visible from the code shape alone. Each one
 | File | What it is for |
 |---|---|
 | `__init__.py` | Package marker stating these are shipped implementations, not test doubles. |
-| `static_config_repository.py` | `StaticConfigRepository`: the calibrated thresholds, the Spanish checklist, and the placeholder coordinates with their strict environment override. |
+| `static_config_repository.py` | `StaticConfigRepository`: the calibrated thresholds, the Spanish checklist, and the sourced city-centre coordinates with their strict environment override. |
 | `static_contact_repository.py` | `StaticContactRepository`: one synthetic local contact whose handle is literally `stdout`, carrying no personal data. |
 | `in_memory_alert_repository.py` | `InMemoryAlertRepository`: the whole key-range query rule, with no I/O. |
 | `json_alert_repository.py` | `JsonFileAlertRepository`: the same store persisted atomically to one gitignored JSON file, so separate process invocations share state. |
@@ -216,7 +216,7 @@ This is real output, produced by the command above against the repository's own 
     - Ten a mano una linterna, un botiquín y los teléfonos de emergencia.
 ------------------------------------------------------------------------
 
-Ferreñafe  (-6.6400, -79.7900)  (PLACEHOLDER — pending confirmation)
+Ferreñafe  (-6.6360, -79.7899)
 Sources    senamhi: available (fetched 2026-09-04T12:00:00+00:00)
            open_meteo: available (fetched 2026-09-04T12:00:00+00:00)
 Notes      —
@@ -232,7 +232,7 @@ Notices    0 emitted
 
 Three things in that output are worth naming, because they are deliberate.
 
-The **coordinates carry a placeholder marker** on every run. Ferreñafe's exact latitude and longitude is still an open decision, so `AlertConfig.coordinates_are_placeholder` is `True` and the CLI prints `(PLACEHOLDER — pending confirmation)` beside them. Presenting a guess as verified would put a forecast for the wrong place under the project's name.
+The **coordinates are printed on every run**, because the point a forecast was fetched for is part of reading it. They are the sourced centre of the city, `6°38'10"S 79°47'23"W`, cited to two public references in `static_config_repository.py` and pinned by a test. Each run also prints how the point was obtained, `[public_reference]` for the default. They used to carry a `(PLACEHOLDER — pending confirmation)` marker instead, while the value was an unsourced guess; that marker and the boolean behind it are retired, and provenance came back as an enum after a security review argued that leaving no visible signal was the wrong trade here. See [adapters.md](./adapters.md).
 
 The **reasons are English and the message body is Spanish**, in the same output. Those are two audiences. The `Reasons` block is the operator's audit trail with the numbers in it. The message body is what a community member would read.
 
