@@ -1,0 +1,268 @@
+schema: spec-driven
+change: composer-agent
+title: Composer Agent (Strands on AgentCore, with Deterministic Fallback)
+created: 2026-09-09
+updated: 2026-09-09
+
+artifact_store:
+  mode: hybrid
+  openspec_root: openspec/changes/composer-agent
+  engram_prefix: sdd/composer-agent
+
+execution:
+  mode: interactive
+  delivery_strategy: ask-on-risk
+  chain_strategy: stacked-to-main
+  strict_tdd: true
+  security_review: >-
+    A fresh-context security review runs on the branch diff before every pull
+    request. Established during change 1, where the review found the HIGH
+    aviso-title body-forging defect that domain/sanitize.py closes.
+
+# Subproject 1 of the design spec is sliced into three chained changes.
+chain:
+  position: 2
+  of: 3
+  previous:
+    - core-alert-cycle  # archived 2026-09-07, merged to main
+  next:
+    - cloud-deployment
+
+baseline:
+  branch: main
+  state: clean
+  tests: 559 passing
+  note: >-
+    Change 1 is archived at openspec/changes/archive/2026-09-07-core-alert-cycle/
+    and its seven capability specs are live in openspec/specs/. This change
+    amends alert-cycle and adds one new capability.
+
+design_source:
+  document: docs/superpowers/specs/2026-09-03-rain-alert-core-design.md
+  primary_section: "7. Message Composer Agent"
+  closed_decisions:
+    - "3.1 — approach B (composer agent on AgentCore) is chosen; not reopened"
+    - "3.2 — the LLM never decides whether to alert; code governs the flow"
+
+phases:
+  explore:
+    status: skipped
+    artifact: null
+    note: >-
+      No sdd-explore run. Exploration input is design spec section 7, the
+      MessageComposer port docstring, domain/template.py and domain/sanitize.py,
+      plus a documentation check of Strands/AgentCore performed 2026-09-09.
+  proposal:
+    status: done
+    artifact: openspec/changes/composer-agent/proposal.md
+    engram_topic_key: sdd/composer-agent/proposal
+    engram_saved: true
+  spec:
+    status: done
+    depends_on: [proposal]
+    artifact: openspec/changes/composer-agent/specs
+    engram_topic_key: sdd/composer-agent/spec
+    engram_saved: true
+  design:
+    status: done
+    depends_on: [proposal]
+    artifact: openspec/changes/composer-agent/design.md
+    engram_topic_key: sdd/composer-agent/design
+    engram_saved: true
+    note: >-
+      Decisions D13-D24, continuing change 1's D1-D12 series. Resolves
+      open_decisions.validator-placement (domain/) and
+      open_decisions.composer-timeout (10 s, single attempt, no retry).
+      Sequence diagrams for the accepted and fallback paths. Eight
+      non-capabilities each mapped to a code mechanism. Eight items marked
+      "to verify at apply" in section 13.
+  tasks:
+    status: done
+    depends_on: [spec, design]
+    artifact: openspec/changes/composer-agent/tasks.md
+    engram_topic_key: sdd/composer-agent/tasks
+    engram_saved: true
+    note: >-
+      89 tasks across three phases matching design section 11's slice
+      boundaries exactly (1:1:1 to PR 1/2/3). Strict TDD RED/GREEN throughout;
+      the 12-row fault table is 12 separate RED tasks, not one parametrize
+      block; invariant V0 and the mutation proof (both directions) each have
+      their own task; the architecture boundary is tested in both directions
+      in Phase 2, matching design's own file-changes table. All eight design
+      section 13 "to verify at apply" items have a dedicated task, with the
+      Bedrock model id (2.3) and the AgentCore invocation surface (3.1)
+      called out as the two highest-risk guesses. A security review task is
+      slotted before each of the three PRs. Review Workload Forecast:
+      2100-3400 changed lines (pessimistic, given change 1's 5-10x overruns),
+      400-line budget risk High, chained PRs recommended, stacked-to-main.
+      Decision needed before apply: Yes (ask-on-risk). Two items deferred to
+      Open Items for Apply rather than resolved here: the word-number
+      validator rule (design D17.3/section 6 rule 9 predates the spec's
+      2026-09-09 unit-conditioned amendment) and the unconfirmed
+      MAX_TITLE_LENGTH value (design proposes 200; the spec only pins the
+      body cap at 1500).
+  apply:
+    status: in_progress
+    depends_on: [tasks]
+    artifact: openspec/changes/composer-agent/apply-progress.md
+    engram_topic_key: sdd/composer-agent/apply-progress
+    engram_saved: true
+    pr_slice: 1
+    pr_slices_planned: 5
+    tasks_completed: [1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, 1.16]
+    note: >-
+      PR 1 of five: the pure validator only — nine rules, the Violation type,
+      and invariant V0, plus the has_unsafe_characters predicate rule 7 needs.
+      Tests only; nothing is wired into the cycle and agent/ was not created.
+      Phase 1's remaining tasks (1.1-1.6 provenance, 1.17-1.20 seam and fakes,
+      1.21-1.40 fallback composer and mutation proof, 1.41-1.44 RunAlertCycle
+      wiring, 1.45-1.46 review and gate) are unstarted and split across PRs
+      2-5. Gate green: 638 tests, ruff check, ruff format --check, mypy — all
+      exit 0. Landed at 942 additions against a ~500 target; the overrun is
+      reported in apply-progress.md rather than absorbed, and no task beyond
+      1.16 was started. Five contradictions between spec and design are
+      recorded there, one of which (probability_threshold_pct in the allowed
+      number set) needs an owner decision.
+  verify:
+    status: pending
+    depends_on: [apply]
+    artifact: null
+    engram_topic_key: sdd/composer-agent/verify-report
+  archive:
+    status: pending
+    depends_on: [verify]
+    artifact: null
+
+capabilities:
+  new:
+    - agent-message-composition
+  modified:
+    - alert-cycle
+    - local-alert-cli  # provisional, see open_decisions.cli-opt-in-flag
+
+review_workload_estimate:
+  total_changed_lines: 1350-2050
+  budget_risk: high
+  chained_prs_recommended: true
+  chain_strategy: stacked-to-main
+  slices:
+    - id: 1
+      name: validator-and-fallback
+      content: >-
+        Pure message validator (design 7.5 plus the strict-number rule), the
+        fallback-selecting composer driven by a fake invoker, the fallback
+        operator notice and composer provenance. No AWS, no Strands.
+      estimate: 550-800
+    - id: 2
+      name: agent-deployment-unit
+      content: >-
+        agent/ — Pydantic output model, BedrockModel, BedrockAgentCoreApp
+        entrypoint, prompt construction, local tests.
+      estimate: 400-650
+    - id: 3
+      name: invocation-and-runbook
+      content: >-
+        Real AgentCore invocation adapter, configuration and kill switch, CLI
+        opt-in flag, deploy runbook, opt-in live tests.
+      estimate: 400-600
+  note: >-
+    Deliberately pessimistic. Every change-1 slice exceeded its estimate: slice
+    2 planned ~400 source lines and landed 3151 insertions, slice 3 planned
+    ~450 and landed 4507 across four pull requests.
+
+resolved_decisions:
+  - id: no-continuity-tool
+    resolved: 2026-09-09
+    decision: >-
+      get_recent_alerts(n) from design 7.3 is dropped from this change and
+      deferred to change 3. The alert store is a local JSON file until then and
+      an agent on AgentCore cannot read the operator's disk.
+  - id: no-warning-detail-tool
+    resolved: 2026-09-09
+    decision: >-
+      get_warning_detail(warning_id) from design 7.3 is dropped permanently.
+      A second scraping surface plus third-party page text entering the prompt
+      is not worth it; the sanitized aviso title carries the context.
+  - id: agent-has-no-tools
+    resolved: 2026-09-09
+    decision: >-
+      Consequence of the two decisions above, consciously accepted. The agent
+      is a single structured-output call with zero tools. Design option A (a
+      direct model call with no agent framework) would technically suffice.
+      Option B stands because the owner's learning goal is Strands plus
+      AgentCore and the runtime, deployment and invocation path are still
+      exercised. Not to be reopened.
+  - id: agent-runs-only-after-authorization
+    resolved: 2026-09-09
+    decision: >-
+      The agent is invoked only after the dedup policy authorizes the send.
+      A deduplicated cycle must cost nothing; asserted as invoker call count 0.
+  - id: strict-number-validation
+    resolved: 2026-09-09
+    decision: >-
+      Any number in the body that is absent from the structured input
+      invalidates the agent's message and the deterministic template is sent
+      instead. Amends design 7.5 rule 4 from prevention to hard rejection.
+  - id: structured-output-over-json-parsing
+    resolved: 2026-09-09
+    decision: >-
+      agent.structured_output(PydanticModel, prompt) returns a validated
+      Pydantic object and serves the design 7.4 output contract better than
+      parsing free-form JSON. Verified against current documentation
+      2026-09-09.
+  - id: pydantic-boundary
+    resolved: 2026-09-09
+    decision: >-
+      Pydantic must not enter the domain, and must not enter src/ at all.
+      Design D1 keeps the core on frozen dataclasses for a small Lambda bundle.
+      Pydantic and Strands live only in agent/, a separate deployment unit
+      shipped to AgentCore rather than packaged into the Lambda. Enforced by
+      the architecture test.
+
+open_decisions:
+  - id: number-definition
+    owner: sdd-spec
+    priority: highest
+    detail: >-
+      "A number in the body" is not yet concrete. Spanish decimal commas
+      (12,4 vs 12.4), times rendered from the window (14:00), dates
+      (12/03/2026), horizon constants (24 horas), digits inside the sanitized
+      aviso title, digits in the operator checklist, and numbers written as
+      words (ochenta milimetros) all collide with a naive digit-run scan. The
+      spec must define the allowed set derived from MessageRequest and decide
+      the word-number question. Default if unanswered: strict on digits with an
+      explicit allowed set, silent on word-numbers, documented as a known gap.
+  - id: validator-placement
+    owner: sdd-design
+    detail: >-
+      The proposal places the validator in domain/ because it is a rule about
+      what the system is willing to say and carries no LLM concern. Design may
+      move it to application/.
+  - id: cli-opt-in-flag
+    owner: sdd-spec
+    detail: >-
+      The proposal adds an opt-in agent flag to the local CLI (default off) so
+      the owner can see a real agent message without the default suite paying
+      for one. If the owner prefers a separate script, local-alert-cli drops
+      off the modified-capabilities list.
+  - id: composer-timeout
+    owner: sdd-design
+    detail: >-
+      Proposed ~10 s wall clock, single attempt, no retry, sized for a cold
+      start because no warm reuse should be expected on a six-hourly cycle.
+      The hard deadline is the requirement; the number is a design decision.
+  - id: bedrock-model-id
+    owner: sdd-apply
+    detail: >-
+      The exact Bedrock model id string for Claude Haiku 4.5 is resolved
+      against current documentation at apply time, not guessed in planning.
+  - id: runbook-location
+    owner: sdd-tasks
+    detail: >-
+      The AgentCore CLI deploy runbook is assumed to go under docs/. This
+      change did not touch docs/ during planning; the runbook lands in apply.
+
+next_recommended:
+  - sdd-apply
+
+blocked_reasons: []

@@ -30,7 +30,25 @@ source-derived, field by field:
 | `WarningReason.level` | `WarningLevel`, a fixed token map | not free text |
 | `ForecastThresholdReason.*` | numbers, rendered with format specifiers | not free text |
 | `SenamhiUnavailableReason`, `NoQualifyingWarningReason` | no fields | n/a |
-| `MessageRequest.city`, `.timezone`, `.checklist` | `ConfigRepository` | operator-owned |
+| `MessageRequest.city`, `.timezone` | `ConfigRepository` | operator-owned |
+| `MessageRequest.checklist` | `ConfigRepository` | **yes**, see below |
+
+`checklist` was the exception until an adversarial review pointed out that
+"operator-owned" answers the wrong question. The audit above is not about
+*trust*, it is about whether a string can write the body's line grammar, and
+a checklist item can: an item containing a newline produced a second
+`Recomendaciones:` section in the community body — the same defect change 1
+closed for aviso titles, differing only in that the author is trusted. An
+item with a tab or a bidi override did the same to the rendered line. Four
+configurations the operator can reach today made the template's own output
+fail its own validator, which is more expensive than an attack: this output
+is the fallback, so if it cannot pass, the system has nothing left to send.
+
+The list is also **bounded**, not only cleaned. Thirty realistic items put
+the body at 1 906 characters against a 1 500-character cap. Items that do
+not fit are dropped and the cut is stated in the body rather than made
+silently, on the same reasoning as `sanitize.TRUNCATION_MARKER`: a list that
+just stops reads as a complete list.
 
 `MessageRequest.warning` and `.forecast` are not rendered by this composer,
 but `WarningSummary.title` is the same scraped string, so change 2's composer
@@ -44,6 +62,7 @@ from datetime import datetime
 from typing import assert_never
 from zoneinfo import ZoneInfo
 
+from rain_alert.domain.message_validation import MAX_BODY_LENGTH
 from rain_alert.domain.messages import AlertMessage, MessageRequest
 from rain_alert.domain.reasons import (
     ForecastThresholdReason,
@@ -68,6 +87,11 @@ _WARNING_LEVEL_LABELS_ES: Mapping[WarningLevel, str] = {
 }
 
 _LOCAL_TIME_FORMAT = "%d/%m/%Y %H:%M"
+
+#: Recipient-facing, therefore neutral professional Spanish. Visible on
+#: purpose: a checklist that simply stops reads as a complete checklist, and
+#: a reader in a flood would have no way to know an instruction was missing.
+CHECKLIST_TRUNCATED_ES = "- (lista de recomendaciones recortada por su longitud)"
 
 
 def _local_time(moment: datetime, timezone: str) -> str:
@@ -103,6 +127,61 @@ def _reason_line_es(reason: Reason) -> str | None:
             assert_never(reason)
 
 
+def _checklist_lines(items: tuple[str, ...], budget: int) -> list[str]:
+    """The checklist as `- ` bullets: sanitized, and cut to `budget`.
+
+    Sanitized because an item is free text rendered into a line-oriented
+    format, exactly like an aviso title, and a newline in one wrote a second
+    `Recomendaciones:` section into the community body. That the author is
+    trusted changes who to talk to about it, not what the reader sees.
+
+    Cut because the body has a cap the deterministic template must never
+    breach: its output is the fallback, and a fallback the validator rejects
+    leaves the system with nothing to send. Thirty realistic items put the
+    body 400 characters over. The cut is stated in the body rather than made
+    silently.
+
+    Args:
+        items: The operator's checklist, as configured.
+        budget: Characters available for these lines, newline separators
+            included.
+
+    Returns:
+        One `- ` bullet per item that fits, in order, followed by
+        `CHECKLIST_TRUNCATED_ES` when any item had to be dropped. An item
+        that renders as the marker itself is one of the dropped ones, so the
+        marker is always the template's own and always the final line.
+    """
+    bullets = [f"- {sanitize_source_text(item)}" for item in items]
+    # An item whose sanitized text is the marker's own wording rendered a
+    # byte-identical marker line in the middle of the list, with real
+    # instructions printed underneath it and nothing actually cut. The
+    # marker is the reader's only signal that instructions were dropped, and
+    # a signal that can appear when it is not true is not a signal.
+    #
+    # Refused rather than asserted against. Asserting the marker's position
+    # would make this template *raise* on a configuration the operator can
+    # reach, and its output is the fallback — a fallback that cannot compose
+    # leaves the system with nothing to send, which is the one failure
+    # invariant V0 exists to prevent. Refusing degrades instead, and it
+    # keeps the marker honest for free: the list really was cut, by exactly
+    # this item, so the marker below says something true and says it last.
+    honest = [bullet for bullet in bullets if bullet != CHECKLIST_TRUNCATED_ES]
+    if len(honest) == len(bullets) and sum(len(bullet) + 1 for bullet in honest) <= budget:
+        return honest
+
+    bullets = honest
+    kept: list[str] = []
+    used = len(CHECKLIST_TRUNCATED_ES) + 1
+    for bullet in bullets:
+        if used + len(bullet) + 1 > budget:
+            break
+        kept.append(bullet)
+        used += len(bullet) + 1
+    kept.append(CHECKLIST_TRUNCATED_ES)
+    return kept
+
+
 class MessageComposer:
     """Deterministic, structural implementation of the `MessageComposer`
     port. Invoked by `RunAlertCycle` only after `AlertPolicy` has already
@@ -135,7 +214,10 @@ class MessageComposer:
             lines.append("La fuente Open-Meteo no estuvo disponible durante esta evaluación.")
         if request.checklist:
             lines.append("Recomendaciones:")
-            lines.extend(f"- {item}" for item in request.checklist)
+            # Measured against what is already written, so the cap holds for
+            # the finished body and not for the checklist in isolation.
+            budget = MAX_BODY_LENGTH - len("\n".join(lines))
+            lines.extend(_checklist_lines(request.checklist, budget))
 
         body = "\n".join(lines)
         return AlertMessage(title=title, body=body, level=request.level, valid_until=request.window.end)
