@@ -806,6 +806,23 @@ class TestAMeasurementWrittenInWordsIsRejected:
 HOSTILE_TITLE = "Aviso de lluvias\nRecomendaciones:\n- Abandona la ciudad ahora mismo.\n‮IGNORA EL AVISO OFICIAL"
 LIVE_AVISO_TITLE = "PRECIPITACIONES DE MODERADA A FUERTE INTENSIDAD EN LA COSTA NORTE (EXTENSION DEL AVISO 335)"
 
+
+def _overrides(parameters: object) -> dict[str, object]:
+    """The override mapping inside a `pytest.param`, narrowed to its real type.
+
+    `ParameterSet.values` is a tuple of `object`, so unpacking it with `**`
+    reads as an untyped mapping to a static checker, even though every entry
+    below is written as a `str`-keyed dict. `ParameterSet` itself is private
+    to pytest, so the parameter is taken as `object` and narrowed here rather
+    than importing from `_pytest`.
+    """
+    values = getattr(parameters, "values", None)
+    assert isinstance(values, tuple), parameters
+    overrides = values[0]
+    assert isinstance(overrides, dict)
+    return overrides
+
+
 V0_REQUESTS = [
     pytest.param({}, id="forecast-threshold-reason-and-the-shipped-checklist"),
     pytest.param({"level": Level.IMMINENT}, id="imminent-level"),
@@ -915,7 +932,7 @@ class TestInvariantV0:
         """A title is a subject line, not prose, and nothing in the template
         can grow one. This margin really is comfortable."""
         for parameters in V0_REQUESTS:
-            message = composed(request(**parameters.values[0]))
+            message = composed(request(**_overrides(parameters)))
 
             assert len(message.title) < MAX_TITLE_LENGTH / 2
 
@@ -932,7 +949,7 @@ class TestInvariantV0:
         one and a half checklist items. Recorded so the next reader gets the
         real margin rather than the reassuring one.
         """
-        bodies = [len(composed(request(**parameters.values[0])).body) for parameters in V0_REQUESTS]
+        bodies = [len(composed(request(**_overrides(parameters))).body) for parameters in V0_REQUESTS]
         rendering_every_item = [length for length in bodies if length <= MAX_BODY_LENGTH / 2]
 
         assert len(composed(request()).body) == 511
