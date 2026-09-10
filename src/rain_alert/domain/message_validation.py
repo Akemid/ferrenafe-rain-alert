@@ -382,8 +382,22 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
 #: `veintidós mil cuatrocientos` is a grammar, and every bug in that grammar
 #: fails lax. A word-number here already means the draft disobeyed the prompt's
 #: instruction to render quantities in digits, which is enough to refuse it.
+#:
+#: `un`, `uno` and `una` are deliberately **absent**, and they are connectors
+#: below instead. They are the Spanish indefinite articles before they are
+#: numerals, so with them here the rule refused `Espera una hora después de
+#: que pare la lluvia` and `Puede caer un mm` — ordinary prose, and exactly
+#: the false positive the spec and the design both warned this rule about.
+#: A compound still fires on its leading numeral (`treinta y un milímetros`
+#: on `treinta`), so the only thing lost is a word-number of magnitude one.
+#: Recorded as wrong-lax, knowingly, and narrow.
+#:
+#: The indefinite plurals (`cientos`, `miles`, `decenas`, `centenas`,
+#: `millares`) were missing, so `Se esperan cientos de milímetros de lluvia`
+#: escaped the rule entirely. They quantify nothing precise, which is what
+#: makes them dangerous in a rainfall sentence rather than harmless.
 _NUMERAL_WORDS = frozenset({
-    "cero", "un", "uno", "una", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve",
+    "cero", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve",
     "diez", "once", "doce", "trece", "catorce", "quince", "dieciseis", "diecisiete", "dieciocho", "diecinueve",
     "veinte", "veintiun", "veintiuno", "veintiuna", "veintidos", "veintitres", "veinticuatro", "veinticinco",
     "veintiseis", "veintisiete", "veintiocho", "veintinueve",
@@ -391,6 +405,7 @@ _NUMERAL_WORDS = frozenset({
     "cien", "ciento", "doscientos", "doscientas", "trescientos", "trescientas", "cuatrocientos", "cuatrocientas",
     "quinientos", "quinientas", "seiscientos", "seiscientas", "setecientos", "setecientas",
     "ochocientos", "ochocientas", "novecientos", "novecientas", "mil", "millon", "millones",
+    "cientos", "cientas", "miles", "millares", "decenas", "centenas",
 })  # fmt: skip
 
 #: The units this system actually reports. The rule is deliberately narrower
@@ -399,8 +414,37 @@ _NUMERAL_WORDS = frozenset({
 #: unconditioned version would reject the template's own body.
 _REPORTED_UNITS = frozenset({"mm", "milimetro", "milimetros", "hora", "horas", "h", "porciento"})
 
-#: Words that may sit between a numeral and its unit without breaking the link.
-_NUMERAL_CONNECTORS = frozenset({"y", "de", "con", "coma", "punto"})
+#: Nouns that carry a reported unit without writing it. Read **backwards
+#: only**, because forwards they are ordinary subjects: `probabilidad de 60 %`
+#: must stay silent, while `probabilidad máxima de ochenta` must not.
+_IMPLIED_UNIT_NOUNS = frozenset({
+    "probabilidad", "probabilidades", "porcentaje", "precipitacion", "precipitaciones",
+})  # fmt: skip
+
+#: Words that may sit between a numeral and its unit without breaking the
+#: link. `o`, `u`, `mas`, `menos` and `hasta` were missing, so
+#: `ochenta o más milímetros` escaped on `o`; `un`/`una`/`uno` are here
+#: rather than in the lexicon, for the reason given above.
+_NUMERAL_CONNECTORS = frozenset({
+    "y", "de", "con", "coma", "punto",
+    "un", "uno", "una", "unos", "unas",
+    "o", "u", "mas", "menos", "hasta", "casi", "aproximadamente", "cerca", "alrededor",
+})  # fmt: skip
+
+#: Additionally skippable when reading backwards from a numeral to the noun
+#: that carries its unit. Spanish puts the qualifier between the two —
+#: `probabilidad máxima de ochenta` — so a backward scan that stopped at the
+#: first adjective would find nothing.
+_QUALIFIERS_BEFORE_A_NUMERAL = _NUMERAL_CONNECTORS | frozenset({
+    "maxima", "maximo", "minima", "minimo", "total", "acumulada", "acumulado",
+    "estimada", "estimado", "prevista", "previsto", "esperada", "esperado",
+    "aproximada", "aproximado", "diaria", "diario",
+})  # fmt: skip
+
+#: How far back the implied-unit noun may sit. Four is what
+#: `probabilidad máxima de <numeral>` needs; wider starts reaching across
+#: clauses and picking up a unit the numeral has nothing to do with.
+_BACKWARD_WINDOW = 4
 
 _WORD_OR_NUMBER = re.compile(r"[a-z]+|\d+|%")
 
@@ -411,8 +455,8 @@ def _fold(text: str) -> str:
     return "".join(character for character in decomposed if not unicodedata.combining(character))
 
 
-def _quantifies_a_reported_unit(tokens: list[str], start: int) -> str | None:
-    """The unit `tokens[start]` quantifies, or `None` when it quantifies none.
+def _unit_written_after(tokens: list[str], start: int) -> str | None:
+    """The unit written after `tokens[start]`, or `None`.
 
     Intervening numerals and connectors are skipped, so `treinta y cinco
     milimetros` links `treinta` to `milimetros`. `por ciento` is matched as a
@@ -430,6 +474,33 @@ def _quantifies_a_reported_unit(tokens: list[str], start: int) -> str | None:
     return None
 
 
+def _unit_implied_before(tokens: list[str], start: int) -> str | None:
+    """The unit the words in front of `tokens[start]` give it, or `None`.
+
+    The forward scan alone missed the phrasing that matters most, because it
+    is the template's own: `Hay una probabilidad máxima de ochenta de que el
+    río se desborde` states a percentage without writing one, so a model
+    imitating the template writes an invented figure the same way. `Lluvia en
+    milímetros: ochenta` puts the unit in front as well.
+
+    Only `_QUALIFIERS_BEFORE_A_NUMERAL` may be crossed, and only
+    `_BACKWARD_WINDOW` of them. Anything else ends the scan, which is what
+    keeps `al menos dos días` silent: `al` is not a qualifier, so the `horas`
+    two sentences earlier is never reached.
+    """
+    index = start - 1
+    for _ in range(_BACKWARD_WINDOW):
+        if index < 0:
+            return None
+        token = tokens[index]
+        if token in _REPORTED_UNITS or token in _IMPLIED_UNIT_NOUNS:
+            return token
+        if token not in _QUALIFIERS_BEFORE_A_NUMERAL:
+            return None
+        index -= 1
+    return None
+
+
 def _word_numbers_quantifying_a_unit(residue: str) -> tuple[tuple[str, str], ...]:
     """Every `(numeral, unit)` pair the residue states in words."""
     tokens = _WORD_OR_NUMBER.findall(_fold(residue))
@@ -437,7 +508,7 @@ def _word_numbers_quantifying_a_unit(residue: str) -> tuple[tuple[str, str], ...
     for index, token in enumerate(tokens):
         if token not in _NUMERAL_WORDS:
             continue
-        unit = _quantifies_a_reported_unit(tokens, index)
+        unit = _unit_written_after(tokens, index) or _unit_implied_before(tokens, index)
         if unit is not None:
             found.append((token, unit))
     return tuple(found)

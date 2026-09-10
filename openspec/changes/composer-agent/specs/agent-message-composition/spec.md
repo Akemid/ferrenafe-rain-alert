@@ -210,6 +210,46 @@ The digit rule above cannot see a quantity spelled out, so a model could write "
 
 Narrowing to a reported unit targets the actual threat, which is inventing a rainfall or probability figure, and leaves ordinary prose alone. It is deliberately narrower than the digit rule: a word-number that quantifies anything else, such as days or objects, is not this requirement's concern.
 
+*Amended 2026-09-10, after an adversarial review.* Two corrections, in opposite directions.
+
+**"Directly quantifies" was read too narrowly, and let invented quantities through in ordinary Spanish.** The link between a numeral and its unit MUST be recognised when the unit is written after the numeral across a comparison or an indefinite plural, and when the unit sits **before** the numeral, including when it is implied by a noun that carries it (`probabilidad`, `porcentaje`, `precipitación`). All four of the following were accepted:
+
+| Body | Escape |
+|---|---|
+| `Hay una probabilidad máxima de ochenta de que el río se desborde.` | the unit is carried by "probabilidad", and this is the template's own phrasing, so it is what a model imitating it writes |
+| `Se esperan cientos de milímetros de lluvia.` | `cientos` was absent from the numeral lexicon |
+| `Se esperan ochenta o más milímetros de lluvia.` | `o` and `más` ended the scan |
+| `Lluvia en milímetros: ochenta.` | the unit came first |
+
+The backward reading is bounded — a short window of qualifiers only — because a wider one reaches across clauses and attaches a numeral to a unit it has nothing to do with. That bound is what keeps the checklist's "al menos dos días" silent.
+
+**`un`/`una`/`uno` are no longer numerals for this rule.** The scenario below said they must not fire on ordinary prose, and the implementation still fired on it: `Espera una hora después de que pare la lluvia.` and `Puede caer un mm.` were both rejected, because the existing cases only tested the articles in front of *non*-units. They are read as connectors now, so they still bridge a compound (`treinta y un milímetros` fires on `treinta`) and quantify nothing on their own. The cost is a word-number of magnitude one going unrefused, which is wrong-lax, recorded, and far cheaper than a rule that refuses the ordinary Spanish for "wait an hour".
+
+#### Scenario: A unit carried by the noun in front of the numeral is recognised
+- GIVEN a candidate body states "Hay una probabilidad máxima de ochenta de que el río se desborde"
+- WHEN validation runs
+- THEN the message is rejected, because "probabilidad" carries the unit "ochenta" quantifies
+
+#### Scenario: A unit written before the numeral is recognised
+- GIVEN a candidate body states "Lluvia en milímetros: ochenta"
+- WHEN validation runs
+- THEN the message is rejected
+
+#### Scenario: A comparison does not break the link to the unit
+- GIVEN a candidate body states "ochenta o más milímetros"
+- WHEN validation runs
+- THEN the message is rejected
+
+#### Scenario: An indefinite plural is still a numeral
+- GIVEN a candidate body states "cientos de milímetros"
+- WHEN validation runs
+- THEN the message is rejected
+
+#### Scenario: The indefinite article in front of a reported unit is still an article
+- GIVEN a body containing "Espera una hora después de que pare la lluvia" or "Puede caer un mm"
+- WHEN validation runs
+- THEN neither raises a violation
+
 #### Scenario: A rainfall amount written in words is rejected
 - GIVEN a candidate body states "ochenta milímetros" instead of a digit form
 - WHEN validation runs

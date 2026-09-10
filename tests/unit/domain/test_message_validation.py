@@ -619,23 +619,70 @@ class TestANumberIsOnlyAllowedAsTheQuantityItActuallyIs:
         assert "mm" in violations[0].detail
 
 
+WORD_NUMBER = {ValidationRule.WORD_NUMBER}
+
 WORD_NUMBER_CASES = [
-    pytest.param("Se esperan ochenta milimetros de lluvia.", True, id="a-rainfall-amount-written-in-words-is-rejected"),
-    pytest.param("Se esperan ochenta milímetros de lluvia.", True, id="the-accented-form-is-the-same-word"),
-    pytest.param("Se esperan ochenta mm de lluvia.", True, id="the-abbreviated-unit-counts-too"),
-    pytest.param("La probabilidad es de setenta por ciento.", True, id="a-probability-written-in-words-is-rejected"),
-    pytest.param("Llovera durante veinticuatro horas.", True, id="an-hour-count-written-in-words-is-rejected"),
-    pytest.param("Se esperan treinta y cinco milimetros.", True, id="a-compound-number-word-is-rejected"),
+    # The direct forms, all of which the review confirmed were already caught.
     pytest.param(
-        "Almacena agua potable para al menos dos dias.", False, id="the-checklists-own-wording-is-not-rejected"
+        "Se esperan ochenta milimetros de lluvia.", WORD_NUMBER, id="a-rainfall-amount-written-in-words-is-rejected"
     ),
-    pytest.param("Ten a mano una linterna y un botiquin.", False, id="the-spanish-indefinite-article-is-not-a-number"),
+    pytest.param("Se esperan ochenta milímetros de lluvia.", WORD_NUMBER, id="the-accented-form-is-the-same-word"),
+    pytest.param("Se esperan ochenta mm de lluvia.", WORD_NUMBER, id="the-abbreviated-unit-counts-too"),
+    pytest.param(
+        "La probabilidad es de setenta por ciento.", WORD_NUMBER, id="a-probability-written-in-words-is-rejected"
+    ),
+    pytest.param("Llovera durante veinticuatro horas.", WORD_NUMBER, id="an-hour-count-written-in-words-is-rejected"),
+    pytest.param("Se esperan treinta y cinco milimetros.", WORD_NUMBER, id="a-compound-number-word-is-rejected"),
+    # The escapes the review found. Each is ordinary Spanish, and the first
+    # is the template's own phrasing, so it is what a model imitating the
+    # template would write.
+    pytest.param(
+        "Hay una probabilidad maxima de ochenta de que el rio se desborde.",
+        WORD_NUMBER,
+        id="the-unit-is-implied-by-the-noun-in-front-of-the-numeral",
+    ),
+    pytest.param(
+        "Hay una probabilidad máxima de ochenta de que el río se desborde.",
+        WORD_NUMBER,
+        id="the-accented-form-of-the-implied-unit-phrasing",
+    ),
+    pytest.param(
+        "Se esperan cientos de milimetros de lluvia.",
+        WORD_NUMBER,
+        id="an-indefinite-numeral-is-still-a-numeral",
+    ),
+    pytest.param(
+        "Se esperan ochenta o mas milimetros de lluvia.",
+        WORD_NUMBER,
+        id="a-comparison-does-not-break-the-link-to-the-unit",
+    ),
+    pytest.param(
+        "Lluvia en milimetros: ochenta.",
+        WORD_NUMBER,
+        id="the-unit-can-come-before-the-numeral",
+    ),
+    # Ordinary prose, which the rule must leave alone.
+    pytest.param(
+        "Almacena agua potable para al menos dos dias.", set(), id="the-checklists-own-wording-is-not-rejected"
+    ),
+    pytest.param("Ten a mano una linterna y un botiquin.", set(), id="the-spanish-indefinite-article-is-not-a-number"),
     pytest.param(
         "Hay una probabilidad maxima de 60 % de lluvia.",
-        False,
+        set(),
         id="an-article-in-front-of-a-digit-quantity-is-not-a-number",
     ),
-    pytest.param("Protege documentos y aparatos electricos.", False, id="ordinary-prose-is-left-alone"),
+    pytest.param(
+        "Espera una hora despues de que pare la lluvia.",
+        set(),
+        id="the-article-in-front-of-a-reported-unit-is-still-an-article",
+    ),
+    pytest.param(
+        "Espera una hora después de que pare la lluvia.",
+        set(),
+        id="the-accented-form-of-the-article-in-front-of-a-unit",
+    ),
+    pytest.param("Puede caer un mm.", set(), id="the-masculine-article-in-front-of-a-reported-unit"),
+    pytest.param("Protege documentos y aparatos electricos.", set(), id="ordinary-prose-is-left-alone"),
 ]
 
 
@@ -644,20 +691,42 @@ class TestAMeasurementWrittenInWordsIsRejected:
     could write "ochenta milímetros" and escape it entirely.
 
     The rule is deliberately narrow: it fires only when a Spanish number word
-    directly quantifies a unit this system reports — millimetres, a
-    percentage, or hours. An unconditioned version would reject the shipped
-    template's own checklist wording ("al menos dos días", "un botiquín",
-    "una linterna"), and `un`/`una` are the ordinary indefinite articles, so
-    it would fire on almost any sentence.
+    quantifies a unit this system reports — millimetres, a percentage, or
+    hours. An unconditioned version would reject the shipped template's own
+    checklist wording ("al menos dos días"), and it would fire on almost any
+    sentence.
+
+    Two corrections from an adversarial review shape the cases below.
+
+    **The scan looked forward only, and skipped a connector set of five
+    words.** So `ochenta o más milímetros` escaped on `o`, `cientos de
+    milímetros` escaped because `cientos` was missing from the lexicon, and
+    `Lluvia en milímetros: ochenta` escaped because the unit came first. The
+    worst of them was `Hay una probabilidad máxima de ochenta`, where the
+    unit is carried by the noun rather than written after the figure — and
+    that is the deterministic template's own phrasing, so it is exactly what
+    a model imitating the template would produce.
+
+    **`un`/`una` fired on ordinary prose.** They were in the lexicon, so
+    `Espera una hora después de que pare la lluvia` and `Puede caer un mm`
+    were both refused. They are the Spanish indefinite articles before they
+    are numerals, and the specification and the design both single them out
+    as the thing that must not fire on prose. They are read as connectors
+    now: they still bridge a compound (`treinta y un milímetros` fires on
+    `treinta`), and they no longer quantify anything on their own. The cost
+    is one number of magnitude one, wrong-lax and recorded.
+
+    Every case asserts the **exact** rule set, like every other block in this
+    module. The membership-style assertion this replaced is where the
+    `una hora` false positive hid: nothing in it could notice a rule firing
+    on something it was never asked about.
     """
 
-    @pytest.mark.parametrize(("body_text", "rejected"), WORD_NUMBER_CASES)
-    def test_only_a_word_number_quantifying_a_reported_unit_is_rejected(self, body_text, rejected) -> None:
+    @pytest.mark.parametrize(("body_text", "expected"), WORD_NUMBER_CASES)
+    def test_the_expected_rules_fire_and_no_others(self, body_text, expected) -> None:
         message_request = request()
 
-        fired = ValidationRule.WORD_NUMBER in rules_for(message_request, spoken(message_request, body_text))
-
-        assert fired is rejected
+        assert rules_for(message_request, spoken(message_request, body_text)) == expected
 
     def test_the_violation_names_the_word_and_the_unit(self) -> None:
         message_request = request()
