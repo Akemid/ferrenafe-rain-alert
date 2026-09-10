@@ -29,7 +29,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
@@ -128,7 +128,29 @@ def _rendered_lines(body: str) -> list[str]:
 #: `12/03/2027` is never read as the three independent numbers `12`, `03` and
 #: `2027` — a day that happens to match some unrelated field would otherwise
 #: launder the rest of the date past the rule.
-_CANDIDATE_NUMBER = re.compile(r"\d{1,2}/\d{1,2}/\d{4}|\d{1,2}:\d{2}|\d+(?:[.,]\d+)?")
+#:
+#: The decimal alternative takes every separator it can reach in one token
+#: (`\d+(?:[.,]\d+)*`) rather than stopping at the first group, so `1.234,5`
+#: arrives here as one ambiguous token and is refused as one, instead of
+#: silently becoming the two unrelated numbers `1.234` and `5`.
+#:
+#: A leading sign is part of the figure. Without it `-12,4 mm` matched the
+#: allowed `12.4` and reached a reader as a negative rainfall reading. The
+#: sign is only taken when it touches the digits, so the body's own `- `
+#: bullet prefix is unaffected.
+#:
+#: Superscript and subscript digits are matched as their own alternative,
+#: U+2070/U+00B9/U+00B2/U+00B3, U+2074-U+2079 and U+2080-U+2089, and never
+#: read as a quantity. Before this they escaped extraction entirely, so a
+#: body could write a rainfall figure in them and face no rule at all. Cost,
+#: accepted: a body writing `km` + U+00B2 outside a quoted title is refused
+#: too. Wrong-strict, and narrow.
+_CANDIDATE_NUMBER = re.compile(
+    r"\d{1,2}/\d{1,2}/\d{4}"
+    r"|\d{1,2}:\d{2}"
+    r"|[-\u2212]?\d+(?:[.,]\d+)*"
+    r"|[\u00b2\u00b3\u00b9\u2070\u2074-\u2079\u2080-\u2089]+"
+)
 
 _LOCAL_DATE_FORMAT = "%d/%m/%Y"
 _LOCAL_TIME_FORMAT = "%H:%M"
@@ -163,13 +185,60 @@ def _residue(request: MessageRequest, candidate: AlertMessage) -> str:
     return text
 
 
+#: One integer part, at most one separator, one fraction, **ASCII digits
+#: only**. Anything the tokenizer can emit that this does not match — a sign,
+#: a second separator, a superscript run, a non-ASCII digit family — is not a
+#: quantity this system will read.
+#:
+#: `[0-9]` rather than `\d` is load-bearing and was found by writing the test
+#: that assumed the opposite. `\d` matches every Unicode decimal digit and
+#: `Decimal` parses every one of them, so `१२.४`, `١٢.٤` and `１２.４` all
+#: canonicalized to 12.4 and matched a millimetre reading — putting a
+#: rainfall figure a Ferreñafe reader cannot read in front of them, with the
+#: validator's approval. The tokenizer above still *extracts* with `\d`, so
+#: those figures reach this check and are refused rather than going unseen.
+_PLAIN_DECIMAL = re.compile(r"[0-9]+(?:[.,][0-9]+)?")
+
+#: A separator followed by exactly three digits is the Spanish thousands
+#: group, not a decimal, and no honest token needs that shape here.
+_THOUSANDS_GROUP_LENGTH = 3
+
+
 def _canonical(token: str) -> Decimal | None:
-    """`12,4`, `12.4`, `12.40` and `012.4` are one quantity, and `None` is a
-    token that is not a quantity at all."""
-    try:
-        return Decimal(token.replace(",", "."))
-    except InvalidOperation:  # pragma: no cover - the tokenizer cannot emit one
+    """`12,4`, `12.4` and `12,40` are one quantity; `None` is a token this
+    system refuses to read as a quantity at all.
+
+    **Why the form is judged and not only the value.** Canonicalizing first
+    threw the writing away: `Decimal("12.400") == Decimal("12.4")`, so with
+    `accumulated_mm = 12.4` a body saying `12.400 mm` was accepted, and in
+    Peruvian Spanish that reads as twelve thousand four hundred millimetres.
+    `12,400 mm` and `0012,4 mm` passed the same way.
+
+    **The alternative, and why not.** Comparing against the strings the
+    template would render would close the same hole, but it would reject
+    `12,40` — which the spec accepts on purpose, since it is the same
+    quantity at the same precision — and it would need one rendered form per
+    separator convention, which is a table that will drift. Refusing the
+    ambiguous *form* keeps the equivalences the template can actually
+    produce and refuses the ones no honest draft needs:
+
+    | Token | Read as | Why |
+    |---|---|---|
+    | `12,4`, `12.4`, `12,40` | 12.4 | forms the template's `{:.1f}` can produce |
+    | `12.400`, `12,400` | nothing | a thousands group is what a reader sees |
+    | `1.234,5` | nothing | two separators cannot both be decimal |
+    | `0012,4` | nothing | zero padding is not a form this system emits |
+    | `-12,4` | nothing | no value on a request is negative |
+    | `१२.४` | nothing | not a digit family a Ferreñafe reader can read |
+    """
+    if _PLAIN_DECIMAL.fullmatch(token) is None:
         return None
+    integer, _, fraction = token.replace(",", ".").partition(".")
+    if len(integer) > 1 and integer.startswith("0"):
+        return None
+    if len(fraction) == _THOUSANDS_GROUP_LENGTH:
+        return None
+    return Decimal(f"{integer}.{fraction}" if fraction else integer)
 
 
 class NumberUnit(StrEnum):

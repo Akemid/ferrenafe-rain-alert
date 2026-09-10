@@ -172,6 +172,36 @@ The bare-figure allowance is kept on purpose and in the other direction: a body 
 - WHEN the body states "se esperan 80 mm"
 - THEN the message is rejected and the template's output is sent instead
 
+### Requirement: A candidate whose written form is ambiguous is not read as a quantity
+
+Normalizing the decimal separator MUST NOT be allowed to erase the difference between two figures a reader would read differently. A candidate token MUST be refused, whatever it would canonicalize to, when its written form is one the deterministic template could not have produced: a separator followed by exactly three digits (the Spanish thousands group), more than one separator in a single token, a zero-padded integer part, a leading sign, superscript or subscript digits, or a non-ASCII digit family.
+
+*Added 2026-09-10, after an adversarial review.* `Decimal("12.400") == Decimal("12.4")`, so with `accumulated_mm = 12.4` the body "Se pronostican 12.400 mm" was accepted — and in Peruvian Spanish that reads as twelve thousand four hundred millimetres. `12,400 mm` and `0012,4 mm` passed the same way, and `-12,4 mm` reached a reader as a negative reading of an allowed value.
+
+Two closures were available. Comparing against the strings the template renders would work, but it would reject `12,40`, which the precision-equivalence rule above accepts on purpose, and it would need one rendered form per separator convention. Refusing the ambiguous **form** was chosen instead: it keeps every equivalence the template can produce and refuses only shapes no honest draft needs.
+
+Writing the test for the digit families found that the review's own note was wrong about them. `re`'s `\d` matches every Unicode decimal digit and `Decimal` parses every one, so `१२.४`, `١٢.٤` and `１２.４` each canonicalized to 12.4, matched `accumulated_mm`, and were accepted — putting a rainfall figure the community cannot read in front of it with the validator's approval. Superscripts escaped extraction entirely. Both are refused here on the same ground.
+
+#### Scenario: A thousands group is not the quantity it canonicalizes to
+- GIVEN `accumulated_mm = 12.4`
+- WHEN the body states "12.400 mm" or "12,400 mm"
+- THEN the message is rejected, because a reader reads twelve thousand four hundred
+
+#### Scenario: A precision equivalence the template can produce still passes
+- GIVEN `accumulated_mm = 12.4`
+- WHEN the body states "12,4 mm", "12.4 mm" or "12,40 mm"
+- THEN the number is accepted
+
+#### Scenario: A sign is part of the figure
+- GIVEN `accumulated_mm = 12.4`
+- WHEN the body states "-12,4 mm"
+- THEN the message is rejected, because no value on a request is negative
+
+#### Scenario: A figure a reader cannot read is refused
+- GIVEN `accumulated_mm = 12.4`
+- WHEN the body states the same value in superscript digits, or in a non-ASCII digit family
+- THEN the message is rejected, whatever the token canonicalizes to
+
 ### Requirement: A measurement written in words is rejected
 
 The digit rule above cannot see a quantity spelled out, so a model could write "ochenta milímetros" and escape it entirely. The validator MUST therefore reject a body in which a Spanish number word directly quantifies a **unit this system reports**: a millimetre amount, a percentage, or an hour count. The prompt MUST separately instruct the model to render every quantity in digits; that instruction is not enforcement.

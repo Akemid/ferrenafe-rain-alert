@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 
@@ -418,6 +419,108 @@ class TestEveryNumberInTheBodyIsTraceableToTheRequest:
         )
 
         assert rules_for(message_request, spoken(message_request, "El umbral era de 70 %.")) == {
+            ValidationRule.UNKNOWN_NUMBER
+        }
+
+
+NUMERIC_FORM_CASES = [
+    pytest.param(
+        "Se pronostican 12.400 mm de lluvia.",
+        {ValidationRule.UNKNOWN_NUMBER},
+        id="a-dot-thousands-group-is-not-the-same-quantity",
+    ),
+    pytest.param(
+        "Se pronostican 12,400 mm de lluvia.",
+        {ValidationRule.UNKNOWN_NUMBER},
+        id="a-comma-thousands-group-is-not-the-same-quantity",
+    ),
+    pytest.param(
+        "Se pronostican 1.234,5 mm de lluvia.",
+        {ValidationRule.UNKNOWN_NUMBER},
+        id="two-separators-in-one-token-are-ambiguous",
+    ),
+    pytest.param(
+        "Se pronostican 0012,4 mm de lluvia.",
+        {ValidationRule.UNKNOWN_NUMBER},
+        id="a-zero-padded-figure-is-not-a-form-the-template-can-produce",
+    ),
+    pytest.param(
+        "Se pronostican -12,4 mm de lluvia.",
+        {ValidationRule.UNKNOWN_NUMBER},
+        id="a-sign-is-part-of-the-figure-and-no-request-value-is-negative",
+    ),
+    pytest.param(
+        "Se esperan ⁸⁰ mm de lluvia.",
+        {ValidationRule.UNKNOWN_NUMBER},
+        id="superscript-digits-are-still-digits-to-a-reader",
+    ),
+    pytest.param(
+        "Se pronostican 12,4 mm de lluvia.",
+        set(),
+        id="the-form-the-template-produces-is-accepted",
+    ),
+    pytest.param(
+        "Se pronostican 12,40 mm de lluvia.",
+        set(),
+        id="one-trailing-zero-is-still-the-same-precision",
+    ),
+    pytest.param(
+        "Se pronostican 12.4 mm de lluvia.",
+        set(),
+        id="the-dot-decimal-separator-is-accepted",
+    ),
+]
+
+
+class TestANumericFormAReaderCanMisreadIsRefused:
+    """Rule 8 compared canonicalized `Decimal` values, and canonicalization
+    threw away the writing. `Decimal("12.400") == Decimal("12.4")`, so with
+    `accumulated_mm = 12.4` the body "Se pronostican 12.400 mm" was accepted
+    — and in Peruvian Spanish that reads as twelve thousand four hundred
+    millimetres.
+
+    Two options were on the table. Comparing against the rendered strings the
+    template would produce would also have closed it, but it would have
+    rejected "12,40", which the spec's precision-equivalence rule accepts on
+    purpose, and it would need one rendered form per separator convention.
+    The rule chosen instead refuses the *form*: a token whose separator use
+    is ambiguous is not read as a quantity at all, whatever it would have
+    canonicalized to. Equivalences the template can actually produce survive.
+    """
+
+    @pytest.mark.parametrize(("body_text", "expected"), NUMERIC_FORM_CASES)
+    def test_the_expected_rules_fire_and_no_others(self, body_text, expected) -> None:
+        message_request = request()
+
+        assert rules_for(message_request, spoken(message_request, body_text)) == expected
+
+    def test_the_thousands_form_is_named_in_the_violation(self) -> None:
+        message_request = request()
+
+        violations = validate_message(message_request, spoken(message_request, "Se pronostican 12.400 mm."))
+
+        assert [violation.rule for violation in violations] == [ValidationRule.UNKNOWN_NUMBER]
+        assert "12.400" in violations[0].detail
+
+    @pytest.mark.parametrize(
+        "figure",
+        ["１２.４", "١٢.٤", "१२.४"],
+        ids=["fullwidth", "arabic-indic", "devanagari"],
+    )
+    def test_a_non_ascii_digit_family_is_refused(self, figure: str) -> None:
+        """The review recorded these as already rejected. They were not.
+
+        `re`'s `\\d` matches every Unicode decimal digit and `Decimal`
+        *parses* every one of them, so each figure above canonicalized to
+        exactly 12.4 and matched `accumulated_mm` — a rainfall reading a
+        Ferreñafe reader cannot read, accepted as if it were the template's
+        own. They are refused here on the same ground as the thousands
+        group: a form this system could not have produced.
+        """
+        message_request = request()
+
+        assert Decimal(figure) == Decimal("12.4")
+        assert rules_for(message_request, spoken(message_request, f"Se pronostican {figure} mm.")) == {
             ValidationRule.UNKNOWN_NUMBER
         }
 
