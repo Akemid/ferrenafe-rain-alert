@@ -746,6 +746,62 @@ class TestANumberIsOnlyAllowedAsTheQuantityItActuallyIs:
 
         assert rules_for(message_request, spoken(message_request, body_text)) == expected
 
+    @pytest.mark.parametrize(
+        ("body_text", "expected"),
+        [
+            pytest.param("Se esperan 70 (mm).", {ValidationRule.UNKNOWN_NUMBER}, id="a-parenthesised-unit"),
+            pytest.param("Se esperan 70-mm.", {ValidationRule.UNKNOWN_NUMBER}, id="a-hyphenated-unit"),
+            pytest.param("Se esperan 70 mms.", {ValidationRule.UNKNOWN_NUMBER}, id="the-plural-abbreviation"),
+            pytest.param("Se esperan 70 [mm].", {ValidationRule.UNKNOWN_NUMBER}, id="a-bracketed-unit"),
+            pytest.param("Se esperan 70 «mm».", {ValidationRule.UNKNOWN_NUMBER}, id="a-quoted-unit"),
+            pytest.param("Llovera durante 70 hs.", {ValidationRule.UNKNOWN_NUMBER}, id="the-plural-hour-abbreviation"),
+            pytest.param("Se esperan 3,0 (mm).", set(), id="a-parenthesised-unit-on-a-figure-the-request-carries"),
+            pytest.param("Se esperan 3,0-mm.", set(), id="a-hyphenated-unit-on-a-figure-the-request-carries"),
+            pytest.param("Se esperan 3,0 mms.", set(), id="the-plural-abbreviation-on-a-figure-the-request-carries"),
+        ],
+    )
+    def test_a_unit_is_still_the_unit_across_punctuation_and_plural(self, body_text, expected) -> None:
+        """The unit was matched only at the exact offset after the figure and
+        only in the spellings the template happens to emit, so anything else
+        routed the token to the union — the unit-blind set again, reachable
+        by a bracket, a hyphen or an `s`.
+
+        Every case here is a 70 against a 3.0 mm forecast whose probability
+        is 70: the single most likely hallucination this validator will see,
+        wearing punctuation.
+        """
+        message_request = request(**UNIT_CONFUSION)
+
+        assert rules_for(message_request, spoken(message_request, body_text)) == expected
+
+    @pytest.mark.parametrize(
+        "body_text",
+        [
+            "Llovera 3 hasta que pare.",
+            "El aviso 70 horario no existe.",
+        ],
+    )
+    def test_the_gap_does_not_let_a_word_starting_like_a_unit_become_one(self, body_text: str) -> None:
+        """`3 hasta` is not three hours, and `70 horario` is not seventy of
+        anything. The bound after the unit is what keeps the tolerance in
+        front of it honest."""
+        message_request = request(**UNIT_CONFUSION)
+
+        violations = validate_message(message_request, spoken(message_request, body_text))
+
+        assert all("stated in" not in violation.detail for violation in violations)
+
+    def test_the_gap_cannot_reach_across_a_sentence_to_find_a_unit(self) -> None:
+        """Bounded, not unbounded. A figure ending one sentence does not take
+        its unit from the word that opens the next."""
+        message_request = request(**UNIT_CONFUSION)
+
+        violations = validate_message(
+            message_request, spoken(message_request, "El registro lleva el 70. Milimetros de lluvia esperados: 3,0.")
+        )
+
+        assert all("stated in" not in violation.detail for violation in violations)
+
     def test_the_violation_says_which_unit_disagreed(self) -> None:
         """The operator notice has to be readable without opening the draft,
         and "70 traces to nothing" is not the information "70 was offered as

@@ -119,7 +119,30 @@ A **candidate number** is a date token (`DD/MM/YYYY`), a time token (`HH:MM`), o
 
 The allowed set is **keyed by unit**, not flat. The units are millimetres, percentage, hours, date and time, and each of the request's values belongs to exactly one of them: `forecast.mm_24h` and `forecast.mm_48h` and every reason's `accumulated_mm` are millimetres; `forecast.peak_probability_pct` and every reason's `probability_pct` are percentages; every reason's `hours` and the literals `24`/`48` (if `forecast` is set) are hours; the local renderings of `window.start`, `window.end`, `warning.window.start`/`.end` (if `warning` is set) and `forecast.peak_at` (if `forecast` is set) are dates and times.
 
-A candidate's unit is resolved from the token immediately following it: `mm` or `milímetro(s)` for millimetres, `%` or `por ciento` for percentage, `hora(s)` or `h` for hours. A date or time token carries its unit in its own shape.
+A candidate's unit is resolved from the text following it: `mm`, `mms` or `milímetro(s)` for millimetres, `%` or `por ciento` for percentage, `hora(s)`, `h` or `hs` for hours. A date or time token carries its unit in its own shape.
+
+Resolution MUST NOT depend on the unit beginning at the exact offset the figure ended at, nor on the spelling the deterministic template happens to emit. A bounded run of horizontal spacing, brackets, quotation marks and dashes MAY sit between the figure and its unit; the residue MUST be accent-folded and casefolded before the match; and the plural abbreviations MUST be accepted. That run MUST NOT cross a sentence terminator: a figure that ends a sentence must not take its unit from the word that opens the next.
+
+*Added 2026-09-10, after a second adversarial review.* Resolution was forward-only, offset-exact and accent-sensitive, and every spelling it failed to match routed the token to the union of every unit's values — the unit-blind set the previous amendment had just removed, reachable through a bracket. With a real forecast of 3.0 mm, a probability of 70 and a horizon of 24 hours, all of these were accepted while the control `Se esperan 70 mm de lluvia.` was correctly rejected:
+
+| Body | Escape |
+|---|---|
+| `Se esperan 70 (mm).` | the unit did not begin at the figure's end offset |
+| `Se esperan 70-mm.` | the same, through a hyphen |
+| `Se esperan 70 mms.` | the plural abbreviation was not a spelling the matcher knew |
+| `Se esperan 70 milímetros.` written decomposed | the accent was two codepoints, so the spelling did not match |
+
+An unmatched spelling is not a refusal. It is a fallback to the union, which makes the bare-figure allowance far wider than the paragraph above claims, and the direction of error the module states is reversed for every figure the matcher does not recognise.
+
+#### Scenario: A unit separated by punctuation is still the unit
+- GIVEN `forecast.mm_24h = 3.0` and a peak probability of 70
+- WHEN the body states "Se esperan 70 (mm)", "Se esperan 70-mm" or "Se esperan 70 mms"
+- THEN the message is rejected, because each states 70 as a millimetre reading this request does not carry
+
+#### Scenario: The tolerance does not reach across a sentence
+- GIVEN a body whose figure ends one sentence and whose next sentence opens with a unit
+- WHEN validation runs
+- THEN the figure is treated as bare and checked against the union, not against that unit
 
 A candidate is **allowed** when, after normalizing its decimal separator and comparing at the precision the source value was computed at (one decimal place for millimetre amounts), it equals a request value **of the unit it was written in**. A candidate written with no adjacent unit is allowed against the union of every unit's values. A candidate whose adjacent unit disagrees with the field it would otherwise have matched MUST be rejected. A candidate is also allowed, regardless of the sets above, when it falls inside a contiguous body span that reproduces **verbatim, in full**, `sanitize_source_text(warning.title)`, one `WarningReason.title`'s sanitized text, or one `request.checklist` item — a partial or paraphrased quote grants no exemption, and neither does a span too short to be a quotation (see the verbatim-span requirement below). Any candidate matching none of the above is rejected.
 

@@ -336,23 +336,51 @@ class NumberUnit(StrEnum):
     HOURS = "h"
 
 
-#: How a token's unit is read: from the text immediately after it. Order
-#: matters only in that the percentage phrase is tried before the units whose
+#: What may sit between a figure and the unit it is stated in without
+#: breaking the link: horizontal spacing, brackets, quotation marks and
+#: dashes, at most four of them.
+#:
+#: The matcher used to accept `\s*` and nothing else, so the unit had to
+#: begin at the exact offset the figure ended at. An adversarial review
+#: reproduced what that costs: `70 (mm)`, `70-mm` and `70 mms` were each
+#: read as a figure with *no* unit and checked against the union of every
+#: unit's values — the unit-blind set the previous round removed, reachable
+#: through a bracket.
+#:
+#: **Bounded, and no sentence terminator.** `.`, `;`, `!`, `?` and the
+#: newline are deliberately absent: a figure that ends a sentence must not
+#: take its unit from the word that opens the next one. Four characters is
+#: `70 ("` and no more.
+_BETWEEN_A_FIGURE_AND_ITS_UNIT = r"[ \t   ()\[\]{}«»\"'‘’“”\-‐-―]{0,4}"
+
+#: How a token's unit is read: from the text just after it. Order matters
+#: only in that the percentage phrase is tried before the units whose
 #: spellings could otherwise shadow it.
 #:
 #: `(?!\w)` rather than `\b` after the alphabetic units, so `3 hasta` does not
-#: read as three hours. The percentage sign needs no such guard, since it is
-#: not a word character and cannot be the head of a longer word.
+#: read as three hours and `70 horario` is not seventy hours. The percentage
+#: sign needs no such guard, since it is not a word character and cannot be
+#: the head of a longer word.
+#:
+#: The plural abbreviations are accepted (`mms`, `hs`). They are not forms
+#: the template emits, which is exactly why they were a hole: an unmatched
+#: spelling is not a refusal, it is a fallback to the union.
+#:
+#: The residue reaching these patterns is accent-folded, so `milimetros`
+#: covers `milímetros` and `MILÍMETROS` alike.
 _UNIT_AFTER_A_NUMBER: tuple[tuple[re.Pattern[str], NumberUnit], ...] = (
-    (re.compile(r"\s*(?:%|por\s+ciento(?!\w))", re.IGNORECASE), NumberUnit.PERCENTAGE),
-    (re.compile(r"\s*(?:mm|mil[ií]metros?)(?!\w)", re.IGNORECASE), NumberUnit.MILLIMETRES),
-    (re.compile(r"\s*(?:horas?|h)(?!\w)", re.IGNORECASE), NumberUnit.HOURS),
+    (re.compile(_BETWEEN_A_FIGURE_AND_ITS_UNIT + r"(?:%|por\s+ciento(?!\w))", re.IGNORECASE), NumberUnit.PERCENTAGE),
+    (
+        re.compile(_BETWEEN_A_FIGURE_AND_ITS_UNIT + r"(?:mms?|mil[ií]metros?)(?!\w)", re.IGNORECASE),
+        NumberUnit.MILLIMETRES,
+    ),
+    (re.compile(_BETWEEN_A_FIGURE_AND_ITS_UNIT + r"(?:horas?|hs?)(?!\w)", re.IGNORECASE), NumberUnit.HOURS),
 )
 
 
 def _unit_after(residue: str, position: int) -> NumberUnit | None:
-    """The unit written immediately after `position`, or `None` for a bare
-    figure that says nothing about what it measures."""
+    """The unit written after `position`, or `None` for a bare figure that
+    says nothing about what it measures."""
     for pattern, unit in _UNIT_AFTER_A_NUMBER:
         if pattern.match(residue, position) is not None:
             return unit
@@ -421,12 +449,18 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
     """Every candidate number in `residue` the request cannot account for,
     already worded for an operator notice.
 
-    A bare figure — one with no unit written after it — is checked against
-    the union of every unit's values. That is deliberate and it is what keeps
-    the template's own output passing: a body may refer to a number the
-    request carries without restating what it measures, and refusing that
-    would refuse the fallback. A figure that *does* name its unit is held to
-    that unit alone.
+    A bare figure — one whose clause says nothing about what it measures —
+    is checked against the union of every unit's values. That is deliberate
+    and it is what keeps the template's own output passing: a body may refer
+    to a number the request carries without restating what it measures, and
+    refusing that would refuse the fallback. A figure that *does* name its
+    unit is held to that unit alone.
+
+    `residue` arrives accent-folded and casefolded, so one spelling of a
+    unit is one spelling. Before that, `milímetros` and `MILIMETROS` were
+    different strings to the matcher and a figure wearing either fell
+    through to the union, which is how narrow the fallback's docstring
+    claims to be and was not.
     """
     allowed_numbers = _allowed_numbers(request)
     any_unit = set[Decimal]().union(*allowed_numbers.values())
@@ -577,8 +611,12 @@ def _unit_implied_before(tokens: list[str], start: int) -> str | None:
 
 
 def _word_numbers_quantifying_a_unit(residue: str) -> tuple[tuple[str, str], ...]:
-    """Every `(numeral, unit)` pair the residue states in words."""
-    tokens = _WORD_OR_NUMBER.findall(_fold(residue))
+    """Every `(numeral, unit)` pair the residue states in words.
+
+    `residue` arrives already folded, because the digit rule needs the same
+    folded text and folding twice would mean two readings of one body.
+    """
+    tokens = _WORD_OR_NUMBER.findall(residue)
     found: list[tuple[str, str]] = []
     for index, token in enumerate(tokens):
         if token not in _NUMERAL_WORDS:
@@ -665,7 +703,11 @@ def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[
             Violation(ValidationRule.UNSAFE_CHARACTER, "title or body carries a control or bidi character")
         )
 
-    residue = _residue(request, candidate)
+    # Folded once, read twice: rules 8 and 9 ask different questions of the
+    # same text, and a validator whose two halves disagree about how a word
+    # is spelled has the same hole as one whose halves disagree about what a
+    # line is.
+    residue = _fold(_residue(request, candidate))
     violations.extend(
         Violation(ValidationRule.UNKNOWN_NUMBER, detail) for detail in _untraceable_numbers(request, residue)
     )
