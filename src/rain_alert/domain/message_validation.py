@@ -180,8 +180,15 @@ def _verbatim_spans(request: MessageRequest) -> tuple[str, ...]:
 
     One entry per string supplied, duplicates included, because the count is
     the budget: a title the request carries once buys one quotation.
+
+    Checklist items are sanitized here for the same reason the template
+    sanitizes them on the way out: the span has to be the string a body can
+    actually contain, and `domain/template.py` renders the sanitized form.
+    Comparing against the raw item would mean a checklist item with a tab in
+    it never matched the line the template itself wrote.
     """
-    spans = [*request.checklist, request.city, request.timezone]
+    spans = [sanitize_source_text(item) for item in request.checklist]
+    spans += [request.city, request.timezone]
     if request.warning is not None:
         spans.append(sanitize_source_text(request.warning.title))
     spans.extend(sanitize_source_text(reason.title) for reason in request.reasons if isinstance(reason, WarningReason))

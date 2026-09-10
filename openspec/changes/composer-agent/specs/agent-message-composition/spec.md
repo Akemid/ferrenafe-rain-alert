@@ -361,7 +361,11 @@ On any of the following, the composer MUST return `domain.template.MessageCompos
 - WHEN the deterministic template's output is measured for every request fixture
 - THEN every one is under the cap with room to spare
 
-*The cap is pinned here at 1500 because the design asked the spec to settle it. The measured template body today is about 570 characters with the five-item Ferreñafe checklist, so 1500 leaves room for a checklist that roughly doubles. The number matters less than the relationship: the cap MUST stay above the longest body the configuration can produce, or the fallback would fail the rule that guards the agent. The invariant asserting the template always passes the validator is what enforces that, so a checklist that outgrows the cap fails a test rather than an alert.*
+*The cap is pinned here at 1500 because the design asked the spec to settle it. The number matters less than the relationship: the cap MUST stay above the longest body the configuration can produce, or the fallback would fail the rule that guards the agent.*
+
+*Corrected 2026-09-10, after an adversarial review measured it.* This paragraph said the body runs "about 570 characters" and that 1500 "leaves room for a checklist that roughly doubles". Measured, the shipped five-item body is **511** characters and the largest request fixture is **648**. More to the point, the margin that decides whether anyone notices is not the one against the cap but the one against the assertion guarding it, and that assertion fired at 750 — **102 characters** above the largest fixture, or about one and a half checklist items. "Roughly doubles" was measuring against the wrong number, and it read as reassurance where there was almost none.
+
+The relationship is no longer left to a margin at all. The deterministic template **MUST NOT** emit a body over the cap for any checklist the configuration can hold: items that do not fit are dropped, and the cut MUST be stated in the body rather than made silently. Thirty realistic items produced a 1 906-character body before this, and every fixture pinning the invariant used the shipped five, so nothing noticed.
 
 #### Scenario: The title cap leaves room for a real aviso title
 - GIVEN the maximum title length is 200 characters
@@ -389,6 +393,36 @@ On any of the following, the composer MUST return `domain.template.MessageCompos
 - GIVEN the invocation seam raises an exception type not otherwise anticipated
 - WHEN the cycle composes
 - THEN the template's output is sent and `composer == "template"`
+
+### Requirement: Checklist items are sanitized before they are rendered into the body
+
+Every `request.checklist` item MUST pass through `domain.sanitize.sanitize_source_text` before it is interpolated into the community body, and the rendered checklist MUST be bounded so the template's own output cannot exceed the body cap.
+
+*Added 2026-09-10, after an adversarial review.* The sanitization audit treated the checklist as exempt because it is operator-owned, and that answers the wrong question. The audit is not about who wrote a string, it is about whether the string can write the body's line grammar — and a checklist item can. Four configurations the operator can reach today made the deterministic template's own output fail validation: an item containing a tab, an item containing a newline plus a forged `Recomendaciones:` header, an item containing a bidi override, and thirty realistic items over the cap.
+
+The newline case is a defect on its own terms, independent of the validator: the checklist is an unsanitized injection path into the community body, the same shape the aviso-title change closed, differing only in that the author is trusted. A reader in a flood cannot tell a forged instruction block from the system's own, whoever authored it.
+
+This is a **rendering** rule and not a prompt rule. The requirement above, that operator-owned text is not sanitized before entering the prompt, is unchanged.
+
+#### Scenario: An item cannot forge a second section
+- GIVEN a checklist item containing a newline followed by "Recomendaciones:"
+- WHEN the template composes
+- THEN the body contains exactly one `Recomendaciones:` line, and the readable part of the item is still rendered
+
+#### Scenario: No unsafe character from an item reaches the body
+- GIVEN a checklist item containing a tab, a bidi override, a line separator or a zero-width space
+- WHEN the template composes
+- THEN none of those characters appears in the body
+
+#### Scenario: A long checklist cannot push the body over the cap
+- GIVEN a checklist of thirty realistic items
+- WHEN the template composes
+- THEN the body is at or under the cap, the items that did not fit are absent, and the body states that the list was cut
+
+#### Scenario: A checklist that fits is rendered whole
+- GIVEN the shipped five-item checklist
+- WHEN the template composes
+- THEN every item is rendered and no truncation is declared
 
 ### Requirement: Operator is notified exactly once per fallback, never on success
 

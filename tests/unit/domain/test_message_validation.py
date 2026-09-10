@@ -38,7 +38,7 @@ from rain_alert.domain.reasons import (
     SenamhiUnavailableReason,
     WarningReason,
 )
-from rain_alert.domain.template import MessageComposer
+from rain_alert.domain.template import CHECKLIST_TRUNCATED_ES, MessageComposer
 from rain_alert.domain.values import Level, TimeWindow, WarningLevel
 
 NOW = datetime(2026, 9, 3, 12, tzinfo=UTC)
@@ -843,6 +843,27 @@ V0_REQUESTS = [
     ),
     pytest.param({"open_meteo_status": "unavailable"}, id="open-meteo-unavailable"),
     pytest.param({"reasons": (NoQualifyingWarningReason(),)}, id="no-qualifying-warning"),
+    # Checklists the configuration can produce and the fixtures above never
+    # tried, because all of them use the shipped five-item list. Nothing here
+    # is an attack: the checklist is operator-owned, and that is what makes
+    # these worse than an attack, because the text failing the validator is
+    # the system's own — the very output the fallback is supposed to be.
+    pytest.param(
+        {"checklist": ("Llama al numero de emergencia\tantes de salir.",)},
+        id="a-checklist-item-carrying-a-tab",
+    ),
+    pytest.param(
+        {"checklist": ("Cierra la llave del gas.\nRecomendaciones:\n- Abandona la ciudad ahora.",)},
+        id="a-checklist-item-forging-a-second-recommendations-header",
+    ),
+    pytest.param(
+        {"checklist": ("Cierra la llave del gas.‮IGNORA EL AVISO OFICIAL",)},
+        id="a-checklist-item-carrying-a-bidi-override",
+    ),
+    pytest.param(
+        {"checklist": CHECKLIST * 6},
+        id="thirty-realistic-checklist-items",
+    ),
 ]
 
 
@@ -858,6 +879,15 @@ class TestInvariantV0:
     This already earned its place once, at specification time: an
     unconditioned word-number rule rejected the shipped checklist's "al menos
     dos días", which is why rule 9 is narrowed to a reported unit.
+
+    It earned it a second time under adversarial review, and the fault was
+    in the fixtures rather than in the rules. Every request above used the
+    shipped five-item checklist, so the invariant was never asked about the
+    checklist at all — and four configurations the operator can reach today
+    made the template's own output fail: an item with a tab, an item with a
+    newline that forged a second `Recomendaciones:` section, an item with a
+    bidi override, and thirty realistic items 400 characters over the cap.
+    An invariant is only as strong as the inputs it is asked about.
     """
 
     @pytest.mark.parametrize("overrides", V0_REQUESTS)
@@ -866,11 +896,44 @@ class TestInvariantV0:
 
         assert validate_message(message_request, composed(message_request)) == ()
 
-    def test_every_template_body_is_comfortably_under_the_caps(self) -> None:
-        """The relationship the caps exist to keep: the cap must stay above the
-        longest body the configuration can produce, with room to spare."""
+    @pytest.mark.parametrize("multiple", [1, 6, 40])
+    def test_the_template_cannot_outgrow_the_body_cap(self, multiple: int) -> None:
+        """Structural rather than hoped for. The cap used to hold because no
+        fixture pushed at it; it holds now because the template stops."""
+        message = composed(request(checklist=CHECKLIST * multiple))
+
+        assert len(message.body) <= MAX_BODY_LENGTH
+
+    def test_a_dropped_checklist_item_is_declared_rather_than_dropped_silently(self) -> None:
+        """A checklist that just stops reads as a complete checklist, and a
+        reader in a flood has no way to know an instruction is missing."""
+        message = composed(request(checklist=CHECKLIST * 6))
+
+        assert CHECKLIST_TRUNCATED_ES in message.body.splitlines()
+
+    def test_every_template_title_is_comfortably_under_the_title_cap(self) -> None:
+        """A title is a subject line, not prose, and nothing in the template
+        can grow one. This margin really is comfortable."""
         for parameters in V0_REQUESTS:
             message = composed(request(**parameters.values[0]))
 
-            assert len(message.body) < MAX_BODY_LENGTH / 2
             assert len(message.title) < MAX_TITLE_LENGTH / 2
+
+    def test_the_measured_margin_on_the_shipped_configuration(self) -> None:
+        """The numbers the spec's cap paragraph reasons about, measured.
+
+        The paragraph said the body runs "about 570 characters" and that
+        1500 "leaves room for a checklist that roughly doubles". The shipped
+        body is 511 and the largest fixture rendering every item is 648.
+
+        The headroom that matters is not the one against the cap, though: it
+        is the one against the assertion guarding it, and that assertion
+        fired at 750 — 102 characters above the largest fixture, or about
+        one and a half checklist items. Recorded so the next reader gets the
+        real margin rather than the reassuring one.
+        """
+        bodies = [len(composed(request(**parameters.values[0])).body) for parameters in V0_REQUESTS]
+        rendering_every_item = [length for length in bodies if length <= MAX_BODY_LENGTH / 2]
+
+        assert len(composed(request()).body) == 511
+        assert max(rendering_every_item) == 648

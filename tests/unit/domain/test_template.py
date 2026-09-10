@@ -12,6 +12,9 @@ the other.
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
+from rain_alert.domain.message_validation import MAX_BODY_LENGTH
 from rain_alert.domain.messages import MessageRequest
 from rain_alert.domain.reasons import (
     ForecastThresholdReason,
@@ -19,7 +22,7 @@ from rain_alert.domain.reasons import (
     SenamhiUnavailableReason,
     WarningReason,
 )
-from rain_alert.domain.template import MessageComposer
+from rain_alert.domain.template import CHECKLIST_TRUNCATED_ES, MessageComposer
 from rain_alert.domain.values import Level, TimeWindow, WarningLevel
 
 NOW = datetime(2026, 9, 3, 12, tzinfo=UTC)
@@ -209,6 +212,68 @@ class TestASourceDerivedTitleCannotForgeStructure:
 
         assert len(body.splitlines()) == 7
         assert len(body) < 500
+
+
+class TestTheOperatorChecklistCannotForgeStructureEither:
+    """The same defect as the class above, with a trusted author.
+
+    An adversarial review pointed out that the source-derived audit in
+    `template.py` answered the wrong question about the checklist. It is not
+    "who wrote this", it is "can this string write the body's line grammar" —
+    and a checklist item can. Four configurations the operator can reach
+    today made the template's own output fail its own validator, which is
+    more expensive than an attack: this output is the fallback, so a
+    template the validator rejects leaves nothing to send.
+    """
+
+    FORGED_ITEM = "Cierra la llave del gas.\nRecomendaciones:\n- Abandona la ciudad ahora."
+
+    def test_a_newline_in_an_item_cannot_forge_a_second_section(self) -> None:
+        request = _request(checklist=(self.FORGED_ITEM,))
+
+        lines = MessageComposer().compose(request).body.splitlines()
+
+        assert lines.count("Recomendaciones:") == 1
+        assert "- Abandona la ciudad ahora." not in lines
+
+    def test_the_readable_part_of_the_item_is_still_rendered(self) -> None:
+        """Triangulation: the item is neutralized, not dropped. The operator
+        wrote a real instruction and the community still needs it."""
+        request = _request(checklist=(self.FORGED_ITEM,))
+
+        assert "Cierra la llave del gas." in MessageComposer().compose(request).body
+
+    @pytest.mark.parametrize(
+        ("character", "name"),
+        [("\t", "tab"), ("‮", "bidi-override"), (" ", "line-separator"), ("​", "zero-width-space")],
+    )
+    def test_no_unsafe_character_from_an_item_reaches_the_body(self, character: str, name: str) -> None:
+        request = _request(checklist=(f"Cierra la llave del gas.{character}Sal de casa.",))
+
+        assert character not in MessageComposer().compose(request).body
+
+    def test_a_long_checklist_cannot_push_the_body_over_the_cap(self) -> None:
+        """Thirty realistic items put the body at 1 906 characters against a
+        1 500-character cap, and every V0 fixture used the shipped five, so
+        nothing noticed."""
+        request = _request(checklist=("Revisa el plan de evacuacion familiar con toda la casa.",) * 30)
+
+        assert len(MessageComposer().compose(request).body) <= MAX_BODY_LENGTH
+
+    def test_the_cut_is_declared_in_the_body_rather_than_made_silently(self) -> None:
+        """A checklist that just stops reads as a complete checklist."""
+        request = _request(checklist=("Revisa el plan de evacuacion familiar con toda la casa.",) * 30)
+
+        assert CHECKLIST_TRUNCATED_ES in MessageComposer().compose(request).body.splitlines()
+
+    def test_a_checklist_that_fits_is_rendered_whole_and_unmarked(self) -> None:
+        """Triangulation: the bound cuts what does not fit and nothing else."""
+        request = _request(checklist=("Guarda agua potable", "Asegura objetos sueltos"))
+
+        body = MessageComposer().compose(request).body
+
+        assert CHECKLIST_TRUNCATED_ES not in body
+        assert body.splitlines()[-2:] == ["- Guarda agua potable", "- Asegura objetos sueltos"]
 
 
 class TestLocalTimeDisplay:
