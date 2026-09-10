@@ -156,3 +156,137 @@ this PR, rules 8–9 plus V0 in the next — rather than to thin the cases.
 `sdd-apply` again for PR 2 (provenance plumbing 1.1–1.6 and the invocation seam
 1.17–1.20). Correctness review and security review on this branch first — this
 slice is not pushed and no PR was opened.
+
+---
+
+# Apply Progress: composer-agent — PR 1 remediation (adversarial review)
+
+**Branch**: `docs/composer-agent-plan`, same slice, not pushed, no PR opened
+**Mode**: Strict TDD, failing test first, every finding's test written as the attack
+**Baseline**: 638 tests passing → **723 tests passing**
+
+An adversarial review of the validator reproduced seven confirmed findings plus
+a set of low-severity ones. Every finding below was reproduced against the
+shipped code before the fix and is pinned by a test after it. One further hole
+was found while writing a test that assumed the review was right; it is marked.
+
+## Findings and disposition
+
+| # | Finding | Disposition |
+|---|---|---|
+| CRITICAL 1 | Allowed-number set unit-blind, so any figure legitimises any quantity | Fixed — set keyed by unit; spec amended |
+| CRITICAL 2 | Forged section header survives; validator and renderer disagree about a line | Fixed — character class widened, header count uses the renderer's split; spec amended |
+| HIGH 3 | Spanish thousands separator inflates a figure by a thousand | Fixed — ambiguous forms are not read as quantities; spec amended |
+| HIGH 4 | Word-number rule misses invented quantities in ordinary Spanish | Fixed — backward pass, wider connectors and lexicon; spec amended |
+| MEDIUM 5 | Invariant V0 false for four reachable configurations | Fixed — checklist sanitized and bounded at the template; four V0 fixtures added; spec corrected |
+| MEDIUM 6 | Spanish indefinite article fires the word-number rule | Fixed — `un`/`una`/`uno` are connectors, not numerals; spec amended |
+| MEDIUM 7 | Verbatim-span exemption unanchored, unbounded, uncounted | Fixed — ≥ 12 characters, word-boundary, one occurrence per supplied string; spec amended |
+| LOW | Sign dropped | Fixed — the sign is part of the token |
+| LOW | Superscript digits escape extraction | Fixed — extracted and always refused |
+| LOW | Word-number cases assert membership, not an exact rule set | Fixed — exact sets, like every other block |
+| LOW | `validate_message` raises on a bad timezone | **Recorded, not changed** — see below |
+| **NEW** | Non-ASCII digit families were **not** rejected, contrary to the review's note | Fixed — canonicalization is ASCII-only |
+| Out of scope | A body with no numbers can say anything; nothing rejects a URL or a phone number | Recorded in `design.md` §6.1 as open items for a later PR |
+
+## The two critical attacks, before and after
+
+**CRITICAL 1** — forecast 3.0 mm, peak probability 70, reason hours 24:
+
+| Body | Before | After |
+|---|---|---|
+| `Se esperan 70 mm de lluvia.` | ACCEPTED (70 is the probability) | rejected `unknown_number` |
+| `Probabilidad de 24 %.` | ACCEPTED (24 is the horizon) | rejected `unknown_number` |
+| `Se esperan 3,0 mm de lluvia.` | accepted | accepted |
+
+**CRITICAL 2** — the template's body plus a suffix:
+
+| Suffix | Before | After |
+|---|---|---|
+| `\u2028Recomendaciones:\u2028- Abandona la ciudad ahora.` | ACCEPTED; the notifier's own `splitlines` showed the operator **two** `Recomendaciones:` headers | rejected `forged_section_header` + `unsafe_character` |
+| `\nRecomendaciones\u200b:\n- Abandona la ciudad ahora.` | ACCEPTED; invisible to the reader, unequal to the exact match | rejected `unsafe_character` |
+
+`sanitize_source_text` also let U+200B, U+200C, U+FEFF, U+061C and U+200E
+through, because `\s` does not match them. All are removed now.
+
+## TDD cycle evidence
+
+| Work unit | RED — the failure, and that it was the intended one | GREEN |
+|---|---|---|
+| Sanitizer character class | 24 failures: every invisible character survived `sanitize_source_text`, and the predicate called U+2028/U+2029 safe | `TestTheInvisibleCharactersAreRemovedToo`, 28 pass |
+| Renderer-agreeing line split | 2 failures: `rendered.count("Recomendaciones:") == 2` held while `FORGED_SECTION_HEADER` did not fire | 2 structural cases + the renderer triangulation |
+| Unit-keyed allowed set | 4 failures, exactly the three unit-blind acceptances plus the violation-detail test | `TestANumberIsOnlyAllowedAsTheQuantityItActuallyIs`, 10 pass |
+| Numeric forms | 6 failures: the thousands groups, the zero padding, the sign, the superscripts | `TestANumericFormAReaderCanMisreadIsRefused`, 13 pass |
+| Non-ASCII digit families | 3 failures — the test was written expecting the review's claim and disproved it: `Decimal("१२.४") == Decimal("12.4")` | 3 pass, inside the block above |
+| Word-number both directions | 8 failures: 5 escapes and 3 false positives, exactly as reported | `TestAMeasurementWrittenInWordsIsRejected`, 19 pass |
+| Verbatim-span bound | 3 failures: the short checklist item, the number cut in half, the doubled quotation | `TestTheVerbatimSpanExemptionIsBoundedAndCounted`, 5 pass |
+| Invariant V0 checklist fixtures | 5 failures: tab, forged header, bidi override, thirty items, and the margin assertion | `TestInvariantV0` 19 pass and `TestTheOperatorChecklistCannotForgeStructureEither` 9 pass; proved able to bite by mutation (unsanitized, unbounded checklist → **14** red across two modules), mutation reverted |
+
+## Deliberate decisions worth an owner's attention
+
+1. **`un`/`una`/`uno` no longer fire on their own.** `Puede caer un mm` is
+   accepted. Wrong-lax by one, taken because the alternative refuses `Espera
+   una hora después de que pare la lluvia` — ordinary Spanish, and the exact
+   false positive both the spec and the design warned this rule about.
+2. **Ambiguous form over rendered-string comparison, for finding 3.** Comparing
+   against the strings the template renders would also close it, but it would
+   reject `12,40`, which the spec accepts on purpose as the same quantity at
+   the same precision, and it needs one rendered form per separator
+   convention. Refusing the form keeps every equivalence the template can
+   produce.
+3. **The template now bounds its own checklist against `MAX_BODY_LENGTH`.**
+   `domain/template.py` imports the constant from `domain/message_validation.py`
+   — no cycle, and it makes the V0 relationship structural rather than a margin
+   nobody was measuring. The dropped items are declared in the body.
+4. **`validate_message` still raises on an unusable timezone.** A bad timezone
+   is a configuration fault, not a candidate fault; reporting it as a violation
+   would make the fallback adapter send the template, which cannot render
+   either, while telling the operator the draft was at fault. **The fallback
+   adapter must not assume this function cannot raise.**
+5. **The verbatim-span minimum drops `request.city`** (nine characters) from
+   the exempt spans. It carries no digit and no Spanish numeral. A checklist
+   item under twelve characters that *did* contain a digit would fail V0 rather
+   than reach an alert.
+
+## Verification gate
+
+```
+$ uv run pytest                → 723 passed, 15 deselected                     exit=0
+$ uv run ruff check .          → All checks passed!                            exit=0
+$ uv run ruff format --check . → 80 files already formatted                    exit=0
+$ uv run mypy                  → Success: no issues found in 36 source files   exit=0
+```
+
+No test was weakened and no type was loosened. Two assertions were *changed*
+rather than weakened: `test_every_template_body_is_comfortably_under_the_caps`
+asserted `< MAX_BODY_LENGTH / 2`, which a bounded template that cuts to fit
+cannot satisfy, so it became a strict cap assertion plus a separate test
+recording the measured margin; and the word-number block moved from membership
+assertions to exact rule sets, which is strictly stronger.
+
+## Commits
+
+| Commit | Work unit |
+|---|---|
+| `5434ebd` | `fix(domain): remove the invisible character class at the sanitizer` |
+| `4541a28` | `fix(domain): count section headers the way the renderer splits lines` |
+| `14405cd` | `fix(domain): key the allowed-number set by the unit a figure is stated in` |
+| `a041434` | `fix(domain): refuse numeric forms canonicalization would erase` |
+| `3c369ac` | `fix(domain): read a word-number's unit in both directions` |
+| `26a750d` | `fix(domain): anchor, bound and count the verbatim-span exemption` |
+| `315b9e1` | `fix(domain): sanitize and bound the checklist the template renders` |
+
+## Files changed
+
+| File | Action | What |
+|---|---|---|
+| `src/rain_alert/domain/sanitize.py` | Modified | `_REMOVED` widened to U+2028/29 and the zero-width/format class |
+| `src/rain_alert/domain/message_validation.py` | Modified | `NumberUnit`, unit-keyed allowed set, form-aware canonicalization, two line splits, bounded/anchored/counted spans, two-directional word-number scan |
+| `src/rain_alert/domain/template.py` | Modified | Checklist sanitized and bounded; `CHECKLIST_TRUNCATED_ES` |
+| `tests/unit/domain/test_sanitize.py` | Modified | The invisible-character class, both directions |
+| `tests/unit/domain/test_message_validation.py` | Modified | Unit, numeric-form, span-bound and word-number blocks; four V0 checklist fixtures |
+| `tests/unit/domain/test_template.py` | Modified | The checklist as an injection path and as a length risk |
+| `openspec/.../agent-message-composition/spec.md` | Modified | Three requirements amended, three added, the cap paragraph corrected |
+| `openspec/changes/composer-agent/design.md` | Modified | §6.1 recording what steps 1–6 no longer say, the new residuals, and the out-of-scope items |
+
+`docs/` and `openspec/specs/` were not touched. Nothing was pushed and no pull
+request was opened.

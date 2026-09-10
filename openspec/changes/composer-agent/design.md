@@ -366,6 +366,31 @@ sequenceDiagram
 
 **Residual, accepted and recorded**: roman numerals and ordinals (`nivel III`, `primer`) are neither digit runs nor lexicon entries. They cannot express a rainfall figure usefully, and widening the lexicon towards ordinals would start rejecting ordinary prose. Wrong-lax, knowingly, and narrow.
 
+### 6.1 Amendments after the adversarial review (2026-09-10)
+
+Steps 1–6 above describe the first implementation. Six of them were reproduced as holes and are superseded by `specs/agent-message-composition/spec.md`, which carries the amended wording and the scenarios. Summarised here so this section is not read as current:
+
+| Step | Superseded because |
+|---|---|
+| 1 Residue | The removal was an unanchored global replace with no minimum length. A span of `"80"` exempted `80` everywhere; a span could be cut out of the middle of a longer number and leave an allowed remainder; one supplied string exempted every occurrence. Now: ≥ 12 characters, word-boundary anchored, one occurrence per string supplied. Checklist items are sanitized before comparison, because the template renders them sanitized. |
+| 2 Extraction | Stands as already amended at apply time (dates and times whole). Extended: a token takes every separator it can reach, so `1.234,5` is one ambiguous token; a leading sign belongs to the figure; superscript and subscript digits are extracted so they can be refused. |
+| 3 Canonicalization | Threw the writing away. `Decimal("12.400") == Decimal("12.4")`, so `12.400 mm` was accepted as 12.4 — twelve thousand four hundred to a Peruvian Spanish reader. Ambiguous forms are no longer read as quantities: a three-digit group after a single separator, two separators, zero padding, a sign, and non-ASCII digit families. |
+| 4 Allowed set | Unit-blind. A flat `set[Decimal]` could ask whether a number is on the request and never whether it is on the request *as that kind of quantity*, so a probability legitimised a rainfall figure. Keyed by millimetres, percentage and hours now; a bare figure with no adjacent unit is still checked against the union. |
+| 6 Word-numbers | Forward-only, and `un`/`una` were in the lexicon. Four invented quantities escaped in ordinary Spanish, including the template's own `probabilidad máxima de <numeral>` phrasing; and `Espera una hora` was refused. Read in both directions now, bounded; the indefinite articles are connectors. |
+| V0 | Every fixture used the shipped five-item checklist, so the invariant was never asked about the checklist. Four reachable configurations failed it. `domain/template.py` sanitizes and bounds the checklist, and the fixtures cover all four. The body measurement in the paragraph above (~900 characters) was wrong twice over: the shipped body is 511 and the largest fixture 648. |
+
+**Residuals added, accepted and recorded**, alongside the roman-numeral note above:
+
+- **A word-number of magnitude one.** `un`/`una`/`uno` no longer fire on their own, so `Puede caer un mm` is not refused. A compound still fires on its leading numeral. Refusing the ordinary Spanish for "wait an hour" costs far more than this.
+- **`km²` and friends.** Superscript digits are extracted and always refused, so a body writing a squared unit outside a quoted span is refused with them. Wrong-strict, narrow, and no real aviso title needs it outside a quote.
+- **A short checklist item bearing a digit.** The verbatim-span minimum is 12 characters, so an item shorter than that containing a digit would fail V0 rather than reach an alert. The shipped five contain no digit. `request.city` is nine characters and no longer earns an exemption; it carries no digit and no numeral.
+- **`validate_message` raises on an unusable timezone.** `ZoneInfo(request.timezone)` raises exactly as `domain/template.py` already does. Deliberately not converted into a violation: a bad timezone is a *configuration* fault, not a fault in the candidate, and reporting it as a violation would make the fallback adapter send the template — which cannot render either — while telling the operator the draft was at fault. **The fallback adapter must not assume `validate_message` cannot raise.** It is the one exit from this module that is not a `tuple[Violation, ...]`.
+
+**Out of scope here, recorded for a later pull request** (both belong to the prompt, not the validator):
+
+- A body containing no number at all can still say anything. Every rule in section 6 constrains figures, structure and characters; none constrains claims.
+- Nothing rejects a URL or a phone number in a body.
+
 ---
 
 ## 7. Testing Strategy

@@ -37,11 +37,21 @@ from rain_alert.domain.messages import AlertMessage, MessageRequest
 from rain_alert.domain.reasons import ForecastThresholdReason, WarningReason
 from rain_alert.domain.sanitize import has_unsafe_characters, sanitize_source_text
 
-#: Pinned by the spec with measured justification: the template's own body is
-#: about 570 characters with the five-item Ferreñafe checklist, so this leaves
-#: room for a checklist that roughly doubles. The number matters less than the
-#: relationship — the cap must stay above the longest body the configuration
-#: can produce, and invariant V0 is what enforces that.
+#: Pinned by the spec. The number matters less than the relationship: the cap
+#: must stay above the longest body the configuration can produce, or the
+#: fallback is rejected by the rule that guards the agent.
+#:
+#: Measured, after an adversarial review corrected the estimate this comment
+#: used to carry ("about 570 characters", "room for a checklist that roughly
+#: doubles"): the shipped five-item body is **511** characters and the
+#: largest request fixture is **648**. The margin that decides whether anyone
+#: notices was the one against the test guarding this, which fired at 750 —
+#: 102 characters, about one and a half checklist items.
+#:
+#: The relationship no longer rests on that margin. `domain/template.py`
+#: bounds its own checklist against this constant, so the template cannot
+#: emit a body over the cap whatever the operator configures. Invariant V0
+#: still enforces the rest, now over checklist fixtures as well.
 MAX_BODY_LENGTH = 1500
 
 #: The template's own title runs about 47 characters and the longest live

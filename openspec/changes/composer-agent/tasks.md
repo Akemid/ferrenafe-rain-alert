@@ -176,6 +176,13 @@ Not re-decided here, per scope. Flagged because design and spec disagree, or bec
 - **Design vs spec gap — `MAX_TITLE_LENGTH`.** Design §13 proposes 200 as an open question ("spec to pin"). The spec's 2026-09-09 amendment pins only the body cap at 1500 and does not state a title cap number. Task 1.8 ships `MAX_TITLE_LENGTH = 200` from the design's proposal since nothing supersedes it, but this should be confirmed explicitly at apply rather than assumed silently.
 - **Design's `contracts/agent-composition.json` root-level path** (§2 D22) — confirm at apply that this is not `openspec/` or `docs/` content and is fine to create outside `src/`/`agent/`, as design already states.
 
+### Raised by the 2026-09-10 adversarial review, out of scope for the validator
+
+Both belong to the prompt rather than to `validate_message`, and both are for a later pull request. Recorded here rather than fixed, deliberately.
+
+- **A body with no numbers can still say anything.** Every rule in design §6 constrains figures, structure or characters. None constrains a *claim*: `El río ya se desbordó y el puente cayó` carries no digit, no word-number, no forged header and no unsafe character, and the validator accepts it. This is the ceiling on what the validator can promise, and it is the prompt's problem — the validator's job is to make the numbers honest, not the sentences. Whoever writes the prompt should know the validator is not a backstop here.
+- **Nothing rejects a URL or a phone number in a body.** The recipient-facing message has no legitimate reason to carry either, and a hostile aviso title is a plausible source for both. `tests/hygiene` already refuses them in the *repository*; nothing refuses them in a *composed body*. A candidate rule for the prompt PR, not for this slice.
+
 ---
 
 ## Notes on Rules Applied
