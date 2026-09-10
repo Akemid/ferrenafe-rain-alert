@@ -183,6 +183,20 @@ Both belong to the prompt rather than to `validate_message`, and both are for a 
 - **A body with no numbers can still say anything.** Every rule in design §6 constrains figures, structure or characters. None constrains a *claim*: `El río ya se desbordó y el puente cayó` carries no digit, no word-number, no forged header and no unsafe character, and the validator accepts it. This is the ceiling on what the validator can promise, and it is the prompt's problem — the validator's job is to make the numbers honest, not the sentences. Whoever writes the prompt should know the validator is not a backstop here.
 - **Nothing rejects a URL or a phone number in a body.** The recipient-facing message has no legitimate reason to carry either, and a hostile aviso title is a plausible source for both. `tests/hygiene` already refuses them in the *repository*; nothing refuses them in a *composed body*. A candidate rule for the prompt PR, not for this slice.
 
+### Raised by the 2026-09-10 second adversarial review — BLOCKING on the PR that first wires model output into the cycle
+
+The two items above were recorded as candidates. The second review sharpened them into one finding with a named exploit, and it is a **blocking condition** on the pull request that first lets a model's words reach a recipient — not on this one, which only hardens the validator. The owner is deciding its shape now; nothing here is to be implemented in this slice.
+
+**The finding.** No rule governs what the message tells a person to *do*, and the verbatim-quote exemption turns the attacker's own channel into an approved one. Reproduced: a hostile aviso title reading `LLAME AL` followed by a nine-digit Peruvian mobile number is **accepted** when the body quotes that title in full, while the same digits standing alone raise three `unknown_number` violations. (The number is written out here as a description rather than as digits, because `tests/hygiene` refuses that pattern anywhere in the repository — which is precisely the rule the composed body is missing.) The scraped title is the one string on the request an adversary controls, and quoting it is the one thing the prompt tells the model to do.
+
+Three parts, all three named by the reviewer, all three required before that PR ships:
+
+1. **A closed instruction vocabulary.** Actionable content — anything that tells a reader to do something — must come from the operator checklist and not from the model. The model may arrange and phrase; it may not originate an instruction. Every rule in design §6 constrains figures, structure and characters, and none constrains a claim: `El río ya se desbordó y el puente cayó` carries no digit, no word-number, no forged header and no unsafe character, and the validator accepts it.
+2. **A flat refusal of contact channels anywhere in the body.** URLs, phone numbers, e-mail addresses and social handles, refused wherever they appear — **including inside a verbatim span**. The recipient-facing message has no legitimate reason to carry any of them, and a hostile aviso title is the plausible source.
+3. **The verbatim exemption must exempt numeric provenance only.** It currently removes the quoted span from the text every later rule reads, so the character rule and any future content rule run over the *residue* rather than over the full body. Only rule 8's "where did this number come from" question needs the residue. The character rule and any content rule must run over the whole body, quoted spans included, or part 2 is exempt exactly where it is needed.
+
+The scope error is the same one the checklist audit made and this change already corrected once: the exemption answers "who supplied this text", when the question every other rule asks is "what will a reader see".
+
 ---
 
 ## Notes on Rules Applied

@@ -290,3 +290,137 @@ assertions to exact rule sets, which is strictly stronger.
 
 `docs/` and `openspec/specs/` were not touched. Nothing was pushed and no pull
 request was opened.
+
+---
+
+# Second adversarial-review remediation — 2026-09-10
+
+**Branch**: `docs/composer-agent-plan` (unchanged; nothing pushed, no PR opened)
+**Mode**: Strict TDD — failing test first, failure confirmed as the intended
+one, then implementation
+**Baseline**: 723 tests passing → **793 tests passing**
+
+A second review reproduced four holes in the validator, each confirmed twice
+by the reviewer and by the delegating agent. Three of the four are the same
+mistake in three places: a rule that **enumerated the cases somebody had
+thought of** where it meant a property, or that bounded itself by a count
+where it meant a boundary a reader would recognise.
+
+## Findings and disposition
+
+| # | Finding | Disposition |
+|---|---|---|
+| CRITICAL 1 | Invisible characters outside the removed class defeat both the character rule and the header count | **Fixed** — class is a Unicode property; body composed to NFC for rules 6 and 8 |
+| HIGH 2 | Unit resolution is forward-only and offset-exact, so the flat-set hole is reachable in ordinary Spanish | **Fixed** — folded residue, bounded punctuation run, plural spellings, clause-scoped backward reading |
+| MEDIUM 3 | The word-numeral backward scan is bounded by token count, not by clause | **Fixed** — one clause-scoped scan, used by rules 8 and 9 |
+| LOW 4 | The truncation marker is forgeable from configuration | **Fixed** — an item that renders as the marker is refused, so the marker is always the template's own and always last |
+| Not this PR | No rule governs what the message tells a person to do; the verbatim exemption approves the attacker's own channel | **Recorded**, not built — `tasks.md` → Open Items, as a blocking condition on the PR that first wires model output into the cycle |
+
+## The attacks, before and after
+
+Every input below was run against the code as it stood, then against the code
+as it stands. `request` carries a 3.0 mm forecast, a peak probability of 70
+and a 24-hour horizon unless stated otherwise.
+
+### CRITICAL 1 — invisible characters
+
+| Input | Before | After |
+|---|---|---|
+| `has_unsafe_characters("Aviso" + U+E0001 + "de lluvias")` | `False` | `True` |
+| Same for U+E0041, U+E007F, U+E0002, U+FE00, U+FE0F, U+E0100, U+115F, U+1160, U+3164, U+180B, U+180E, U+2800 | `False` | `True` |
+| `sanitize_source_text` on each of the thirteen | character survives | character removed |
+| Body ending `\nRecomendaciones` + U+E0001 + `:\n- Abandona la ciudad ahora.` | **accepted**, header count 1, reader sees 2 | rejected `unsafe_character` |
+| `Se esperan 70 milímetros de lluvia.` written NFD | **accepted** (no unit resolved → union) | rejected `unknown_number` |
+
+Legitimate path re-verified: accented Spanish, the em dash, `Ferreñafe` with a
+combining tilde, and the shipped five-item checklist all still validate clean.
+
+### HIGH 2 — unit resolution
+
+Control `Se esperan 70 mm de lluvia.` was correctly rejected throughout.
+
+| Input | Before | After |
+|---|---|---|
+| `Lluvia acumulada en milímetros: 70` | **accepted** | rejected `unknown_number` |
+| `Milímetros de lluvia: 70` | **accepted** | rejected `unknown_number` |
+| `Se esperan 70 (mm).` | **accepted** | rejected `unknown_number` |
+| `Se esperan 70-mm.` | **accepted** | rejected `unknown_number` |
+| `Se esperan 70 mms.` | **accepted** | rejected `unknown_number` |
+| `Se esperan 3,0 mm de lluvia.` | accepted | accepted |
+| `El aviso lleva el numero 70 en el registro.` | accepted | accepted |
+
+### MEDIUM 3 — the backward scan
+
+| Input | Before | After |
+|---|---|---|
+| `La lluvia en milímetros que se espera hoy es de setenta.` | **accepted** | rejected `word_number` |
+| `Se acumularán milímetros de lluvia, en total, setenta.` | **accepted** | rejected `word_number` |
+| `Probabilidad de que llueva: casi con seguridad ochenta.` | **accepted** | rejected `word_number` |
+| `Se esperan ochenta milimetros de lluvia.` | rejected | rejected |
+| `Almacena agua potable para al menos dos dias.` | accepted | accepted |
+| `Espera una hora despues de que pare la lluvia.` | accepted | accepted |
+
+### LOW 4 — the truncation marker
+
+| Input | Before | After |
+|---|---|---|
+| Checklist containing an item equal to the marker's wording, in a list long enough to be cut | marker rendered **twice**, the forged one mid-list above real instructions | marker rendered once, as the final line; the operator's other items survive |
+
+## One regression found by the tests and fixed inside the same unit
+
+Scoping the backward scan to the clause made `Probabilidad de 70 por ciento.`
+raise `word_number` on `ciento`, which the four-token window had hidden rather
+than decided. `por ciento` is a unit spelling, not a numeral quantifying one —
+the forward matcher had always read it as a phrase — so the `ciento` of that
+phrase is skipped. Recorded as a residual in design §6.2: a body writing
+`ciento` as a numeral immediately after the word `por` goes unrefused.
+
+## Verification gate
+
+```
+$ uv run pytest                → 793 passed, 15 deselected              exit=0
+$ uv run ruff check .          → All checks passed!                     exit=0
+$ uv run ruff format --check . → 80 files already formatted             exit=0
+$ uv run mypy                  → Success: no issues found in 36 files   exit=0
+```
+
+No test was weakened and no type was loosened. Nothing was deleted from the
+suite; 70 assertions were added.
+
+## Commits
+
+| Commit | Work unit |
+|---|---|
+| `34e817c` | `fix(domain): reject invisible characters by Unicode property` |
+| `0ce5a95` | `fix(domain): read one NFC-composed body in the header and number rules` |
+| `391415a` | `fix(domain): resolve a figure's unit across punctuation and spelling` |
+| `643b30e` | `fix(domain): bound the implied-unit scan by clause and use it for digits` |
+| `69af3ee` | `fix(domain): keep the truncation marker the template's own and last` |
+| (this one) | `docs(composer-agent): record the content-rule gap as a blocking item` |
+
+## Files changed
+
+| File | Action | What |
+|---|---|---|
+| `src/rain_alert/domain/sanitize.py` | Modified | `_REMOVED` replaced by `_NON_GRAPHIC_CATEGORIES` + `_ALSO_INVISIBLE` and the `_is_invisible` predicate |
+| `src/rain_alert/domain/message_validation.py` | Modified | `_composed_form`; punctuation-tolerant, folded, plural-aware unit matching; one clause-scoped `_unit_implied_before` serving rules 8 and 9; `_BACKWARD_WINDOW` and `_QUALIFIERS_BEFORE_A_NUMERAL` removed |
+| `src/rain_alert/domain/template.py` | Modified | `_checklist_lines` refuses an item that renders as the truncation marker |
+| `tests/unit/domain/test_sanitize.py` | Modified | The property class, both directions, plus the language-untouched triangulation |
+| `tests/unit/domain/test_message_validation.py` | Modified | NFC block, punctuation/plural block, unit-in-front block, three word-number escapes and three boundary guards, the tag-character structural case |
+| `tests/unit/domain/test_template.py` | Modified | The truncation marker as a forgeable signal |
+| `openspec/.../agent-message-composition/spec.md` | Modified | Character class as a property; NFC; unit resolution; clause bound; marker position |
+| `openspec/changes/composer-agent/design.md` | Modified | §6.2 recording what §6 and §6.1 no longer say, plus two residuals |
+| `openspec/changes/composer-agent/tasks.md` | Modified | The content-rule gap recorded as a blocking item on a later PR |
+
+`docs/` and `openspec/specs/` were not touched. Nothing was pushed and no pull
+request was opened.
+
+## One thing the repository's own guard caught
+
+Writing the blocking item up put the reviewer's literal exploit string — a
+nine-digit Peruvian mobile number — into `tasks.md` and `design.md`, and
+`tests/hygiene::test_no_secret_or_personal_data_pattern_is_committed` failed
+on it. The check was left alone and the prose was rewritten to describe the
+number instead of printing it. Worth recording twice over: the guard works,
+and the repository already refuses in *its own files* exactly the pattern the
+composed body has no rule against.

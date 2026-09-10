@@ -391,6 +391,24 @@ Steps 1–6 above describe the first implementation. Six of them were reproduced
 - A body containing no number at all can still say anything. Every rule in section 6 constrains figures, structure and characters; none constrains claims.
 - Nothing rejects a URL or a phone number in a body.
 
+### 6.2 Amendments after the second adversarial review (2026-09-10)
+
+Four more, three of them in the same shape: a rule that enumerated the cases somebody had thought of where it meant a property or a boundary a reader would recognise.
+
+| What | Superseded because |
+|---|---|
+| 7 Character class | It enumerated its members. Thirteen invisible characters were reproduced outside the enumeration, each unflagged by the predicate *and* surviving the sanitizer — the tags block above all, which carries printable ASCII invisibly and put a forged `Recomendaciones:` header past an exact-match count that returned one while the reader saw two. Now: general categories `Cc`, `Cf`, `Cs`, `Co`, `Cn`, `Zl`, `Zp`, plus the named invisibles whose category is a visible one. `Mn` and `Zs` are excluded on purpose — a combining tilde is `Mn` and `Ferreñafe` has to keep passing. |
+| 6 and 8 Normalization | Rule 4 composed to NFC and nothing else did, so a decomposed unit matched no unit pattern and a decomposed quotation was not a quotation. Both rules read the composed body now; rule 7 deliberately still reads the raw one. |
+| 4 Unit resolution | Forward-only, offset-exact and accent-sensitive, so `70 (mm)`, `70-mm`, `70 mms` and a decomposed `70 milímetros` all fell through to the union — the unit-blind set amendment 4 had just removed, reachable through a bracket. Now: a bounded punctuation run that stops at a sentence terminator, folded text, plural abbreviations, and the clause-scoped backward scan below. |
+| 6 Backward scan | Bounded by a count of four tokens, which is what one example needed. Ordinary Spanish word order walked past it in three reproduced sentences. Bounded by the clause now — back to the nearest sentence terminator or line break — and the same implementation serves rule 8, which had no backward reading at all. `al menos dos días` stays silent on the line break rather than on a window width. |
+
+**Residuals added, accepted and recorded:**
+
+- **`por ciento` is a unit, not a numeral.** Reading backwards reaches the `ciento` of that phrase where reading forwards never did, so it is skipped when `por` precedes it. A body writing `ciento` as a numeral immediately after the word `por` therefore goes unrefused. It is not a sentence anyone writes.
+- **The truncation marker is refused, not asserted.** `domain/template.py` drops a checklist item that sanitizes to `CHECKLIST_TRUNCATED_ES` rather than raising on it. Asserting the marker's position would make the template raise on a reachable configuration, and a fallback that cannot compose leaves nothing to send. The dropped item is a real instruction the community loses; the marker then says truthfully that the list was cut.
+
+**Blocking on the pull request that first wires model output into the cycle**, not on this one, and recorded in full under `tasks.md` → Open Items: no rule governs what the message tells a person to *do*, and the verbatim exemption removes the quoted span from the text every later rule reads — so a hostile aviso title reading `LLAME AL` plus a nine-digit mobile number is accepted when quoted, while the same digits standing alone are rejected. The three parts required there are a closed instruction vocabulary, a flat refusal of contact channels anywhere in the body including inside a verbatim span, and an exemption narrowed to numeric provenance alone.
+
 ---
 
 ## 7. Testing Strategy
