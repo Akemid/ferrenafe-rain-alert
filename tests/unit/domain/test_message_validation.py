@@ -422,6 +422,100 @@ class TestEveryNumberInTheBodyIsTraceableToTheRequest:
         }
 
 
+#: The request the flat allowed set could not defend. Every figure it carries
+#: is a plausible rainfall reading, so a model drawing from the numbers in its
+#: own prompt — which is the most probable hallucination this validator will
+#: ever see — landed inside the set every time, with no trickery at all.
+UNIT_CONFUSION: dict[str, object] = {
+    "forecast": ForecastSummary(mm_24h=3.0, mm_48h=3.0, peak_at=NOW + timedelta(hours=9), peak_probability_pct=70),
+    "reasons": (ForecastThresholdReason(accumulated_mm=3.0, hours=24, probability_pct=70),),
+}
+
+UNIT_CASES = [
+    pytest.param(
+        "Se esperan 70 mm de lluvia.",
+        {ValidationRule.UNKNOWN_NUMBER},
+        id="the-probability-cannot-legitimise-a-rainfall-figure",
+    ),
+    pytest.param(
+        "Probabilidad de 24 %.",
+        {ValidationRule.UNKNOWN_NUMBER},
+        id="the-horizon-cannot-legitimise-a-probability",
+    ),
+    pytest.param(
+        "Llovera durante 70 horas.",
+        {ValidationRule.UNKNOWN_NUMBER},
+        id="the-probability-cannot-legitimise-an-hour-count",
+    ),
+    pytest.param(
+        "Se esperan 3,0 mm de lluvia.",
+        set(),
+        id="a-rainfall-figure-stated-as-rainfall-is-accepted",
+    ),
+    pytest.param(
+        "Se esperan 3,0 milimetros de lluvia.",
+        set(),
+        id="the-unit-written-out-resolves-the-same-way",
+    ),
+    pytest.param(
+        "Probabilidad de 70 %.",
+        set(),
+        id="a-probability-stated-as-a-probability-is-accepted",
+    ),
+    pytest.param(
+        "Probabilidad de 70 por ciento.",
+        set(),
+        id="the-percentage-written-as-a-phrase-resolves-the-same-way",
+    ),
+    pytest.param(
+        "Llovera durante 24 horas.",
+        set(),
+        id="an-hour-count-stated-as-hours-is-accepted",
+    ),
+    pytest.param(
+        "El aviso lleva el numero 70 en el registro.",
+        set(),
+        id="a-bare-number-with-no-adjacent-unit-is-checked-against-the-union",
+    ),
+]
+
+
+class TestANumberIsOnlyAllowedAsTheQuantityItActuallyIs:
+    """Rule 8's unit condition. The allowed set was a flat `set[Decimal]`, so
+    membership never asked "present as what": with a 3.0 mm forecast, a 70 %
+    probability and a 24-hour horizon, "Se esperan 70 mm de lluvia" was
+    accepted because 70 was in the set — as the probability.
+
+    That is not an exotic attack. A model inventing a rainfall figure draws
+    from the numbers in its own prompt, and those numbers are exactly this
+    set's members, so the flat set legitimised the single most likely
+    hallucination the validator will ever see.
+
+    A bare figure with no adjacent unit stays checked against the union. That
+    is what keeps a legitimate reference to a number the request carries from
+    being refused for saying nothing about what it measures, and it is the
+    direction the template's own output depends on.
+    """
+
+    @pytest.mark.parametrize(("body_text", "expected"), UNIT_CASES)
+    def test_the_expected_rules_fire_and_no_others(self, body_text, expected) -> None:
+        message_request = request(**UNIT_CONFUSION)
+
+        assert rules_for(message_request, spoken(message_request, body_text)) == expected
+
+    def test_the_violation_says_which_unit_disagreed(self) -> None:
+        """The operator notice has to be readable without opening the draft,
+        and "70 traces to nothing" is not the information "70 was offered as
+        millimetres and this request has no such reading"."""
+        message_request = request(**UNIT_CONFUSION)
+
+        violations = validate_message(message_request, spoken(message_request, "Se esperan 70 mm de lluvia."))
+
+        assert [violation.rule for violation in violations] == [ValidationRule.UNKNOWN_NUMBER]
+        assert "70" in violations[0].detail
+        assert "mm" in violations[0].detail
+
+
 WORD_NUMBER_CASES = [
     pytest.param("Se esperan ochenta milimetros de lluvia.", True, id="a-rainfall-amount-written-in-words-is-rejected"),
     pytest.param("Se esperan ochenta milímetros de lluvia.", True, id="the-accented-form-is-the-same-word"),

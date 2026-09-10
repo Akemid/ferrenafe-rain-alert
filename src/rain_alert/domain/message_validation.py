@@ -172,29 +172,73 @@ def _canonical(token: str) -> Decimal | None:
         return None
 
 
-def _allowed_numbers(request: MessageRequest) -> set[Decimal]:
-    """Every quantity the request itself carries.
+class NumberUnit(StrEnum):
+    """What a figure in a body claims to measure.
+
+    Rule 8 was unit-blind before an adversarial review: the allowed set was a
+    flat `set[Decimal]`, so membership could only ask "is this number
+    present" and never "present as what". With a 3.0 mm forecast, a 70 %
+    probability and a 24-hour horizon, `Se esperan 70 mm de lluvia` was
+    accepted, because 70 was in the set — as the probability.
+
+    That is the most probable hallucination this validator will ever see. A
+    model inventing a rainfall figure draws from the numbers in front of it,
+    and those numbers are exactly the set's members, so every such invention
+    passed cleanly with no trickery at all.
+    """
+
+    MILLIMETRES = "mm"
+    PERCENTAGE = "%"
+    HOURS = "h"
+
+
+#: How a token's unit is read: from the text immediately after it. Order
+#: matters only in that the percentage phrase is tried before the units whose
+#: spellings could otherwise shadow it.
+#:
+#: `(?!\w)` rather than `\b` after the alphabetic units, so `3 hasta` does not
+#: read as three hours. The percentage sign needs no such guard, since it is
+#: not a word character and cannot be the head of a longer word.
+_UNIT_AFTER_A_NUMBER: tuple[tuple[re.Pattern[str], NumberUnit], ...] = (
+    (re.compile(r"\s*(?:%|por\s+ciento(?!\w))", re.IGNORECASE), NumberUnit.PERCENTAGE),
+    (re.compile(r"\s*(?:mm|mil[ií]metros?)(?!\w)", re.IGNORECASE), NumberUnit.MILLIMETRES),
+    (re.compile(r"\s*(?:horas?|h)(?!\w)", re.IGNORECASE), NumberUnit.HOURS),
+)
+
+
+def _unit_after(residue: str, position: int) -> NumberUnit | None:
+    """The unit written immediately after `position`, or `None` for a bare
+    figure that says nothing about what it measures."""
+    for pattern, unit in _UNIT_AFTER_A_NUMBER:
+        if pattern.match(residue, position) is not None:
+            return unit
+    return None
+
+
+def _allowed_numbers(request: MessageRequest) -> dict[NumberUnit, set[Decimal]]:
+    """Every quantity the request carries, keyed by what it measures.
 
     Millimetre amounts are added twice, raw and at one decimal place, because
     `domain/template.py` prints `{value:.1f}` and a model told "12.4 mm" may
     legitimately write `12,4`.
     """
-    allowed: set[Decimal] = set()
+    allowed: dict[NumberUnit, set[Decimal]] = {unit: set() for unit in NumberUnit}
 
     def add_mm(value: float) -> None:
-        allowed.update({Decimal(str(value)), Decimal(f"{value:.1f}")})
+        allowed[NumberUnit.MILLIMETRES].update({Decimal(str(value)), Decimal(f"{value:.1f}")})
 
     forecast = request.forecast
     if forecast is not None:
         add_mm(forecast.mm_24h)
         add_mm(forecast.mm_48h)
-        allowed.add(Decimal(forecast.peak_probability_pct))
+        allowed[NumberUnit.PERCENTAGE].add(Decimal(forecast.peak_probability_pct))
         # The forecast's own fixed horizons, which its summary is computed over.
-        allowed.update({Decimal(24), Decimal(48)})
+        allowed[NumberUnit.HOURS].update({Decimal(24), Decimal(48)})
     for reason in request.reasons:
         if isinstance(reason, ForecastThresholdReason):
             add_mm(reason.accumulated_mm)
-            allowed.update({Decimal(reason.hours), Decimal(reason.probability_pct)})
+            allowed[NumberUnit.HOURS].add(Decimal(reason.hours))
+            allowed[NumberUnit.PERCENTAGE].add(Decimal(reason.probability_pct))
             # `probability_threshold_pct` is deliberately absent. The Spanish
             # template never renders it, only the English operator view does,
             # so it never reaches the prompt and a model cannot legitimately
@@ -230,19 +274,37 @@ def _normalized_time(token: str) -> str:
 
 
 def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ...]:
-    """Every candidate number in `residue` that the request cannot account for."""
+    """Every candidate number in `residue` the request cannot account for,
+    already worded for an operator notice.
+
+    A bare figure — one with no unit written after it — is checked against
+    the union of every unit's values. That is deliberate and it is what keeps
+    the template's own output passing: a body may refer to a number the
+    request carries without restating what it measures, and refusing that
+    would refuse the fallback. A figure that *does* name its unit is held to
+    that unit alone.
+    """
     allowed_numbers = _allowed_numbers(request)
+    any_unit = set[Decimal]().union(*allowed_numbers.values())
     allowed_dates, allowed_times = _allowed_moments(request)
     unknown: list[str] = []
-    for token in _CANDIDATE_NUMBER.findall(residue):
+    for match in _CANDIDATE_NUMBER.finditer(residue):
+        token = match.group()
         if "/" in token:
-            traceable = _normalized_date(token) in allowed_dates
+            if _normalized_date(token) not in allowed_dates:
+                unknown.append(f"{token!r} traces to no date on the request")
         elif ":" in token:
-            traceable = _normalized_time(token) in allowed_times
+            if _normalized_time(token) not in allowed_times:
+                unknown.append(f"{token!r} traces to no time on the request")
         else:
-            traceable = _canonical(token) in allowed_numbers
-        if not traceable:
-            unknown.append(token)
+            unit = _unit_after(residue, match.end())
+            permitted = any_unit if unit is None else allowed_numbers[unit]
+            if _canonical(token) not in permitted:
+                unknown.append(
+                    f"{token!r} traces to no value on the request"
+                    if unit is None
+                    else f"{token!r} is stated in {unit.value!r} and traces to no such value on the request"
+                )
     return tuple(unknown)
 
 
@@ -390,8 +452,7 @@ def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[
 
     residue = _residue(request, candidate)
     violations.extend(
-        Violation(ValidationRule.UNKNOWN_NUMBER, f"{token!r} traces to no value on the request")
-        for token in _untraceable_numbers(request, residue)
+        Violation(ValidationRule.UNKNOWN_NUMBER, detail) for detail in _untraceable_numbers(request, residue)
     )
     violations.extend(
         Violation(ValidationRule.WORD_NUMBER, f"{word!r} quantifies {unit!r} in words instead of digits")

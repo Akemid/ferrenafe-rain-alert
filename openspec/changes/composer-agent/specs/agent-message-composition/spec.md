@@ -96,7 +96,42 @@ The removed-character class of `domain.sanitize` was widened in the same amendme
 
 A **candidate number** is a date token (`DD/MM/YYYY`), a time token (`HH:MM`), or a decimal/integer token (comma or dot as decimal separator, optionally followed by `%`); dates and times are extracted whole before scanning for bare decimal/integer tokens, so a date's day/month/year are never evaluated as three independent numbers.
 
-A candidate is **allowed** when, after normalizing its decimal separator and comparing at the precision the source value was computed at (one decimal place for millimetre amounts), it equals one of: the local date or time of `window.start`, `window.end`, `warning.window.start`/`.end` (if `warning` is set), or `forecast.peak_at` (if `forecast` is set); `forecast.mm_24h`, `forecast.mm_48h`, `forecast.peak_probability_pct`, or the literal `24`/`48` (if `forecast` is set); or any reason's `accumulated_mm`, `hours`, or `probability_pct`. A candidate is also allowed, regardless of the sets above, when it falls inside a contiguous body span that reproduces **verbatim, in full**, `sanitize_source_text(warning.title)`, one `WarningReason.title`'s sanitized text, or one `request.checklist` item — a partial or paraphrased quote grants no exemption. Any candidate matching none of the above is rejected.
+The allowed set is **keyed by unit**, not flat. The units are millimetres, percentage, hours, date and time, and each of the request's values belongs to exactly one of them: `forecast.mm_24h` and `forecast.mm_48h` and every reason's `accumulated_mm` are millimetres; `forecast.peak_probability_pct` and every reason's `probability_pct` are percentages; every reason's `hours` and the literals `24`/`48` (if `forecast` is set) are hours; the local renderings of `window.start`, `window.end`, `warning.window.start`/`.end` (if `warning` is set) and `forecast.peak_at` (if `forecast` is set) are dates and times.
+
+A candidate's unit is resolved from the token immediately following it: `mm` or `milímetro(s)` for millimetres, `%` or `por ciento` for percentage, `hora(s)` or `h` for hours. A date or time token carries its unit in its own shape.
+
+A candidate is **allowed** when, after normalizing its decimal separator and comparing at the precision the source value was computed at (one decimal place for millimetre amounts), it equals a request value **of the unit it was written in**. A candidate written with no adjacent unit is allowed against the union of every unit's values. A candidate whose adjacent unit disagrees with the field it would otherwise have matched MUST be rejected. A candidate is also allowed, regardless of the sets above, when it falls inside a contiguous body span that reproduces **verbatim, in full**, `sanitize_source_text(warning.title)`, one `WarningReason.title`'s sanitized text, or one `request.checklist` item — a partial or paraphrased quote grants no exemption, and neither does a span too short to be a quotation (see the verbatim-span requirement below). Any candidate matching none of the above is rejected.
+
+*Amended 2026-09-10, after an adversarial review reproduced the hole.* This paragraph previously described one flat set of quantities, and the implementation followed it literally: membership could ask "is this number present in the request" and never "present as what". With a 3.0 mm forecast, a 70 % peak probability and a 24-hour horizon, both of the following were accepted:
+
+| Body | Why it passed |
+|---|---|
+| `Se esperan 70 mm de lluvia.` | `70` is in the set — as the probability |
+| `Probabilidad de 24 %.` | `24` is in the set — as the horizon |
+
+The flat set was wrong because it mistook the shape of the threat. A model inventing a rainfall figure does not invent it from nowhere; it draws from the numbers in its own prompt, and those numbers are precisely this set's members. The unconditioned rule therefore legitimised the single most likely hallucination the validator will ever face, which is the exact failure this whole capability exists to prevent, and it did so with no adversary and no trickery.
+
+The bare-figure allowance is kept on purpose and in the other direction: a body may refer to a number the request carries without restating what it measures, and refusing that would refuse the deterministic template's own output, which the fallback invariant forbids.
+
+#### Scenario: A probability cannot legitimise a rainfall figure
+- GIVEN `forecast.mm_24h = 3.0` and a peak probability of 70
+- WHEN the body states "Se esperan 70 mm de lluvia"
+- THEN the message is rejected, because 70 is a percentage on this request and not a millimetre reading
+
+#### Scenario: An horizon cannot legitimise a probability
+- GIVEN a reason with `hours = 24` and `probability_pct = 70`
+- WHEN the body states "Probabilidad de 24 %"
+- THEN the message is rejected, because 24 is an hour count on this request and not a percentage
+
+#### Scenario: A figure stated in its own unit is accepted
+- GIVEN `forecast.mm_24h = 3.0`
+- WHEN the body states "Se esperan 3,0 mm de lluvia" or "Se esperan 3,0 milímetros de lluvia"
+- THEN the number is accepted
+
+#### Scenario: A bare figure is checked against the union
+- GIVEN a request carrying 70 as a percentage
+- WHEN the body states "70" with no unit written after it
+- THEN the number is accepted, because it claims to measure nothing and the union is the honest comparison
 
 `probability_threshold_pct` is deliberately **not** allowed, and that is worth stating because an earlier draft of this requirement listed it. The Spanish template never renders it: `template.py` drops it with the comment that the internal threshold is operator detail rather than something a recipient can act on, and only the English operator rendering prints it. The value therefore never enters the prompt, so the model cannot legitimately know it, and a body containing it has no honest reason to. Excluding it costs nothing, since the invariant asserting the template always passes does not need it, and it removes one number a draft could carry without justification.
 
