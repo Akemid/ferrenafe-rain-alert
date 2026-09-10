@@ -511,6 +511,17 @@ This is a **rendering** rule and not a prompt rule. The requirement above, that 
 - WHEN the template composes
 - THEN every item is rendered and no truncation is declared
 
+The truncation marker MUST be the template's own and MUST be the final line of the body whenever it appears. A checklist item that sanitizes to the marker's text MUST be refused; because refusing it cuts the list, the marker is then emitted truthfully.
+
+*Added 2026-09-10, after a second adversarial review.* An item whose text equals the marker rendered a byte-identical marker line mid-list, with real instructions printed underneath it and nothing actually cut. The operator is the author, so this is not an attack path today. It matters because the marker is the reader's only signal that instructions were dropped, and a signal that can appear when it is not true is not a signal.
+
+Refusing the item was chosen over asserting the marker's position. Asserting would make the template **raise** on a configuration the operator can reach, and this template's output is the fallback — a fallback that cannot compose leaves the system with nothing to send, which is the one failure the template-always-passes invariant exists to prevent. Refusing degrades instead, and it keeps the marker honest at no cost: the list really was cut, by exactly that item.
+
+#### Scenario: An item cannot forge the truncation marker
+- GIVEN a checklist item whose sanitized text is the truncation marker's own wording, in a list long enough to be cut
+- WHEN the template composes
+- THEN the marker appears exactly once, as the final line, and the operator's other items are still rendered
+
 ### Requirement: Operator is notified exactly once per fallback, never on success
 
 When the composer falls back to the template, the system MUST emit exactly one operator notice of a fallback kind through `Notifier.send_operator_notice`. When the agent's output is accepted, it MUST emit none.

@@ -276,6 +276,62 @@ class TestTheOperatorChecklistCannotForgeStructureEither:
         assert body.splitlines()[-2:] == ["- Guarda agua potable", "- Asegura objetos sueltos"]
 
 
+class TestTheTruncationMarkerCannotBeForged:
+    """The marker is the reader's only signal that instructions were dropped.
+
+    A checklist item whose sanitized text is the marker's own wording
+    rendered a byte-identical marker line in the middle of the list, with
+    nothing actually cut and real instructions printed underneath it. The
+    operator is the author, so this is not an attack path today; it matters
+    because a signal that can appear when it is not true is not a signal.
+
+    **The repair, and why this one.** Two were available: assert the marker
+    is the final line, or refuse an item that sanitizes to it. Asserting
+    would make the template *raise* on a reachable configuration, and this
+    template's output is the fallback — a fallback that cannot compose
+    leaves the system with nothing to send, which is the one failure
+    invariant V0 exists to prevent. Refusing the item degrades instead, and
+    the marker stays honest for free: the list really was cut, by exactly
+    one item, so the marker says something true and says it last.
+    """
+
+    IMPERSONATING_ITEM = CHECKLIST_TRUNCATED_ES.removeprefix("- ")
+
+    def test_an_item_cannot_render_a_marker_line_of_its_own(self) -> None:
+        """The list really is cut here, so the genuine marker is emitted too
+        — and the forged one used to sit above it, telling the reader the
+        instructions in between had been dropped when they had not."""
+        overflowing = ("Revisa el plan de evacuacion familiar con toda la casa.",) * 30
+        request = _request(checklist=(self.IMPERSONATING_ITEM, *overflowing))
+
+        lines = MessageComposer().compose(request).body.splitlines()
+
+        assert lines.count(CHECKLIST_TRUNCATED_ES) == 1
+
+    def test_the_marker_is_the_last_line_when_it_appears_at_all(self) -> None:
+        """Mid-list, the marker claims the instructions under it were cut."""
+        request = _request(checklist=("Cierra la llave del gas.", self.IMPERSONATING_ITEM, "Sube a un lugar alto."))
+
+        lines = MessageComposer().compose(request).body.splitlines()
+
+        assert lines[-1] == CHECKLIST_TRUNCATED_ES
+
+    def test_the_operators_real_instructions_survive_the_refusal(self) -> None:
+        """Triangulation: one item is refused, not the checklist."""
+        request = _request(checklist=("Cierra la llave del gas.", self.IMPERSONATING_ITEM, "Sube a un lugar alto."))
+
+        body = MessageComposer().compose(request).body
+
+        assert "- Cierra la llave del gas." in body.splitlines()
+        assert "- Sube a un lugar alto." in body.splitlines()
+
+    def test_the_marker_still_means_what_it_says(self) -> None:
+        """It appears because something was cut, which is exactly true."""
+        request = _request(checklist=("Cierra la llave del gas.", self.IMPERSONATING_ITEM))
+
+        assert CHECKLIST_TRUNCATED_ES in MessageComposer().compose(request).body.splitlines()
+
+
 class TestLocalTimeDisplay:
     def test_window_is_rendered_in_the_configured_timezone_not_raw_utc(self) -> None:
         """D7: domain datetimes are UTC, but a community reader must not be

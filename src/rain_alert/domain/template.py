@@ -148,12 +148,29 @@ def _checklist_lines(items: tuple[str, ...], budget: int) -> list[str]:
 
     Returns:
         One `- ` bullet per item that fits, in order, followed by
-        `CHECKLIST_TRUNCATED_ES` when any item had to be dropped.
+        `CHECKLIST_TRUNCATED_ES` when any item had to be dropped. An item
+        that renders as the marker itself is one of the dropped ones, so the
+        marker is always the template's own and always the final line.
     """
     bullets = [f"- {sanitize_source_text(item)}" for item in items]
-    if sum(len(bullet) + 1 for bullet in bullets) <= budget:
-        return bullets
+    # An item whose sanitized text is the marker's own wording rendered a
+    # byte-identical marker line in the middle of the list, with real
+    # instructions printed underneath it and nothing actually cut. The
+    # marker is the reader's only signal that instructions were dropped, and
+    # a signal that can appear when it is not true is not a signal.
+    #
+    # Refused rather than asserted against. Asserting the marker's position
+    # would make this template *raise* on a configuration the operator can
+    # reach, and its output is the fallback — a fallback that cannot compose
+    # leaves the system with nothing to send, which is the one failure
+    # invariant V0 exists to prevent. Refusing degrades instead, and it
+    # keeps the marker honest for free: the list really was cut, by exactly
+    # this item, so the marker below says something true and says it last.
+    honest = [bullet for bullet in bullets if bullet != CHECKLIST_TRUNCATED_ES]
+    if len(honest) == len(bullets) and sum(len(bullet) + 1 for bullet in honest) <= budget:
+        return honest
 
+    bullets = honest
     kept: list[str] = []
     used = len(CHECKLIST_TRUNCATED_ES) + 1
     for bullet in bullets:
