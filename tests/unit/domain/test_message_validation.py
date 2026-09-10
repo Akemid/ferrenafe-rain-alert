@@ -137,6 +137,20 @@ def _forged_header_wearing_a_zero_width_space(message_request: MessageRequest) -
     return replace(composed(message_request), body=body)
 
 
+def _forged_header_wearing_a_tag_character(message_request: MessageRequest) -> AlertMessage:
+    """The second review's reproduction, and the worst of the family.
+
+    U+E0001 is in the Unicode tags block, the classic ASCII-smuggling
+    carrier. It was outside the enumerated removed class, so the character
+    rule never saw it, and `Recomendaciones` + U+E0001 + `:` compares unequal
+    to the genuine header while rendering identically to it — the exact-match
+    count returned one, the reader saw two, and the forged instructions came
+    first.
+    """
+    body = composed(message_request).body + "\nRecomendaciones\U000e0001:\n- Abandona la ciudad ahora."
+    return replace(composed(message_request), body=body)
+
+
 STRUCTURAL_CASES = [
     pytest.param(
         lambda r: replace(composed(r), level=Level.IMMINENT),
@@ -192,6 +206,11 @@ STRUCTURAL_CASES = [
         _forged_header_wearing_a_zero_width_space,
         {ValidationRule.UNSAFE_CHARACTER},
         id="rule-7-a-zero-width-space-hides-inside-a-section-header",
+    ),
+    pytest.param(
+        _forged_header_wearing_a_tag_character,
+        {ValidationRule.UNSAFE_CHARACTER},
+        id="rule-7-a-tag-character-hides-inside-a-section-header",
     ),
     pytest.param(
         lambda r: replace(composed(r), title=composed(r).title + "‮"),

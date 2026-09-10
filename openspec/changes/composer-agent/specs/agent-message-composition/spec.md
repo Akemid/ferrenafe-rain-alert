@@ -67,6 +67,27 @@ Before an agent-composed `AlertMessage` is accepted: `level` MUST equal `request
 
 The removed-character class of `domain.sanitize` was widened in the same amendment to cover U+2028, U+2029 and the zero-width/format class (U+200B-U+200F, U+FEFF, U+061C, U+00AD and the invisible operators). It had covered C0/C1, DEL and the bidi controls only. Two consequences were reproduced: a zero-width space inside `Recomendaciones​:` renders as the genuine header while comparing unequal to it, so no exact-match count can catch it; and because `\s` does not match that class, one could survive `sanitize_source_text` and reach the prompt inside a hostile aviso title. The class stays defined in one place, as that module already requires.
 
+*Amended again 2026-09-10, after a second adversarial review.* Widening the enumeration was the wrong repair. It fixed the members somebody had thought of and left the shape of the mistake in place, and thirteen more invisible characters were then reproduced outside it — each unflagged by `has_unsafe_characters` **and** surviving `sanitize_source_text` intact: the tags block (U+E0000-U+E007F), the variation selectors (U+FE00-U+FE0F, U+E0100-U+E01EF), the Hangul fillers (U+115F, U+1160, U+3164), the Mongolian variation selectors and vowel separator (U+180B-U+180E), and the braille pattern blank (U+2800). The tags block is the worst of them, because it encodes printable ASCII one codepoint per character and is the standard carrier for text a reader cannot see; a body whose second `Recomendaciones:` header carried a single tag character was accepted, the exact-match count returned one, and the reader saw two identical headers with the forged instructions first.
+
+The class MUST therefore be defined by **Unicode property, not by enumeration**: a character is removed when its general category is `Cc`, `Cf`, `Cs`, `Co`, `Cn`, `Zl` or `Zp`, or when it is one of the named invisibles whose category is a visible one (U+115F, U+1160, U+3164, U+2800, and the variation selectors in `Mn`). `Mn` as a whole MUST NOT be taken: a combining tilde is that category, and `Ferreñafe` written with one has to keep passing. `Zs` MUST NOT be taken either: no-break, narrow no-break and figure spaces are visible spacing, and the whitespace rule already collapses them.
+
+The body MUST additionally be normalized to NFC once before the header-count rule and before the number rule, so a header or a unit written in decomposed form is one string rather than two. The character rule stays on the raw body, since normalizing cannot remove an invisible character and the rule exists to see the body exactly as it arrived.
+
+#### Scenario: A tag character hides inside a section header
+- GIVEN a body containing `Recomendaciones` + U+E0001 + `:` as a line of its own
+- WHEN validation runs
+- THEN the message is rejected on the character rule, since the header renders identically to the genuine one while the exact-match count cannot see it
+
+#### Scenario: An invisible character outside the enumeration is refused
+- GIVEN an aviso title carrying a variation selector, a Hangul filler, a Mongolian variation selector or a braille pattern blank
+- WHEN it is sanitized, or a body carrying one is validated
+- THEN the character does not survive sanitizing, and the body is rejected
+
+#### Scenario: The language the system speaks is untouched
+- GIVEN accented Spanish, an em dash, and `Ferreñafe` written with a combining tilde
+- WHEN either the sanitizer or the character rule runs
+- THEN nothing is removed and nothing is refused
+
 #### Scenario: A line separator forges a header the renderer will show
 - GIVEN a body whose second `Recomendaciones:` header is introduced by U+2028 rather than by `\n`
 - WHEN validation runs
