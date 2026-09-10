@@ -144,6 +144,20 @@ An unmatched spelling is not a refusal. It is a fallback to the union, which mak
 - WHEN validation runs
 - THEN the figure is treated as bare and checked against the union, not against that unit
 
+A candidate's unit MUST also be resolved from the clause **in front of** it, by the same clause-scoped scan the word-number rule uses (see "A measurement written in words is rejected" below). Only when neither direction names a unit is the candidate bare, and only then is it checked against the union.
+
+*Added 2026-09-10, in the same review.* The backward machinery existed and was wired to the word-number rule alone, so a figure written in digits had no backward reading at all. Against a 3.0 mm forecast whose probability is 70, `Lluvia acumulada en milímetros: 70` and `Milímetros de lluvia: 70` were both accepted. Neither is an attack. The first is how a person writes the sentence, and both reached the union of every unit's values — so the bare-figure fallback, which the paragraph above justifies as narrow, was in practice the ordinary path for any figure whose unit was not written immediately after it.
+
+#### Scenario: A unit written in front of a figure is read
+- GIVEN `forecast.mm_24h = 3.0` and a peak probability of 70
+- WHEN the body states "Lluvia acumulada en milímetros: 70" or "Milímetros de lluvia: 70"
+- THEN the message is rejected, because the clause states 70 as a millimetre reading this request does not carry
+
+#### Scenario: A clause naming no unit still falls back to the union
+- GIVEN a request carrying 70 as a percentage
+- WHEN the body states "El aviso lleva el número 70 en el registro"
+- THEN the number is accepted, because nothing in the clause says what it measures
+
 A candidate is **allowed** when, after normalizing its decimal separator and comparing at the precision the source value was computed at (one decimal place for millimetre amounts), it equals a request value **of the unit it was written in**. A candidate written with no adjacent unit is allowed against the union of every unit's values. A candidate whose adjacent unit disagrees with the field it would otherwise have matched MUST be rejected. A candidate is also allowed, regardless of the sets above, when it falls inside a contiguous body span that reproduces **verbatim, in full**, `sanitize_source_text(warning.title)`, one `WarningReason.title`'s sanitized text, or one `request.checklist` item — a partial or paraphrased quote grants no exemption, and neither does a span too short to be a quotation (see the verbatim-span requirement below). Any candidate matching none of the above is rejected.
 
 *Amended 2026-09-10, after an adversarial review reproduced the hole.* This paragraph previously described one flat set of quantities, and the implementation followed it literally: membership could ask "is this number present in the request" and never "present as what". With a 3.0 mm forecast, a 70 % peak probability and a 24-hour horizon, both of the following were accepted:
@@ -297,7 +311,36 @@ Narrowing to a reported unit targets the actual threat, which is inventing a rai
 | `Se esperan ochenta o más milímetros de lluvia.` | `o` and `más` ended the scan |
 | `Lluvia en milímetros: ochenta.` | the unit came first |
 
-The backward reading is bounded — a short window of qualifiers only — because a wider one reaches across clauses and attaches a numeral to a unit it has nothing to do with. That bound is what keeps the checklist's "al menos dos días" silent.
+The backward reading is bounded, because an unbounded one reaches across clauses and attaches a numeral to a unit it has nothing to do with. That bound is what keeps the checklist's "al menos dos días" silent.
+
+*Amended again 2026-09-10, after a second adversarial review.* The bound was a **count of four tokens**, which is exactly what `probabilidad máxima de <numeral>` needs and nothing wider. A token count is an arbitrary bound that happens to fit the example it was written against, so ordinary Spanish word order walked straight past it:
+
+| Body | Escape |
+|---|---|
+| `La lluvia en milímetros que se espera hoy es de setenta.` | the unit opens the clause and the numeral closes it, seven tokens away |
+| `Se acumularán milímetros de lluvia, en total, setenta.` | a parenthetical pushed the unit out of the window |
+| `Probabilidad de que llueva: casi con seguridad ochenta.` | the same, with the unit carried by the noun |
+
+The bound MUST therefore be the **clause**, not a token count: the scan reads back to the nearest sentence terminator or line break, and takes the nearest unit or implied-unit noun it finds there. A comma and a colon are not boundaries, since all three escapes above cross one. The line break is a boundary because the body is a line-oriented format whose bullets are separate instructions — which is what now keeps "al menos dos días" silent, rather than a window width.
+
+**One implementation, used by both rules.** The same clause-scoped scan MUST serve the digit rule, which had no backward reading at all (see the unit-resolution amendment above). A quantity written in words and a quantity written in digits state their unit in the same Spanish, and two implementations of one question is how one of them ends up missing.
+
+`por ciento` is a unit spelling and not a numeral quantifying one, so the `ciento` of that phrase MUST NOT itself be read as a word-number. Reading backwards reaches it where reading forwards never did, and `Probabilidad de 70 por ciento` is an honest percentage.
+
+#### Scenario: The unit opens the clause and the numeral closes it
+- GIVEN a candidate body states "La lluvia en milímetros que se espera hoy es de setenta"
+- WHEN validation runs
+- THEN the message is rejected, however many words separate the unit from the numeral inside the clause
+
+#### Scenario: The scan stops at the clause
+- GIVEN a candidate body states "Se esperan milímetros de lluvia. Al menos dos días de refugio."
+- WHEN validation runs
+- THEN "dos" raises no violation, because the unit is in a different sentence
+
+#### Scenario: A percentage written as a phrase is not itself a word-number
+- GIVEN a candidate body states "Probabilidad de 70 por ciento"
+- WHEN validation runs
+- THEN no word-number violation is raised, because "por ciento" is the unit
 
 **`un`/`una`/`uno` are no longer numerals for this rule.** The scenario below said they must not fire on ordinary prose, and the implementation still fired on it: `Espera una hora después de que pare la lluvia.` and `Puede caer un mm.` were both rejected, because the existing cases only tested the articles in front of *non*-units. They are read as connectors now, so they still bridge a compound (`treinta y un milímetros` fires on `treinta`) and quantify nothing on their own. The cost is a word-number of magnitude one going unrefused, which is wrong-lax, recorded, and far cheaper than a rule that refuses the ordinary Spanish for "wait an hour".
 

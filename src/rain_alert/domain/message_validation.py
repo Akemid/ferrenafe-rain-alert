@@ -387,6 +387,111 @@ def _unit_after(residue: str, position: int) -> NumberUnit | None:
     return None
 
 
+# --- Reading a quantity's unit from the words in front of it ---------------
+#
+# Shared by rules 8 and 9. Both ask the same question of the same folded
+# text — "what does the clause in front of this quantity say it measures" —
+# and the answer must not depend on whether the quantity was written in
+# digits or in words. It was written twice before, once per rule, and the
+# digit half was simply missing: `_unit_implied_before` existed and was
+# wired to the word rule alone, so `Lluvia acumulada en milímetros: 70`
+# resolved to no unit at all and fell back to the union of every unit's
+# values. That sentence needs no adversary; it is how a person writes it.
+
+
+def _fold(text: str) -> str:
+    """Accent-stripped and casefolded, so one spelling is one word."""
+    decomposed = unicodedata.normalize("NFD", text.casefold())
+    return "".join(character for character in decomposed if not unicodedata.combining(character))
+
+
+_WORD_OR_NUMBER = re.compile(r"[a-z]+|\d+|%")
+
+#: The units this system actually reports, in every spelling either rule
+#: accepts. The word rule is deliberately narrower than the digit rule: a
+#: word-number quantifying anything else — days, or objects in the
+#: operator's checklist — is not its concern, and an unconditioned version
+#: would reject the template's own body.
+_REPORTED_UNITS = frozenset({"mm", "mms", "milimetro", "milimetros", "hora", "horas", "h", "hs", "porciento"})
+
+#: Nouns that carry a reported unit without writing it. Read **backwards
+#: only**, because forwards they are ordinary subjects: `probabilidad de 60 %`
+#: must stay silent, while `probabilidad máxima de ochenta` must not.
+_IMPLIED_UNIT_NOUNS = frozenset({
+    "probabilidad", "probabilidades", "porcentaje", "precipitacion", "precipitaciones",
+})  # fmt: skip
+
+#: What the unit a clause names measures, once rule 8 has found it. `%` is
+#: absent on purpose: it is read forwards by `_unit_after` and a stray one
+#: behind a figure says nothing about that figure.
+_UNIT_BEHIND_A_FIGURE: dict[str, NumberUnit] = {
+    "mm": NumberUnit.MILLIMETRES,
+    "mms": NumberUnit.MILLIMETRES,
+    "milimetro": NumberUnit.MILLIMETRES,
+    "milimetros": NumberUnit.MILLIMETRES,
+    "precipitacion": NumberUnit.MILLIMETRES,
+    "precipitaciones": NumberUnit.MILLIMETRES,
+    "hora": NumberUnit.HOURS,
+    "horas": NumberUnit.HOURS,
+    "h": NumberUnit.HOURS,
+    "hs": NumberUnit.HOURS,
+    "porciento": NumberUnit.PERCENTAGE,
+    "probabilidad": NumberUnit.PERCENTAGE,
+    "probabilidades": NumberUnit.PERCENTAGE,
+    "porcentaje": NumberUnit.PERCENTAGE,
+}
+
+#: Where a backward scan stops. Sentence terminators and line breaks only.
+#:
+#: **A comma and a colon are deliberately absent**, and that is the whole
+#: correction. The scan used to be bounded by a count of four tokens, which
+#: is what `probabilidad máxima de <numeral>` needs and nothing wider, so
+#: ordinary Spanish word order walked straight past it: `La lluvia en
+#: milímetros que se espera hoy es de setenta`, `Se acumularán milímetros de
+#: lluvia, en total, setenta` and `Probabilidad de que llueva: casi con
+#: seguridad ochenta` were all accepted. A clause is the unit of meaning a
+#: reader parses, so it is the right bound; a token count is an arbitrary
+#: one that happens to fit the example it was written against.
+#:
+#: The line break matters as much as the full stop. The body is a
+#: line-oriented format whose bullets are separate instructions, and the
+#: checklist's `al menos dos días` stays silent because the `milímetros` of
+#: some other bullet is on some other line.
+_CLAUSE_BOUNDARIES = "\n\r  .;!?¡¿"
+
+
+def _clause_before(text: str, position: int) -> str:
+    """`text` back to the nearest clause boundary in front of `position`."""
+    boundary = max(text.rfind(character, 0, position) for character in _CLAUSE_BOUNDARIES)
+    return text[boundary + 1 : position]
+
+
+def _unit_implied_before(text: str, position: int) -> str | None:
+    """The unit the clause in front of `position` gives a quantity, or `None`.
+
+    The forward scan alone missed the phrasing that matters most, because it
+    is the template's own: `Hay una probabilidad máxima de ochenta de que el
+    río se desborde` states a percentage without writing one, so a model
+    imitating the template writes an invented figure the same way. `Lluvia en
+    milímetros: ochenta` puts the unit in front as well, and so does `Lluvia
+    acumulada en milímetros: 70`.
+
+    The nearest unit wins, because that is the one a reader attaches the
+    quantity to. Nothing outside the clause is reached.
+    """
+    clause: list[str] = _WORD_OR_NUMBER.findall(_clause_before(text, position))
+    for token in reversed(clause):
+        if token in _REPORTED_UNITS or token in _IMPLIED_UNIT_NOUNS:
+            return token
+    return None
+
+
+def _unit_before_a_figure(residue: str, position: int) -> NumberUnit | None:
+    """`_unit_implied_before` answered as a `NumberUnit`, for rule 8."""
+    implied = _unit_implied_before(residue, position)
+    return None if implied is None else _UNIT_BEHIND_A_FIGURE.get(implied)
+
+
 def _allowed_numbers(request: MessageRequest) -> dict[NumberUnit, set[Decimal]]:
     """Every quantity the request carries, keyed by what it measures.
 
@@ -475,7 +580,11 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
             if _normalized_time(token) not in allowed_times:
                 unknown.append(f"{token!r} traces to no time on the request")
         else:
-            unit = _unit_after(residue, match.end())
+            # Forwards first: a unit written after the figure is the figure's
+            # own statement about itself, and it beats anything the clause
+            # merely implies. `probabilidad de 60 %` is a percentage because
+            # it says so, not because `probabilidad` opens the clause.
+            unit = _unit_after(residue, match.end()) or _unit_before_a_figure(residue, match.start())
             permitted = any_unit if unit is None else allowed_numbers[unit]
             if _canonical(token) not in permitted:
                 unknown.append(
@@ -517,19 +626,6 @@ _NUMERAL_WORDS = frozenset({
     "cientos", "cientas", "miles", "millares", "decenas", "centenas",
 })  # fmt: skip
 
-#: The units this system actually reports. The rule is deliberately narrower
-#: than the digit rule: a word-number quantifying anything else — days, or
-#: objects in the operator's checklist — is not this rule's concern, and an
-#: unconditioned version would reject the template's own body.
-_REPORTED_UNITS = frozenset({"mm", "milimetro", "milimetros", "hora", "horas", "h", "porciento"})
-
-#: Nouns that carry a reported unit without writing it. Read **backwards
-#: only**, because forwards they are ordinary subjects: `probabilidad de 60 %`
-#: must stay silent, while `probabilidad máxima de ochenta` must not.
-_IMPLIED_UNIT_NOUNS = frozenset({
-    "probabilidad", "probabilidades", "porcentaje", "precipitacion", "precipitaciones",
-})  # fmt: skip
-
 #: Words that may sit between a numeral and its unit without breaking the
 #: link. `o`, `u`, `mas`, `menos` and `hasta` were missing, so
 #: `ochenta o más milímetros` escaped on `o`; `un`/`una`/`uno` are here
@@ -540,28 +636,10 @@ _NUMERAL_CONNECTORS = frozenset({
     "o", "u", "mas", "menos", "hasta", "casi", "aproximadamente", "cerca", "alrededor",
 })  # fmt: skip
 
-#: Additionally skippable when reading backwards from a numeral to the noun
-#: that carries its unit. Spanish puts the qualifier between the two —
-#: `probabilidad máxima de ochenta` — so a backward scan that stopped at the
-#: first adjective would find nothing.
-_QUALIFIERS_BEFORE_A_NUMERAL = _NUMERAL_CONNECTORS | frozenset({
-    "maxima", "maximo", "minima", "minimo", "total", "acumulada", "acumulado",
-    "estimada", "estimado", "prevista", "previsto", "esperada", "esperado",
-    "aproximada", "aproximado", "diaria", "diario",
-})  # fmt: skip
-
-#: How far back the implied-unit noun may sit. Four is what
-#: `probabilidad máxima de <numeral>` needs; wider starts reaching across
-#: clauses and picking up a unit the numeral has nothing to do with.
-_BACKWARD_WINDOW = 4
-
-_WORD_OR_NUMBER = re.compile(r"[a-z]+|\d+|%")
-
-
-def _fold(text: str) -> str:
-    """Accent-stripped and casefolded, so one spelling is one word."""
-    decomposed = unicodedata.normalize("NFD", text.casefold())
-    return "".join(character for character in decomposed if not unicodedata.combining(character))
+#: The qualifier list a backward scan used to have to enumerate — `maxima`,
+#: `total`, `acumulada` and a dozen more — is gone with the token window
+#: that needed it. `_clause_before` crosses whatever the clause contains,
+#: which is what a reader does, and stops where the clause does.
 
 
 def _unit_written_after(tokens: list[str], start: int) -> str | None:
@@ -583,45 +661,29 @@ def _unit_written_after(tokens: list[str], start: int) -> str | None:
     return None
 
 
-def _unit_implied_before(tokens: list[str], start: int) -> str | None:
-    """The unit the words in front of `tokens[start]` give it, or `None`.
-
-    The forward scan alone missed the phrasing that matters most, because it
-    is the template's own: `Hay una probabilidad máxima de ochenta de que el
-    río se desborde` states a percentage without writing one, so a model
-    imitating the template writes an invented figure the same way. `Lluvia en
-    milímetros: ochenta` puts the unit in front as well.
-
-    Only `_QUALIFIERS_BEFORE_A_NUMERAL` may be crossed, and only
-    `_BACKWARD_WINDOW` of them. Anything else ends the scan, which is what
-    keeps `al menos dos días` silent: `al` is not a qualifier, so the `horas`
-    two sentences earlier is never reached.
-    """
-    index = start - 1
-    for _ in range(_BACKWARD_WINDOW):
-        if index < 0:
-            return None
-        token = tokens[index]
-        if token in _REPORTED_UNITS or token in _IMPLIED_UNIT_NOUNS:
-            return token
-        if token not in _QUALIFIERS_BEFORE_A_NUMERAL:
-            return None
-        index -= 1
-    return None
-
-
 def _word_numbers_quantifying_a_unit(residue: str) -> tuple[tuple[str, str], ...]:
     """Every `(numeral, unit)` pair the residue states in words.
 
     `residue` arrives already folded, because the digit rule needs the same
-    folded text and folding twice would mean two readings of one body.
+    folded text and folding twice would mean two readings of one body. The
+    backward half is `_unit_implied_before`, the same clause scan rule 8
+    uses, so a quantity written in words and a quantity written in digits
+    read their unit off the same sentence in the same way.
     """
-    tokens = _WORD_OR_NUMBER.findall(residue)
+    numerals = list(_WORD_OR_NUMBER.finditer(residue))
+    tokens = [numeral.group() for numeral in numerals]
     found: list[tuple[str, str]] = []
     for index, token in enumerate(tokens):
         if token not in _NUMERAL_WORDS:
             continue
-        unit = _unit_written_after(tokens, index) or _unit_implied_before(tokens, index)
+        if token == "ciento" and index > 0 and tokens[index - 1] == "por":
+            # `por ciento` is a unit spelling, not a numeral quantifying one.
+            # The forward matcher has always read it as a phrase for this
+            # reason; the clause scan reaches it from behind, where
+            # `Probabilidad de 70 por ciento` put `probabilidad` in front of
+            # it and made an honest percentage look like a word-number.
+            continue
+        unit = _unit_written_after(tokens, index) or _unit_implied_before(residue, numerals[index].start())
         if unit is not None:
             found.append((token, unit))
     return tuple(found)

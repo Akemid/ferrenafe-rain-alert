@@ -791,6 +791,54 @@ class TestANumberIsOnlyAllowedAsTheQuantityItActuallyIs:
 
         assert all("stated in" not in violation.detail for violation in violations)
 
+    @pytest.mark.parametrize(
+        ("body_text", "expected"),
+        [
+            pytest.param(
+                "Lluvia acumulada en milimetros: 70",
+                {ValidationRule.UNKNOWN_NUMBER},
+                id="the-unit-heads-the-clause-and-the-figure-ends-it",
+            ),
+            pytest.param(
+                "Milimetros de lluvia: 70",
+                {ValidationRule.UNKNOWN_NUMBER},
+                id="the-unit-opens-the-line",
+            ),
+            pytest.param(
+                "La probabilidad maxima esperada hoy es de 24.",
+                {ValidationRule.UNKNOWN_NUMBER},
+                id="the-noun-carries-the-unit-for-a-digit-too",
+            ),
+            pytest.param(
+                "Lluvia acumulada en milimetros: 3,0",
+                set(),
+                id="the-same-phrasing-on-a-figure-the-request-carries",
+            ),
+            pytest.param(
+                "El aviso lleva el numero 70 en el registro.",
+                set(),
+                id="a-clause-that-names-no-unit-still-falls-back-to-the-union",
+            ),
+            pytest.param(
+                "Se esperan lluvias en milimetros. El registro lleva el 70.",
+                set(),
+                id="the-scan-stops-at-the-sentence-boundary",
+            ),
+        ],
+    )
+    def test_a_unit_written_in_front_of_a_digit_figure_is_read(self, body_text, expected) -> None:
+        """`_unit_implied_before` existed and was wired to the word rule
+        only, so the digit rule stayed forward-only.
+
+        `Lluvia acumulada en milímetros: 70` needs no adversary at all — it
+        is how a person writes the sentence — and it reached the union of
+        every unit's values, which is the hole this whole round exists to
+        close.
+        """
+        message_request = request(**UNIT_CONFUSION)
+
+        assert rules_for(message_request, spoken(message_request, body_text)) == expected
+
     def test_the_gap_cannot_reach_across_a_sentence_to_find_a_unit(self) -> None:
         """Bounded, not unbounded. A figure ending one sentence does not take
         its unit from the word that opens the next."""
@@ -856,6 +904,33 @@ WORD_NUMBER_CASES = [
         "Lluvia en milimetros: ochenta.",
         WORD_NUMBER,
         id="the-unit-can-come-before-the-numeral",
+    ),
+    # The second review's escapes. None is an attack; each is ordinary
+    # Spanish word order that a four-token backward window cannot reach.
+    pytest.param(
+        "La lluvia en milimetros que se espera hoy es de setenta.",
+        WORD_NUMBER,
+        id="the-unit-opens-the-clause-and-the-numeral-closes-it",
+    ),
+    pytest.param(
+        "Se acumularan milimetros de lluvia, en total, setenta.",
+        WORD_NUMBER,
+        id="a-parenthetical-does-not-break-the-clause",
+    ),
+    pytest.param(
+        "Probabilidad de que llueva: casi con seguridad ochenta.",
+        WORD_NUMBER,
+        id="the-implied-unit-noun-opens-the-clause",
+    ),
+    pytest.param(
+        "Se esperan milimetros de lluvia. Al menos dos dias de refugio.",
+        set(),
+        id="the-scan-stops-at-the-sentence-boundary",
+    ),
+    pytest.param(
+        "Almacena agua para dos dias.\nLa lluvia se mide en milimetros.",
+        set(),
+        id="the-scan-stops-at-the-line-boundary",
     ),
     # Ordinary prose, which the rule must leave alone.
     pytest.param(
