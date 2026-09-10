@@ -423,6 +423,70 @@ class TestEveryNumberInTheBodyIsTraceableToTheRequest:
         }
 
 
+class TestTheVerbatimSpanExemptionIsBoundedAndCounted:
+    """The exemption was an unanchored global replace with no minimum length.
+
+    Three consequences, all reproduced. A span of `"80"` exempted `80`
+    everywhere in the body, not once. An unanchored span could cut a longer
+    number in half and leave a remainder that happened to be allowed. And a
+    span supplied once exempted every occurrence of it.
+
+    The checklist is operator-owned, so none of this is exploitable through
+    it today — but the sanitized aviso title sits in the same list and is
+    scraped, so a short hostile title bought a global numeric exemption.
+    """
+
+    def test_a_short_checklist_item_is_not_a_quotation(self) -> None:
+        message_request = request(checklist=("80",))
+
+        assert rules_for(message_request, spoken(message_request, "Se esperan 80 mm de lluvia.")) == {
+            ValidationRule.UNKNOWN_NUMBER
+        }
+
+    def test_a_short_scraped_title_is_not_a_quotation(self) -> None:
+        """The exploitable half: the aviso title is source-derived, so a
+        three-word title would otherwise exempt its own digits anywhere."""
+        short_title = "AVISO 80"
+        message_request = request(
+            warning=WarningSummary(source_id="80", level=WarningLevel.ORANGE, title=short_title, window=WINDOW)
+        )
+
+        assert rules_for(message_request, spoken(message_request, f'Se esperan 80 mm. "{short_title}".')) == {
+            ValidationRule.UNKNOWN_NUMBER
+        }
+
+    def test_an_unanchored_span_cannot_cut_a_number_down_to_an_allowed_one(self) -> None:
+        """A span removed mid-number leaves a remainder the rule then
+        approves. Here the scraped title ends in `1`; without word-boundary
+        anchoring it is stripped out of `124 horas`, leaving `24 horas`,
+        which the request does carry.
+        """
+        title = "PRONOSTICO REGIONAL 1"
+        message_request = request(
+            warning=WarningSummary(source_id="1", level=WarningLevel.YELLOW, title=title, window=WINDOW)
+        )
+
+        assert rules_for(message_request, spoken(message_request, f'El SENAMHI informa: "{title}24 horas".')) == {
+            ValidationRule.UNKNOWN_NUMBER
+        }
+
+    def test_one_supplied_span_exempts_one_occurrence(self) -> None:
+        """The request supplied the title once, so the body may quote it
+        once. A second copy is text the model wrote, and its digits face the
+        rule like any others."""
+        message_request = request(warning=WARNING)
+        twice = f'El SENAMHI informa: "{AVISO_TITLE}". Repetimos: "{AVISO_TITLE}".'
+
+        assert rules_for(message_request, spoken(message_request, twice)) == {ValidationRule.UNKNOWN_NUMBER}
+
+    def test_a_single_full_quotation_is_still_exempt(self) -> None:
+        """Triangulation: the bound refuses short and repeated spans, not the
+        exemption itself."""
+        message_request = request(warning=WARNING)
+
+        assert rules_for(message_request, spoken(message_request, f'El SENAMHI informa: "{AVISO_TITLE}".')) == set()
+
+
 NUMERIC_FORM_CASES = [
     pytest.param(
         "Se pronostican 12.400 mm de lluvia.",

@@ -156,6 +156,20 @@ _LOCAL_DATE_FORMAT = "%d/%m/%Y"
 _LOCAL_TIME_FORMAT = "%H:%M"
 
 
+#: Below this, a span is not a quotation — it is a coincidence, and treating
+#: it as one hands a body a blanket numeric exemption. Twelve characters is
+#: shorter than every shipped checklist item and every real aviso title, and
+#: longer than the fragments that made the exemption dangerous: a scraped
+#: title of `AVISO 80` exempted `80` everywhere it appeared in the body.
+#:
+#: Cost, recorded: `request.city` is nine characters, so `Ferreñafe` no
+#: longer earns an exemption. It carries no digit and no Spanish numeral, so
+#: nothing depends on it. A checklist item shorter than this that contains a
+#: digit *would* fail invariant V0 — the shipped five contain none, and V0 is
+#: the test that would say so.
+_MIN_VERBATIM_SPAN_LENGTH = 12
+
+
 def _verbatim_spans(request: MessageRequest) -> tuple[str, ...]:
     """The strings the system itself supplied, which a body may reproduce.
 
@@ -163,12 +177,15 @@ def _verbatim_spans(request: MessageRequest) -> tuple[str, ...]:
     so any number inside it faces the full rule — which is deliberate: a
     fragment-tolerant exemption is how an invented figure gets laundered
     through a title the model half-quoted.
+
+    One entry per string supplied, duplicates included, because the count is
+    the budget: a title the request carries once buys one quotation.
     """
     spans = [*request.checklist, request.city, request.timezone]
     if request.warning is not None:
         spans.append(sanitize_source_text(request.warning.title))
     spans.extend(sanitize_source_text(reason.title) for reason in request.reasons if isinstance(reason, WarningReason))
-    return tuple(span for span in spans if span)
+    return tuple(span for span in spans if len(span) >= _MIN_VERBATIM_SPAN_LENGTH)
 
 
 def _residue(request: MessageRequest, candidate: AlertMessage) -> str:
@@ -178,10 +195,19 @@ def _residue(request: MessageRequest, candidate: AlertMessage) -> str:
     longer one apart. Removed spans become a space rather than nothing: welding
     the neighbouring characters together would invent numbers that were never
     written.
+
+    **Anchored, and counted once per supplied string.** The removal used to
+    be an unanchored global replace, and an adversarial review found what
+    that buys. Unanchored, a span can be cut out of the middle of a longer
+    number and leave a remainder the rule then approves: with a scraped title
+    of `PRONOSTICO REGIONAL 1`, the body `PRONOSTICO REGIONAL 124 horas`
+    became ` 24 horas`, and 24 is an hour count the request carries. Global,
+    one supplied string exempted every occurrence of itself, so a body could
+    quote a title once and reuse its digits as often as it liked.
     """
     text = f"{candidate.title}\n{candidate.body}"
     for span in sorted(_verbatim_spans(request), key=len, reverse=True):
-        text = text.replace(span, " ")
+        text = re.sub(rf"(?<!\w){re.escape(span)}(?!\w)", " ", text, count=1)
     return text
 
 

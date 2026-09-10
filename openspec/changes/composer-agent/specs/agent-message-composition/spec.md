@@ -172,6 +172,38 @@ The bare-figure allowance is kept on purpose and in the other direction: a body 
 - WHEN the body states "se esperan 80 mm"
 - THEN the message is rejected and the template's output is sent instead
 
+### Requirement: The verbatim-span exemption is anchored, bounded and counted
+
+A span grants the exemption only when it is at least a minimum length, matches at word boundaries, and has not already been spent. Each string the request supplies grants **one** exemption, for **one** occurrence in the body.
+
+*Added 2026-09-10, after an adversarial review.* The exemption was an unanchored global replace with no minimum, which bought three things nobody intended:
+
+- **No minimum.** A checklist item of `"80"` exempted `80` everywhere in the body. Not exploitable through the checklist today, since it is operator-owned — but the sanitized aviso title sits in the same list and is scraped, so a hostile source publishing a title of `AVISO 80` obtained a global numeric exemption.
+- **Unanchored.** A span removed from the middle of a longer number leaves a remainder the rule then approves. With a scraped title of `PRONOSTICO REGIONAL 1`, the body `PRONOSTICO REGIONAL 124 horas` became ` 24 horas` after removal, and 24 is an hour count the request carries.
+- **Global.** One supplied string exempted every occurrence of itself, so a body could quote a title once and reuse its digits as often as it liked.
+
+The minimum is twelve characters: shorter than every shipped checklist item and every aviso title in the 2026-09-04 harvest, longer than the fragments that made the exemption dangerous. One consequence is recorded rather than fixed: `request.city` is nine characters, so `Ferreñafe` no longer earns an exemption. It carries no digit and no Spanish numeral, so nothing depends on it, and a checklist item shorter than the minimum that *did* contain a digit would fail the template-always-passes invariant rather than reach an alert.
+
+#### Scenario: A span too short to be a quotation grants no exemption
+- GIVEN a checklist item or a sanitized aviso title of "80"
+- WHEN the body states "se esperan 80 mm" and 80 traces to no request value
+- THEN the message is rejected
+
+#### Scenario: A span cannot be removed from inside a longer number
+- GIVEN a sanitized aviso title ending in "1" and a body writing that title immediately followed by "24 horas"
+- WHEN validation runs
+- THEN the message is rejected, because the span matches only at a word boundary and "124" traces to no request value
+
+#### Scenario: One supplied span exempts one occurrence
+- GIVEN a body that quotes the same sanitized aviso title in full twice
+- WHEN validation runs
+- THEN the message is rejected, because the request supplied the title once
+
+#### Scenario: A single full quotation is still exempt
+- GIVEN a body that quotes the sanitized aviso title in full once
+- WHEN validation runs
+- THEN the digits inside that span raise no violation
+
 ### Requirement: A candidate whose written form is ambiguous is not read as a quantity
 
 Normalizing the decimal separator MUST NOT be allowed to erase the difference between two figures a reader would read differently. A candidate token MUST be refused, whatever it would canonicalize to, when its written form is one the deterministic template could not have produced: a separator followed by exactly three digits (the Spanish thousands group), more than one separator in a single token, a zero-padded integer part, a leading sign, superscript or subscript digits, or a non-ASCII digit family.
