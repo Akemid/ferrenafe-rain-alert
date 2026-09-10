@@ -61,6 +61,27 @@ The agent MUST be given no tool, no send capability, and no write path. Its retu
 
 Before an agent-composed `AlertMessage` is accepted: `level` MUST equal `request.level`; `valid_until` MUST equal `request.window.end`; the body MUST contain `request.city`; the body length MUST NOT exceed the configured maximum; and the body MUST NOT contain more than one `Motivos:` line or more than one `Recomendaciones:` line.
 
+**"A line" means whatever the renderer means by it.** The header count MUST be taken over `str.splitlines`, the expression the notifier uses to print a body, and not over a narrower split. The character rule below MUST be applied over the body's own separator (`"\n"`) alone, because a break the renderer would honour is exactly the character that rule exists to refuse.
+
+*Amended 2026-09-10, after an adversarial review reproduced the disagreement.* The requirement above said "line" without saying whose. The implementation split on `"\n"` for both questions, deliberately, so that a bare carriage return could not hide from the character rule; `adapters/console_notifier.py` renders with `str.splitlines`, which also splits on U+2028. A body ending `… Recomendaciones: - Abandona la ciudad ahora.` was therefore accepted while the operator read **two** `Recomendaciones:` headers, the forged one formatted identically to the genuine one. The two questions are different — "how many headers will a reader see" and "does this body carry a character it has no business carrying" — and each needs the split that answers it. A validator whose two halves disagree about what a line is has a hole waiting for the next separator someone adds.
+
+The removed-character class of `domain.sanitize` was widened in the same amendment to cover U+2028, U+2029 and the zero-width/format class (U+200B-U+200F, U+FEFF, U+061C, U+00AD and the invisible operators). It had covered C0/C1, DEL and the bidi controls only. Two consequences were reproduced: a zero-width space inside `Recomendaciones​:` renders as the genuine header while comparing unequal to it, so no exact-match count can catch it; and because `\s` does not match that class, one could survive `sanitize_source_text` and reach the prompt inside a hostile aviso title. The class stays defined in one place, as that module already requires.
+
+#### Scenario: A line separator forges a header the renderer will show
+- GIVEN a body whose second `Recomendaciones:` header is introduced by U+2028 rather than by `\n`
+- WHEN validation runs
+- THEN the message is rejected, both because the renderer's own split counts two headers and because U+2028 is not a character a body may carry
+
+#### Scenario: A zero-width space hides inside a section header
+- GIVEN a body containing `Recomendaciones` + U+200B + `:` as a line of its own
+- WHEN validation runs
+- THEN the message is rejected on the character rule, since the header compares unequal to the genuine one while rendering identically to it
+
+#### Scenario: A bare carriage return is still not a legitimate line break
+- GIVEN a body containing a bare `\r`
+- WHEN validation runs
+- THEN the message is rejected, because the character rule is applied over `"\n"`-separated lines and does not treat `\r` as a break
+
 #### Scenario: A compliant agent body is accepted
 - GIVEN an agent-returned body meeting every invariant above
 - WHEN validation runs

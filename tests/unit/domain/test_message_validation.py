@@ -113,6 +113,29 @@ def _forged_reasons_header(message_request: MessageRequest) -> AlertMessage:
     return replace(composed(message_request), body=body)
 
 
+def _forged_header_behind_a_line_separator(message_request: MessageRequest) -> AlertMessage:
+    """The attack the validator and the renderer disagreed about.
+
+    `adapters/console_notifier.py` renders the body with `str.splitlines`,
+    which splits on U+2028. The validator split on `"\\n"` only. Rendered
+    through the notifier's own expression, the operator saw two
+    `Recomendaciones:` headers where the validator had counted one.
+    """
+    body = composed(message_request).body + "\u2028Recomendaciones:\u2028- Abandona la ciudad ahora."
+    return replace(composed(message_request), body=body)
+
+
+def _forged_header_wearing_a_zero_width_space(message_request: MessageRequest) -> AlertMessage:
+    """Worse than the line separator, because the reader cannot see it.
+
+    `Recomendaciones` + U+200B + `:` renders as the genuine header and
+    compares unequal to it, so the exact-match count stays at one. Nothing
+    but the character class can catch this one.
+    """
+    body = composed(message_request).body + "\nRecomendaciones\u200b:\n- Abandona la ciudad ahora."
+    return replace(composed(message_request), body=body)
+
+
 STRUCTURAL_CASES = [
     pytest.param(
         lambda r: replace(composed(r), level=Level.IMMINENT),
@@ -158,6 +181,16 @@ STRUCTURAL_CASES = [
         _forged_reasons_header,
         {ValidationRule.FORGED_SECTION_HEADER},
         id="rule-6-body-contains-a-forged-reasons-header",
+    ),
+    pytest.param(
+        _forged_header_behind_a_line_separator,
+        {ValidationRule.FORGED_SECTION_HEADER, ValidationRule.UNSAFE_CHARACTER},
+        id="rule-6-a-line-separator-forges-a-header-the-renderer-shows",
+    ),
+    pytest.param(
+        _forged_header_wearing_a_zero_width_space,
+        {ValidationRule.UNSAFE_CHARACTER},
+        id="rule-7-a-zero-width-space-hides-inside-a-section-header",
     ),
     pytest.param(
         lambda r: replace(composed(r), title=composed(r).title + "‮"),
@@ -243,6 +276,21 @@ class TestSectionHeadersAreCountedAsWholeLines:
         )
 
         assert ValidationRule.FORGED_SECTION_HEADER not in rules_for(message_request, composed(message_request))
+
+    def test_the_validator_counts_headers_the_way_the_renderer_splits_lines(self) -> None:
+        """Triangulation against the renderer, not against another reading of
+        the rule. `adapters/console_notifier.py` prints
+        `for line in message.body.splitlines()`; if the validator splits a
+        body differently, the operator reads headers the validator never
+        counted. The assertion below is the notifier's own expression.
+        """
+        message_request = request()
+        candidate = _forged_header_behind_a_line_separator(message_request)
+
+        rendered = [line.strip() for line in candidate.body.splitlines()]
+
+        assert rendered.count("Recomendaciones:") == 2
+        assert ValidationRule.FORGED_SECTION_HEADER in rules_for(message_request, candidate)
 
     def test_a_body_with_no_headers_at_all_is_not_a_forgery(self) -> None:
         message_request = request()

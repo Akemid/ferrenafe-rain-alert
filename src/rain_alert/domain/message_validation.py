@@ -92,14 +92,36 @@ def _mentions_the_city(body: str, city: str) -> bool:
     return unicodedata.normalize("NFC", city).casefold() in normalized_body
 
 
-def _body_lines(body: str) -> list[str]:
+def _legitimate_lines(body: str) -> list[str]:
     """The body split on its own separator, and only on that.
 
-    `str.splitlines` also splits on a bare carriage return and on several
-    Unicode separators, which would hide exactly the characters rule 7 exists
-    to catch.
+    Rule 7 asks "does this body carry a character it has no business
+    carrying", and the body's one legitimate break is `"\\n"`. Splitting with
+    `str.splitlines` here would consume a bare carriage return and every
+    Unicode separator as if it were a line break, hiding exactly the
+    characters the rule exists to catch.
     """
     return body.split("\n")
+
+
+def _rendered_lines(body: str) -> list[str]:
+    """The body split the way whatever prints it will split it.
+
+    Rule 6 asks a different question from rule 7 — "how many section headers
+    will a reader see" — and only the renderer can answer it.
+    `adapters/console_notifier.py` prints
+    `for line in message.body.splitlines()`, so `str.splitlines` is the
+    authority here and any narrower split is a disagreement the reader pays
+    for. An adversarial review reproduced the disagreement: a body carrying
+    U+2028 showed the operator two `Recomendaciones:` sections while this
+    module, splitting on `"\\n"` alone, counted one and accepted it.
+
+    Rule 7 rejects U+2028 outright now, so in practice a body reaching this
+    function with one is already refused. Both rules are kept correct on
+    their own terms anyway: a validator whose two halves disagree about what
+    a line is has a hole waiting for the next separator someone adds.
+    """
+    return body.splitlines()
 
 
 #: Dates and times are matched *whole*, and before bare decimals, so
@@ -350,7 +372,7 @@ def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[
             )
         )
 
-    lines = [line.strip() for line in _body_lines(candidate.body)]
+    lines = [line.strip() for line in _rendered_lines(candidate.body)]
     for header in SECTION_HEADERS:
         count = lines.count(header)
         if count > 1:
@@ -359,7 +381,7 @@ def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[
             )
 
     if has_unsafe_characters(candidate.title) or any(
-        has_unsafe_characters(line) for line in _body_lines(candidate.body)
+        has_unsafe_characters(line) for line in _legitimate_lines(candidate.body)
     ):
         # The body's newlines are legitimate; nothing else in that class is.
         violations.append(
