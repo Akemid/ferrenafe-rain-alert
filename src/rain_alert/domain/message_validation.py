@@ -91,6 +91,28 @@ class Violation:
     detail: str
 
 
+def _composed_form(text: str) -> str:
+    """`text` with every accent written as one codepoint rather than two.
+
+    **Why more than the city rule needs it.** Rule 4 normalized and the rest
+    of the module did not, and an adversarial review found what that buys.
+    `milímetros` decomposed is `mili` + `i` + a combining acute + `metros`,
+    which renders as the word a reader knows and matches no unit pattern at
+    all — so a rainfall figure written with it resolved to *no* unit and fell
+    back to the union of every unit's values, which is precisely the
+    unit-blind set the previous round removed. A supplied title quoted in
+    decomposed form stopped being a quotation for the same reason, and the
+    exemption it should have earned was refused.
+
+    An encoding choice is not something a reader can see, so no rule that
+    asks what a reader sees may depend on it. Rules 6 and 8 are asked here;
+    rule 7 deliberately is not, because normalizing cannot remove an
+    invisible character and that rule exists to see the body exactly as it
+    arrived.
+    """
+    return unicodedata.normalize("NFC", text)
+
+
 def _mentions_the_city(body: str, city: str) -> bool:
     """Casefolded containment after Unicode NFC normalization of both sides.
 
@@ -98,8 +120,7 @@ def _mentions_the_city(body: str, city: str) -> bool:
     tilde, which renders identically. Rejecting a correct message over an
     encoding choice is a defect, not strictness.
     """
-    normalized_body = unicodedata.normalize("NFC", body).casefold()
-    return unicodedata.normalize("NFC", city).casefold() in normalized_body
+    return _composed_form(city).casefold() in _composed_form(body).casefold()
 
 
 def _legitimate_lines(body: str) -> list[str]:
@@ -130,8 +151,12 @@ def _rendered_lines(body: str) -> list[str]:
     function with one is already refused. Both rules are kept correct on
     their own terms anyway: a validator whose two halves disagree about what
     a line is has a hole waiting for the next separator someone adds.
+
+    The body is composed to NFC first, so a header written with a decomposed
+    accent is the one string a reader sees rather than two the counter can
+    tell apart.
     """
-    return body.splitlines()
+    return _composed_form(body).splitlines()
 
 
 #: Dates and times are matched *whole*, and before bare decimals, so
@@ -221,9 +246,16 @@ def _residue(request: MessageRequest, candidate: AlertMessage) -> str:
     became ` 24 horas`, and 24 is an hour count the request carries. Global,
     one supplied string exempted every occurrence of itself, so a body could
     quote a title once and reuse its digits as often as it liked.
+
+    **Both sides are composed to NFC** before the comparison, because a
+    quotation is a quotation to a reader whichever way its accents are
+    encoded. Without it a body reproducing a supplied title in decomposed
+    form was not a match, and the exemption it had honestly earned was
+    refused.
     """
-    text = f"{candidate.title}\n{candidate.body}"
-    for span in sorted(_verbatim_spans(request), key=len, reverse=True):
+    text = _composed_form(f"{candidate.title}\n{candidate.body}")
+    spans = sorted((_composed_form(span) for span in _verbatim_spans(request)), key=len, reverse=True)
+    for span in spans:
         text = re.sub(rf"(?<!\w){re.escape(span)}(?!\w)", " ", text, count=1)
     return text
 

@@ -15,6 +15,7 @@ figure in front of a community.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -240,6 +241,62 @@ class TestStructuralRules:
         message_request = request()
 
         assert rules_for(message_request, mutate(message_request)) == expected
+
+
+class TestTheHeaderCountAndTheNumberRuleReadOneNormalizedBody:
+    """Rule 4 already normalized to NFC; rules 6 and 8 did not.
+
+    `Ferreñafe` written with a combining tilde and `Ferreñafe` written with a
+    precomposed `ñ` render identically and compare unequal, and the city rule
+    was the only one that knew it. A unit written the same way is two strings
+    to the unit matcher and one word to a reader — `milímetros` decomposed
+    resolved to no unit at all, so a rainfall figure fell back to the union
+    of every unit's values, which is exactly the unit-blind set the previous
+    round removed.
+
+    The character rule deliberately stays on the raw body: normalizing cannot
+    remove an invisible character, and that rule exists to see the body
+    exactly as it arrived.
+    """
+
+    @staticmethod
+    def _decomposed(text: str) -> str:
+        return unicodedata.normalize("NFD", text)
+
+    def test_a_decomposed_unit_still_names_the_unit_it_writes(self) -> None:
+        message_request = request(**UNIT_CONFUSION)
+        body_text = self._decomposed("Se esperan 70 milímetros de lluvia.")
+
+        assert body_text != "Se esperan 70 milímetros de lluvia."
+        assert rules_for(message_request, spoken(message_request, body_text)) == {ValidationRule.UNKNOWN_NUMBER}
+
+    def test_a_decomposed_unit_on_a_figure_the_request_carries_is_still_accepted(self) -> None:
+        """Triangulation: normalizing resolves the unit, it does not refuse
+        the language."""
+        message_request = request(**UNIT_CONFUSION)
+        body_text = self._decomposed("Se esperan 3,0 milímetros de lluvia.")
+
+        assert rules_for(message_request, spoken(message_request, body_text)) == set()
+
+    def test_a_decomposed_quotation_of_a_supplied_title_is_the_same_quotation(self) -> None:
+        """The exemption is for text the system supplied, and an encoding
+        choice does not make a reader read something else."""
+        title = "AVISO 335: LLUVIAS INTENSÍSIMAS EN LA COSTA NORTE"
+        message_request = request(
+            warning=WarningSummary(source_id="335", level=WarningLevel.ORANGE, title=title, window=WINDOW)
+        )
+        quoted = self._decomposed(f'El SENAMHI informa: "{title}".')
+
+        assert rules_for(message_request, spoken(message_request, quoted)) == set()
+
+    def test_a_forged_header_is_still_counted_in_a_decomposed_body(self) -> None:
+        """The normalization must not cost rule 6 anything it already had."""
+        message_request = request()
+        body = self._decomposed(_forged_recommendations_header(message_request).body)
+
+        assert ValidationRule.FORGED_SECTION_HEADER in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
 
 
 class TestTheCityCheckSurvivesAnEncodingChoice:
