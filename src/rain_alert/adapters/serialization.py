@@ -26,6 +26,10 @@ Three decisions worth stating:
   ever produces records where the two agree (the composer is handed the
   decided level and copies it). The message level is therefore restored from
   the record level rather than duplicated in the document.
+- **Provenance is the second fact stored once.** `AlertRecord.composer` and
+  `AlertMessage.composed_by` agree by construction for the same reason, so
+  the `composer` attribute that already existed carries both and the
+  document shape is unchanged by change 2 (D13).
 """
 
 from __future__ import annotations
@@ -43,7 +47,7 @@ from rain_alert.domain.reasons import (
     WarningReason,
 )
 from rain_alert.domain.sanitize import sanitize_source_text
-from rain_alert.domain.values import Level, SourceName, TimeWindow, WarningLevel
+from rain_alert.domain.values import ComposerName, Level, SourceName, TimeWindow, WarningLevel
 
 
 def _moment(value: Any, field: str) -> datetime:
@@ -168,6 +172,11 @@ def alert_record_from_dict(document: dict[str, Any]) -> AlertRecord:
             body=document["body"],
             level=level,
             valid_until=_moment(document["valid_until"], "valid_until"),
+            # Provenance is stored once, like `level`: the record and the
+            # message agree by construction (`RunAlertCycle` copies one from
+            # the other), so the document keeps one `composer` attribute and
+            # both fields are restored from it. Its shape did not change.
+            composed_by=ComposerName(document["composer"]),
         ),
         reasons=tuple(reason_from_dict(reason) for reason in document.get("reasons", ())),
         senamhi_status=document["senamhi_status"],

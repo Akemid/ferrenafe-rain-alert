@@ -11,13 +11,39 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from rain_alert.domain.values import Coordinates, Level, TimeWindow, is_escalation
+from rain_alert.domain.values import ComposerName, Coordinates, Level, NoticeKind, TimeWindow, is_escalation
 
 LIMA_OFFSET = timezone(timedelta(hours=-5))
 
 
 def _utc(hour: int) -> datetime:
     return datetime(2026, 9, 3, 0, tzinfo=UTC) + timedelta(hours=hour)
+
+
+class TestTheEnumSpellingsThatLeaveThisProcess:
+    """Two enums whose *string values* are contracts, not implementation.
+
+    The module docstring above records that per-enum value tests were pruned
+    as tautological, and for `Level` or `SourceName` that is right. These two
+    are different, and the difference is where the value ends up:
+
+    - `ComposerName.value` is written into the persisted alert document as
+      `"composer"` (`adapters/serialization.py`) and read back out of it.
+      Renaming a member would make every already-stored record unreadable,
+      and `mypy --strict` cannot see that, because the document is `str`.
+    - `NoticeKind.AGENT_FALLBACK_USED` was reserved by name in change 1 and
+      change 3 routes notices on the spelling. The exact string is the
+      routing key.
+
+    So this asserts the wire format, not the definition.
+    """
+
+    def test_composer_names_are_the_strings_the_alert_document_stores(self) -> None:
+        assert ComposerName.TEMPLATE.value == "template"
+        assert ComposerName.AGENT.value == "agent"
+
+    def test_the_fallback_notice_kind_uses_the_spelling_change_one_reserved(self) -> None:
+        assert NoticeKind.AGENT_FALLBACK_USED.value == "agent_fallback_used"
 
 
 class TestIsEscalation:

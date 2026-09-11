@@ -8,6 +8,7 @@ round trip is pinned here while it is still cheap to change.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -28,7 +29,7 @@ from rain_alert.domain.reasons import (
     SenamhiUnavailableReason,
     WarningReason,
 )
-from rain_alert.domain.values import Level, SourceName, TimeWindow, WarningLevel
+from rain_alert.domain.values import ComposerName, Level, SourceName, TimeWindow, WarningLevel
 
 START = datetime(2026, 9, 4, 12, tzinfo=UTC)
 END = datetime(2026, 9, 6, 12, tzinfo=UTC)
@@ -169,6 +170,39 @@ class TestAlertRecordRoundTrip:
         assert restored.window.start.tzinfo is not None
         assert restored.window.start.utcoffset() == UTC.utcoffset(None)
         assert restored.sent_at == START
+
+    @pytest.mark.parametrize("composer", ["template", "agent"], ids=["template-record", "agent-record"])
+    def test_the_stored_composer_is_restored_onto_the_message_too(self, composer: str) -> None:
+        """Provenance is stored **once**, in the `composer` attribute, and the
+        message's own `composed_by` is restored from it (D13).
+
+        This is the same decision the module docstring already records for
+        `level`: the record and the message agree by construction, so the
+        document carries one copy. Without this, an agent-composed record read
+        back off disk claimed the template wrote it, and the audit trail — the
+        only evidence of which composer produced a sent alert — quietly
+        disagreed with itself between `record.composer` and
+        `record.message.composed_by`.
+        """
+        record = _record(
+            composer=composer,
+            message=replace(_record().message, composed_by=ComposerName(composer)),
+        )
+
+        restored = alert_record_from_dict(alert_record_to_dict(record))
+
+        assert restored.composer == composer
+        assert restored.message.composed_by is ComposerName(composer)
+        assert restored == record
+
+    def test_the_document_shape_did_not_change_when_provenance_was_added(self) -> None:
+        """`composed_by` adds no attribute: the `composer` attribute already
+        existed and already round-tripped, so change 3's DynamoDB item stays
+        byte-identical."""
+        stored = alert_record_to_dict(_record(message=replace(_record().message, composed_by=ComposerName.AGENT)))
+
+        assert "composed_by" not in stored
+        assert stored["composer"] == "template"
 
     def test_a_record_with_no_reasons_round_trips_as_an_empty_tuple(self) -> None:
         restored = alert_record_from_dict(alert_record_to_dict(_record(reasons=())))
