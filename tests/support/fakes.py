@@ -19,9 +19,10 @@ community was told, so the genuine alert is deduplicated away.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from rain_alert.adapters.local.in_memory_alert_repository import InMemoryAlertRepository
 from rain_alert.domain.config import AlertConfig
@@ -110,6 +111,46 @@ class FakeMessageComposer:
         self.calls.append(request)
         self.log.record("composer", "compose", request.level.value)
         return self._delegate.compose(request)
+
+
+class FakeAgentInvoker:
+    """`AgentInvoker` that returns a scripted mapping or raises a scripted error.
+
+    It is the whole offline fault table's driver: every transport row scripts
+    an `AgentInvocationError`, every payload row scripts a response, and row
+    12 scripts a bare `RuntimeError` to prove an exception type the composer
+    never anticipated is still absorbed.
+
+    `calls` is the list of prompts. Two properties are asserted on it and
+    nowhere else: a deduplicated cycle invokes the seam **zero** times, and an
+    authorized one invokes it **exactly once**, with no retry.
+
+    Constructing it with neither a response nor an error raises rather than
+    returning `None`, because `None` reaching a composer typed to receive a
+    mapping fails somewhere else entirely and reads as a defect in the code
+    under test.
+    """
+
+    def __init__(
+        self,
+        response: Mapping[str, Any] | None = None,
+        error: BaseException | None = None,
+        log: CallLog | None = None,
+    ) -> None:
+        if response is None and error is None:
+            raise ValueError("FakeAgentInvoker needs a scripted response or a scripted error")
+        self._response = response
+        self._error = error
+        self.calls: list[str] = []
+        self.log = log if log is not None else CallLog()
+
+    def invoke(self, prompt: str) -> Mapping[str, Any]:
+        self.calls.append(prompt)
+        self.log.record("invoker", "invoke", str(len(self.calls)))
+        if self._error is not None:
+            raise self._error
+        assert self._response is not None  # guarded at construction
+        return self._response
 
 
 @dataclass
