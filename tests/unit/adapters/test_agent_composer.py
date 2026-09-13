@@ -135,7 +135,17 @@ def assert_the_template_was_sent(result: CycleResult, deps: CycleDependencies) -
 
 
 class TestTransportFaultsFallBackToTheTemplate:
-    """Rows 1-4 and 12: the invocation itself never returned a payload."""
+    """Rows 1-4 and 12: the invocation itself never returned a payload.
+
+    Each row asserts the fault name the operator is given as well as the
+    template being sent. Survival alone made four of these rows
+    indistinguishable from each other: they differed only in the fault handed
+    to the fake invoker, and a mutation returning `unexpected_error` for every
+    reason turned exactly **one** test red — a reporting test for a fault
+    covered nowhere else. That is the same defect the mutation proof exposed
+    for row 5 and named there: the reason mapping is not there to survive the
+    fault, it is there to name it, and an unasserted name is decoration.
+    """
 
     def test_row_1_deadline_exceeded(self) -> None:
         invoker = FakeAgentInvoker(error=AgentInvocationError(UnavailableReason.TIMEOUT, "read timed out after 10s"))
@@ -144,6 +154,7 @@ class TestTransportFaultsFallBackToTheTemplate:
 
         assert invoker.calls == [PROMPT]
         assert_the_template_was_sent(result, deps)
+        assert FallbackReason.TIMEOUT.value in _fallback_notices(deps)[0].subject
 
     def test_row_2_transport_error(self) -> None:
         failure = AgentInvocationError(UnavailableReason.TRANSPORT_ERROR, "ConnectError: connection refused")
@@ -152,6 +163,7 @@ class TestTransportFaultsFallBackToTheTemplate:
         result, deps = run_cycle(invoker)
 
         assert_the_template_was_sent(result, deps)
+        assert FallbackReason.TRANSPORT_ERROR.value in _fallback_notices(deps)[0].subject
 
     def test_row_3_bad_status(self) -> None:
         invoker = FakeAgentInvoker(error=AgentInvocationError(UnavailableReason.BAD_STATUS, "HTTP 503"))
@@ -159,6 +171,7 @@ class TestTransportFaultsFallBackToTheTemplate:
         result, deps = run_cycle(invoker)
 
         assert_the_template_was_sent(result, deps)
+        assert FallbackReason.BAD_STATUS.value in _fallback_notices(deps)[0].subject
 
     def test_row_4_malformed_payload(self) -> None:
         """The invoker owns decoding, so a body that is not JSON reaches the
@@ -169,16 +182,23 @@ class TestTransportFaultsFallBackToTheTemplate:
         result, deps = run_cycle(invoker)
 
         assert_the_template_was_sent(result, deps)
+        assert FallbackReason.MALFORMED_PAYLOAD.value in _fallback_notices(deps)[0].subject
 
     def test_row_12_an_exception_type_nobody_anticipated(self) -> None:
         """A bare `RuntimeError`, not an `AgentInvocationError`. An SDK bug
         must degrade the cycle, not abort it — which is the whole reason the
-        broad `except` in `compose` is there rather than a narrow one."""
+        broad `except` in `compose` is there rather than a narrow one.
+
+        This row does not travel through `fallback_reason_for`: the broad
+        handler names the fault itself. Its name is asserted here so that
+        handler's literal has a failing mutant of its own.
+        """
         invoker = FakeAgentInvoker(error=RuntimeError("botocore raised something new"))
 
         result, deps = run_cycle(invoker)
 
         assert_the_template_was_sent(result, deps)
+        assert FallbackReason.UNEXPECTED_ERROR.value in _fallback_notices(deps)[0].subject
 
     def test_an_unavailable_reason_outside_the_four_transport_ones_is_still_absorbed(self) -> None:
         """`FallbackReason(exc.reason)` would raise `ValueError` *inside the
