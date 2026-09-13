@@ -19,6 +19,23 @@ anything it raises leaves `compose` by exception — and `RunAlertCycle` has no
 `suppress`, and `return fallback` is the last statement, reachable past
 nothing that can raise. Row 13 of the fault table pins it.
 
+**The two faults this shape cannot absorb, stated so nobody has to discover
+them.**
+
+1. **A hang.** Every exception the seam can raise is caught, but an
+   invocation that simply never returns has no branch here, and the cycle
+   waits with the community. Nothing in this module can bound it; the
+   deadline is the invoker's obligation alone (D19, and
+   `AgentInvoker.invoke` says so), which is why an implementation that never
+   raises is not thereby correct.
+2. **A `BaseException`.** `except Exception` is deliberate and does not catch
+   one. `KeyboardInterrupt` and `SystemExit` should travel — a cycle being
+   shut down is not a composer fault — but it means an asynchronous
+   cancellation (`asyncio.CancelledError` since 3.8, or any framework that
+   raises through a worker) escapes `compose` and aborts the cycle. Nothing
+   in this codebase raises one today, and widening the catch would swallow
+   shutdown, so this is recorded rather than repaired.
+
 **Where the `except` lives.** Here, never in `RunAlertCycle`. The use case
 contains zero `try` blocks: change 1 made failure travel as data
 (`SourceResult`). Failure cannot be data here, because the port returns

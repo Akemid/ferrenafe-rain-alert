@@ -44,16 +44,36 @@ class AgentInvocationError(Exception):
 class AgentInvoker(Protocol):
     """One call to the composition agent, returning its decoded output.
 
-    The return value is a decoded JSON object rather than a string: decoding
-    belongs to the implementation that knows the wire format, so a body that
-    is not JSON becomes `AgentInvocationError(MALFORMED_PAYLOAD, ...)` at the
-    boundary instead of a parse attempt inside the composer.
+    Three obligations, and the third is the one an implementer must not miss.
+
+    1. **Decode.** The return value is a decoded JSON object rather than a
+       string: decoding belongs to the implementation that knows the wire
+       format, so a body that is not JSON becomes
+       `AgentInvocationError(MALFORMED_PAYLOAD, ...)` at the boundary instead
+       of a parse attempt inside the composer.
+    2. **Translate.** No vendor exception escapes. Every failure arrives as
+       `AgentInvocationError` carrying a `UnavailableReason` the domain
+       already knows.
+    3. **Bound the wait — 10 seconds of wall clock, one attempt, no retry
+       (D19).** This is the obligation with no safety net anywhere else in
+       the system. `AgentBackedComposer` absorbs every exception this seam
+       can raise, but it cannot absorb an invocation that simply does not
+       return: there is no branch for that, and the cycle hangs with the
+       community waiting. An implementation that never raises is *not*
+       thereby correct.
+
+       `read_timeout` bounds each socket read, not total wall clock. The two
+       coincide for a single non-streaming response; if the payload streams,
+       the implementation must additionally enforce a `time.monotonic()`
+       deadline across the read loop and raise `TIMEOUT` on overrun. The
+       deadline is adapter configuration, not a constant, so first live
+       measurements can move it.
 
     Raises:
-        AgentInvocationError: on any failure whatsoever. An implementation
-            that lets a vendor exception escape is a defect, and the composer
-            absorbs one anyway (D15) so that defect degrades the cycle rather
-            than aborting it.
+        AgentInvocationError: on any failure whatsoever, including the
+            deadline. An implementation that lets a vendor exception escape
+            is a defect, and the composer absorbs one anyway (D15) so that
+            defect degrades the cycle rather than aborting it.
     """
 
     def invoke(self, prompt: str) -> Mapping[str, Any]: ...

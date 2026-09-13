@@ -1,6 +1,11 @@
-"""The fallback composer and its twelve-row fault table (design.md D15;
+"""The fallback composer and its thirteen-row fault table (design.md D15;
 agent-message-composition spec, "Every composer failure mode falls back to
 the template").
+
+Row 13 is the newest and is not a fault of the agent at all: the *operator*
+notifier raises. It belongs in the table because the fault it injects had the
+same consequence as any other — no alert — and because it is the mutant that
+kills the guard in `_fell_back` if anyone removes it.
 
 **The headline property this module exists to prove: the alert never depends
 on the agent.** Every row below injects one fault and asserts the same three
@@ -15,15 +20,22 @@ Assertion 2 is a single `==` because `AlertMessage` equality includes
 `composed_by` (D13), so a composer returning the right words under the wrong
 attribution cannot pass.
 
+Every row also asserts the **fault name** the operator is given. Survival
+alone left rows indistinguishable from one another: a mutation collapsing the
+reason mapping to a single value turned exactly one test red, because the
+mapping is not there to survive the fault, it is there to name it.
+
 Running the rows through the cycle is deliberate and is what makes the
 mutation proof meaningful: with the `except` deleted, the injected exception
 travels out of `compose`, out of `RunAlertCycle.execute` and out of the test,
 and the row asserting "an alert was sent" fails rather than a row asserting
 something about a return value.
 
-Each row is its own test. A parametrized block would collapse twelve
+Each row is its own test. A parametrized block would collapse thirteen
 independent faults into one name, and the point of the table is that each
-fault is separately survivable.
+fault is separately survivable. The one parametrized block below is not a row:
+its four parameters are four spellings of a *single* fault — a response that
+is not a mapping — which is exactly the case parametrization is for.
 """
 
 from __future__ import annotations
