@@ -7,14 +7,25 @@ section 10) — no `unittest.mock`.
 
 from datetime import datetime, timedelta
 
+from rain_alert.adapters.agent_composer import AgentBackedComposer
+from rain_alert.adapters.agent_invoker import AgentInvocationError
 from rain_alert.application.run_alert_cycle import RunAlertCycle
 from rain_alert.domain.entities import Forecast, HourlyPoint, Warning
 from rain_alert.domain.hazards import Phenomenon, Zone
 from rain_alert.domain.messages import AlertMessage, AlertRecord
 from rain_alert.domain.reasons import WarningReason
 from rain_alert.domain.sources import Available, Unavailable
-from rain_alert.domain.values import Level, NoticeKind, SourceName, TimeWindow, UnavailableReason, WarningLevel
-from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
+from rain_alert.domain.values import (
+    ComposerName,
+    Level,
+    NoticeKind,
+    SourceName,
+    TimeWindow,
+    UnavailableReason,
+    WarningLevel,
+)
+from tests.support.fakes import FakeAgentInvoker
+from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, ComposerFactory, build_fake_deps
 
 NOW = DEFAULT_NOW
 
@@ -264,6 +275,112 @@ class TestDedupShortCircuitsTheCycle:
 
         assert result.message_request is not None
         assert result.message is None
+
+
+def _agent_backed(invoker: FakeAgentInvoker) -> ComposerFactory:
+    return lambda notifier, now: AgentBackedComposer(
+        invoker=invoker,
+        build_prompt=lambda _request: "<prompt>",
+        notifier=notifier,
+        now=now,
+    )
+
+
+def _accepted_draft(request_window_end: datetime) -> dict[str, object]:
+    return {
+        "title": f"Alerta de lluvias — {DEFAULT_CONFIG.city}",
+        "body": f"Ciudad: {DEFAULT_CONFIG.city}\nLas lluvias son inminentes. Sigue las indicaciones oficiales.",
+        "level": Level.IMMINENT.value,
+        "valid_until": request_window_end.isoformat(),
+    }
+
+
+class TestTheRecordedComposerIsWhateverActuallyWroteTheMessage:
+    """alert-cycle spec, "Recorded composer matches what was actually sent".
+
+    The use case reads provenance off the message rather than branching on
+    which composer it holds (D13). That is the whole reason `composed_by`
+    exists: the record must state what was sent, and a literal cannot.
+    """
+
+    def test_an_accepted_agent_message_is_recorded_as_agent(self) -> None:
+        forecast = _forecast(24, mm_total=29.8, probability_pct=70)
+        window_end = forecast.data.precipitation_window(24).end
+        invoker = FakeAgentInvoker(response=_accepted_draft(window_end))
+        deps = build_fake_deps(forecast=forecast, composer=_agent_backed(invoker))
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.sent is True
+        assert deps.alerts.record_calls[0].composer == "agent"
+        assert deps.alerts.record_calls[0].message.composed_by is ComposerName.AGENT
+
+    def test_a_fallback_is_recorded_as_template(self) -> None:
+        forecast = _forecast(24, mm_total=29.8, probability_pct=70)
+        invoker = FakeAgentInvoker(error=AgentInvocationError(UnavailableReason.TIMEOUT, "timed out"))
+        deps = build_fake_deps(forecast=forecast, composer=_agent_backed(invoker))
+
+        RunAlertCycle(deps).execute()
+
+        assert deps.alerts.record_calls[0].composer == "template"
+
+    def test_the_deterministic_template_is_still_recorded_as_template(self) -> None:
+        """The default path, unchanged: nothing about the record differs from
+        before this change when no agent is wired."""
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70))
+
+        RunAlertCycle(deps).execute()
+
+        assert deps.alerts.record_calls[0].composer == "template"
+
+
+class TestADeduplicatedCycleCostsNothing:
+    def test_deduplicated_cycle_invokes_agent_seam_zero_times(self) -> None:
+        """The agent runs only after the dedup policy has authorized a send.
+
+        This pins a property of where composition sits in `execute`, not of
+        the composer: any code path that composed before the authorized-send
+        branch would invoke the seam — and in production that is a paid model
+        call made to produce text nobody will ever read.
+        """
+        forecast = _forecast(24, mm_total=29.8, probability_pct=70)
+        same_window = forecast.data.precipitation_window(24)
+        invoker = FakeAgentInvoker(response=_accepted_draft(same_window.end))
+        deps = build_fake_deps(
+            forecast=forecast,
+            prior_alerts=[_record(Level.IMMINENT, same_window)],
+            composer=_agent_backed(invoker),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.decision.send is False
+        assert invoker.calls == []
+
+    def test_a_dual_source_outage_also_invokes_the_seam_zero_times(self) -> None:
+        """The other branch of the same `if`: a suppressed community alert
+        must not pay for a message either."""
+        invoker = FakeAgentInvoker(response={"unused": True})
+        deps = build_fake_deps(
+            warnings=_unavailable(SourceName.SENAMHI),
+            forecast=_unavailable(SourceName.OPEN_METEO),
+            composer=_agent_backed(invoker),
+        )
+
+        RunAlertCycle(deps).execute()
+
+        assert invoker.calls == []
+
+    def test_an_authorized_cycle_invokes_the_seam_exactly_once(self) -> None:
+        """The triangulation the two zero-count tests need: they would both
+        pass against a composer that never invoked anything at all."""
+        forecast = _forecast(24, mm_total=29.8, probability_pct=70)
+        invoker = FakeAgentInvoker(response=_accepted_draft(forecast.data.precipitation_window(24).end))
+        deps = build_fake_deps(forecast=forecast, composer=_agent_backed(invoker))
+
+        RunAlertCycle(deps).execute()
+
+        assert len(invoker.calls) == 1
 
 
 class TestDualSourceOutageSuppressesCommunityAlerts:
