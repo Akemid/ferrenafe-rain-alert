@@ -201,6 +201,23 @@ class TestBadPayloadsFallBackToTheTemplate:
 
         assert_the_template_was_sent(result, deps)
 
+    def test_row_5_is_reported_as_a_malformed_payload_and_not_as_a_surprise(self) -> None:
+        """Found by the mutation proof, not by the design.
+
+        Deleting `parse_candidate`'s required-field check left every test
+        green: the `KeyError` it prevents is caught by the broad `except`
+        anyway, so row 5 survived either way. The check is not there to
+        survive the fault, it is there to **name** it — an operator reading
+        `unexpected_error` goes looking for a bug in this codebase, while
+        `malformed_payload` says the model returned the wrong shape. Without
+        this assertion the check had no failing mutant and was decoration.
+        """
+        invoker = FakeAgentInvoker(response={key: value for key, value in draft().items() if key != "body"})
+
+        _result, deps = run_cycle(invoker)
+
+        assert FallbackReason.MALFORMED_PAYLOAD.value in _fallback_notices(deps)[0].subject
+
     def test_row_6_the_level_disagrees_with_the_request(self) -> None:
         """The one fault that matters most: the model does not get to decide
         how serious this is. The level is fixed before composition and a draft
