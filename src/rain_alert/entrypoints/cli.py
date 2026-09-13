@@ -234,7 +234,21 @@ def as_json(result: CycleResult, config: AlertConfig) -> str:
         "decision": {"send": result.decision.send, "reason": result.decision.reason},
         "sent": result.sent,
         "recipients_count": result.recipients_count,
-        "message": {"title": message.title, "body": message.body, "valid_until": message.valid_until.isoformat()},
+        # Provenance travels with the message for the same reason the
+        # coordinates travel with their source: this document is what a
+        # calibration log and change 3's Lambda entrypoint read, and without
+        # it a fallback is invisible here. `notices` carries outage notices
+        # only, by design — the composer's fallback notice is emitted by the
+        # adapter during composition — and under `--json` the notifier writes
+        # to standard error, so a fallback was visible to a human watching
+        # that stream and to nothing that parses this. Additive: `message`
+        # gains a key and no key changes meaning.
+        "message": {
+            "title": message.title,
+            "body": message.body,
+            "valid_until": message.valid_until.isoformat(),
+            "composed_by": message.composed_by.value,
+        },
         "notices": [
             {"kind": notice.kind.value, "sources": sorted(source.value for source in notice.sources)}
             for notice in result.notices
