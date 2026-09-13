@@ -39,13 +39,13 @@ from rain_alert.adapters.agent_invoker import AgentInvocationError
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
 from rain_alert.domain.entities import Forecast, HourlyPoint
-from rain_alert.domain.message_validation import MAX_BODY_LENGTH
+from rain_alert.domain.message_validation import MAX_BODY_LENGTH, ValidationRule
 from rain_alert.domain.messages import AlertMessage, MessageRequest, OperatorNotice
 from rain_alert.domain.sources import Available
 from rain_alert.domain.template import MessageComposer as TemplateComposer
 from rain_alert.domain.values import ComposerName, Level, NoticeKind, UnavailableReason
 from rain_alert.ports import Notifier
-from tests.support.fakes import FakeAgentInvoker, FakeNotifier
+from tests.support.fakes import FakeAgentInvoker, FakeAlertRepository, FakeNotifier
 from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
 
 NOW = DEFAULT_NOW
@@ -128,10 +128,9 @@ def assert_the_template_was_sent(result: CycleResult, deps: CycleDependencies) -
     assert result.message == expected
 
     alerts = deps.alerts
-    assert isinstance(alerts, object)
-    recorded = alerts.record_calls  # type: ignore[attr-defined]
-    assert len(recorded) == 1
-    assert recorded[0].composer == "template"
+    assert isinstance(alerts, FakeAlertRepository)
+    assert len(alerts.record_calls) == 1
+    assert alerts.record_calls[0].composer == "template"
 
 
 class TestTransportFaultsFallBackToTheTemplate:
@@ -286,11 +285,16 @@ class TestBadPayloadsFallBackToTheTemplate:
         assert_the_template_was_sent(result, deps)
 
     def test_row_11_the_body_is_empty(self) -> None:
+        """The whitespace-only body breaks two rules at once — it is empty and
+        it does not name the city — so deleting the empty-body rule left this
+        row green on the city rule alone. The notice assertion is what gives
+        that rule a failing mutant."""
         invoker = FakeAgentInvoker(response=draft(body="   \n  "))
 
         result, deps = run_cycle(invoker)
 
         assert_the_template_was_sent(result, deps)
+        assert ValidationRule.EMPTY_BODY.value in _fallback_notices(deps)[0].body
 
     def test_a_valid_until_that_cannot_be_read_as_an_instant_is_refused(self) -> None:
         """Not a table row, but the same class. A naive or unparseable
@@ -603,7 +607,11 @@ class TestTheAcceptedPath:
         assert sent.title == CLEAN_TITLE
         assert sent.body == CLEAN_BODY
         assert sent.composed_by is ComposerName.AGENT
-        assert sent != TemplateComposer().compose(result.message_request)
+        # On the *text*, not on the whole message. `AlertMessage` equality
+        # includes `composed_by`, so `sent != template_message` became true
+        # for every accepted draft the moment provenance joined value
+        # equality — including one whose words were the template's verbatim.
+        assert sent.body != TemplateComposer().compose(result.message_request).body
 
     def test_the_seam_is_invoked_exactly_once_with_no_retry(self) -> None:
         invoker = FakeAgentInvoker(response=draft())
