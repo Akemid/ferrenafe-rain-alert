@@ -79,7 +79,22 @@ class AgentBackedComposer:
 
 **The fallback value is never validated.** Validating it would create a path where a validator bug produces no message at all. The validator's correctness against the template is instead asserted as a test property (§6, invariant V0).
 
-**Mutation proof (proposal success criterion 2)**: deleting either `except` clause makes the corresponding fault-table rows raise out of `compose`, out of `RunAlertCycle.execute`, and out of the test — the row asserting "an alert was sent" fails. Deleting the `if violations:` guard makes the validation rows fail on `composer == "agent"` and on the body assertion. Both are recorded as a manual, repeatable procedure in the change artifacts; no mutation-testing dependency is added.
+**Mutation proof (proposal success criterion 2)**: the two `except` clauses do **not** have the same mutant, and the original text here claimed they did. Corrected against reproduced runs:
+
+| Mutation | What turns red | Why |
+|---|---|---|
+| Delete `except Exception` | 4 red: row 12, the hostile-payload and broken-prompt-builder rows, and the detail-sanitization test. They raise out of `compose`, out of `RunAlertCycle.execute` and out of the test — the assertion "an alert was sent" fails | Nothing else catches an exception type nobody anticipated |
+| Delete `except AgentInvocationError` | The four transport rows and the bad-status reporting test fail **on the fault name** — five tests. Every "an alert was sent" assertion still passes | `AgentInvocationError` is an `Exception`, so the broad clause catches it too. The narrow clause buys an accurate fault name, never survival — an operator reading `unexpected_error` goes hunting a bug in this codebase when the agent was merely unreachable |
+| Collapse `fallback_reason_for` to one value | The same five | Same reason: the mapping names the fault, it does not survive it |
+| Delete the `if violations:` guard | The validation rows fail on `composer == "agent"` and on the body assertion | The draft would be sent unvalidated |
+| Delete the required-field check in `parse_candidate` | 2 red, both on the fault name: row 5's reporting test and the failing-notice test | The `KeyError` it prevents is caught by the broad clause anyway |
+| Delete the mapping check in `parse_candidate` | 4 red — the null, list, string and integer parameters — all on the fault name | Same shape again: `field not in draft` is membership for a list and substring for a string, so the later `TypeError` is absorbed and misnamed |
+| Delete the `suppress` in `_fell_back` | 3 red: row 13, the failing-notice test and the raising-clock test, on "an alert was sent" | A raising operator notifier, or a raising clock, costs the community its alert |
+| Delete the empty-body rule | Row 11's notice assertion fails | The whitespace-only body also breaks the city rule, so survival alone did not distinguish them |
+
+The general shape, worth stating once because four findings had it: a guard downstream of a broad handler is almost never there to keep the alert alive — the broad handler already does that — so it has a failing mutant only when a test asserts the **name** the operator is given. An unasserted name is decoration.
+
+All are recorded as a manual, repeatable procedure in the change artifacts; no mutation-testing dependency is added.
 
 ### D16 — The validator is a pure domain module returning violations
 
