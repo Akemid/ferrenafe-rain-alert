@@ -51,7 +51,6 @@ from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
 
 from rain_alert.adapters.agent_invoker import AgentInvocationError, AgentInvoker
 from rain_alert.domain.message_validation import Violation, validate_message
@@ -96,7 +95,7 @@ def fallback_reason_for(reason: UnavailableReason) -> FallbackReason:
         return FallbackReason.UNEXPECTED_ERROR
 
 
-def parse_candidate(draft: Mapping[str, Any]) -> AlertMessage | None:
+def parse_candidate(draft: object) -> AlertMessage | None:
     """`draft` as an `AlertMessage`, or `None` when its shape is unusable.
 
     This raises nothing on a bad shape, and returns `None` instead, so that a
@@ -107,10 +106,26 @@ def parse_candidate(draft: Mapping[str, Any]) -> AlertMessage | None:
     value the validator then checks against that same request, and the check
     would pass by construction.
 
+    **`draft` is typed `object`, and the mapping check is the first thing
+    here, because the annotation is not the guard it looks like.** The
+    parameter arrives from `AgentInvoker.invoke`, whose declared return type a
+    real SDK-backed implementation can simply fail to honour; a decoded JSON
+    body is as easily a list, a null, a bare string or a number. The
+    required-field check does not catch any of those: `field not in draft` is
+    membership for a list and *substring* for a string, so a list of the four
+    field names and a string containing them both pass it and fail later with
+    a `TypeError`. The broad handler in `compose` absorbs that, so the alert
+    survived either way — but the operator was told `unexpected_error`, which
+    sends them looking for a bug in this codebase when the truth is that the
+    model returned the wrong shape. The check is here to **name** the fault,
+    for the same reason the required-field check is.
+
     `valid_until` must parse to a timezone-aware instant. A naive one would
     raise `TypeError` when the validator compares it with the window's aware
     end, and a validator that raises is a validator that sends nothing.
     """
+    if not isinstance(draft, Mapping):
+        return None
     if any(field not in draft for field in REQUIRED_OUTPUT_FIELDS):
         return None
 

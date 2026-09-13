@@ -33,6 +33,9 @@ from rain_alert.domain.sources import SourceResult
 from rain_alert.domain.template import MessageComposer as TemplateMessageComposer
 from rain_alert.domain.values import Coordinates
 
+#: "Nothing was scripted", distinct from a scripted `None`. See `FakeAgentInvoker`.
+_UNSET: Any = object()
+
 
 @dataclass
 class CallLog:
@@ -126,18 +129,26 @@ class FakeAgentInvoker:
     authorized one invokes it **exactly once**, with no retry.
 
     Constructing it with neither a response nor an error raises rather than
-    returning `None`, because `None` reaching a composer typed to receive a
-    mapping fails somewhere else entirely and reads as a defect in the code
-    under test.
+    returning `None`, because a silent `None` reaching a composer typed to
+    receive a mapping fails somewhere else entirely and reads as a defect in
+    the code under test. `_UNSET` rather than `None` marks "nothing was
+    scripted", because `None` is itself one of the shapes worth scripting: a
+    real invoker decodes JSON, and `null` decodes to it.
+
+    `response` is deliberately `Any`, and `invoke` keeps the Protocol's
+    `Mapping[str, Any]` return annotation while being able to return
+    something else. That mismatch **is** the fault under test: the composer's
+    shape rows stand for an SDK-backed invoker that breaks its own declared
+    contract, which is precisely the case a type annotation cannot prevent.
     """
 
     def __init__(
         self,
-        response: Mapping[str, Any] | None = None,
+        response: Any = _UNSET,
         error: BaseException | None = None,
         log: CallLog | None = None,
     ) -> None:
-        if response is None and error is None:
+        if response is _UNSET and error is None:
             raise ValueError("FakeAgentInvoker needs a scripted response or a scripted error")
         self._response = response
         self._error = error
@@ -149,7 +160,7 @@ class FakeAgentInvoker:
         self.log.record("invoker", "invoke", str(len(self.calls)))
         if self._error is not None:
             raise self._error
-        assert self._response is not None  # guarded at construction
+        assert self._response is not _UNSET  # guarded at construction
         return self._response
 
 

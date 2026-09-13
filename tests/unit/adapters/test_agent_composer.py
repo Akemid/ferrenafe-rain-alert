@@ -32,7 +32,9 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
-from rain_alert.adapters.agent_composer import AgentBackedComposer, FallbackReason
+import pytest
+
+from rain_alert.adapters.agent_composer import REQUIRED_OUTPUT_FIELDS, AgentBackedComposer, FallbackReason
 from rain_alert.adapters.agent_invoker import AgentInvocationError
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
@@ -281,12 +283,44 @@ class TestBadPayloadsFallBackToTheTemplate:
 
         assert_the_template_was_sent(result, deps)
 
-    def test_a_response_that_is_not_a_mapping_at_all_is_refused(self) -> None:
+    def test_a_response_whose_fields_carry_the_wrong_types_is_refused(self) -> None:
+        """A mapping with the four keys present and none of them usable: a
+        number where the body goes, a number where the level goes, and a null
+        `valid_until`. Each is refused by a different branch of the parser."""
         invoker = FakeAgentInvoker(response={"title": CLEAN_TITLE, "body": 42, "level": 1, "valid_until": None})
 
         result, deps = run_cycle(invoker)
 
         assert_the_template_was_sent(result, deps)
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            pytest.param(None, id="null"),
+            pytest.param(list(REQUIRED_OUTPUT_FIELDS), id="list-of-the-field-names"),
+            pytest.param("title body level valid_until", id="string-containing-the-field-names"),
+            pytest.param(7, id="integer"),
+        ],
+    )
+    def test_a_response_that_is_not_a_mapping_at_all_is_reported_as_a_malformed_payload(self, response: Any) -> None:
+        """A real invoker decodes JSON, and JSON yields exactly these: a list,
+        a null, a bare string, a number. None is a mapping, and none of them
+        is the model having a bad day inside this codebase.
+
+        The required-field check alone does not catch them. `field not in
+        draft` is membership for a list and *substring* for a string, so both
+        parameters above pass it and then fail later with a `TypeError` the
+        broad handler reports as `unexpected_error` — sending the operator
+        hunting a bug here when the truth is that the model returned the wrong
+        shape. That is the same misdirection row 5 is written against, so the
+        assertion is on the fault name, not only on survival.
+        """
+        invoker = FakeAgentInvoker(response=response)
+
+        result, deps = run_cycle(invoker)
+
+        assert_the_template_was_sent(result, deps)
+        assert FallbackReason.MALFORMED_PAYLOAD.value in _fallback_notices(deps)[0].subject
 
 
 class _HostileMapping(Mapping[str, Any]):
