@@ -6,6 +6,7 @@ leaves differ, which is the reason D6 exists.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from rain_alert.application.dependencies import CycleDependencies
@@ -14,6 +15,7 @@ from rain_alert.domain.entities import Contact, Forecast, HourlyPoint, Warning
 from rain_alert.domain.messages import AlertRecord, OutageRecord
 from rain_alert.domain.sources import Available, SourceResult
 from rain_alert.domain.values import Coordinates, WarningLevel
+from rain_alert.ports import MessageComposer, Notifier
 from tests.support.fakes import (
     CallLog,
     FakeAlertRepository,
@@ -25,6 +27,16 @@ from tests.support.fakes import (
     FakeWarningProvider,
     LoggingRiskEvaluator,
 )
+
+#: How a test supplies a composer other than the default spy.
+#:
+#: It is a **factory** rather than a ready-made composer because the
+#: agent-backed one must be given the same `FakeNotifier` this graph builds —
+#: it sends the fallback notice itself (D21), and a notice landing in a second
+#: notifier would be invisible to the shared `CallLog` that makes cross-port
+#: ordering assertable. The clock is passed for the same reason: one cycle,
+#: one `now`.
+ComposerFactory = Callable[[Notifier, Callable[[], datetime]], MessageComposer]
 
 DEFAULT_NOW = datetime(2026, 9, 3, 12, tzinfo=UTC)
 
@@ -68,6 +80,7 @@ def build_fake_deps(
     active_outage: OutageRecord | None = None,
     prior_alerts: list[AlertRecord] | None = None,
     now: datetime | None = None,
+    composer: ComposerFactory | None = None,
 ) -> CycleDependencies:
     """One `CycleDependencies` with recording-spy leaves and calm defaults.
 
@@ -88,15 +101,18 @@ def build_fake_deps(
     resolved_forecast = forecast if forecast is not None else _calm_forecast(resolved_now)
     resolved_contacts = contacts if contacts is not None else (Contact("operator-local", "console", "stdout", None),)
     log = CallLog()
+    notifier = FakeNotifier(log=log)
+    clock = lambda: resolved_now  # noqa: E731 — one expression, named for the two places it is passed
+    resolved_composer: MessageComposer = FakeMessageComposer(log=log) if composer is None else composer(notifier, clock)
 
     return CycleDependencies(
         config=FakeConfigRepository(resolved_config, log=log),
         warnings=FakeWarningProvider(resolved_warnings, log=log),
         forecast=FakeForecastProvider(resolved_forecast, log=log),
-        composer=FakeMessageComposer(log=log),
+        composer=resolved_composer,
         contacts=FakeContactRepository(resolved_contacts, log=log),
-        notifier=FakeNotifier(log=log),
+        notifier=notifier,
         alerts=FakeAlertRepository(alerts=list(prior_alerts or []), active_outage=active_outage, log=log),
         evaluator_factory=lambda thresholds: LoggingRiskEvaluator(thresholds, log=log),
-        now=lambda: resolved_now,
+        now=clock,
     )
