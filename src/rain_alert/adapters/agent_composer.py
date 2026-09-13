@@ -55,6 +55,7 @@ from enum import StrEnum
 from rain_alert.adapters.agent_invoker import AgentInvocationError, AgentInvoker
 from rain_alert.domain.message_validation import Violation, validate_message
 from rain_alert.domain.messages import AlertMessage, MessageRequest, OperatorNotice
+from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.template import MessageComposer as TemplateComposer
 from rain_alert.domain.values import ComposerName, Level, NoticeKind, UnavailableReason
 from rain_alert.ports import MessageComposer, Notifier
@@ -197,7 +198,7 @@ class AgentBackedComposer:
         except AgentInvocationError as exc:
             return self._fell_back(fallback_reason_for(exc.reason), exc.detail, fallback)
         except Exception as exc:  # noqa: BLE001 — an SDK bug must degrade the cycle, not abort it
-            return self._fell_back(FallbackReason.UNEXPECTED_ERROR, f"{type(exc).__name__}: {exc}", fallback)
+            return self._fell_back(FallbackReason.UNEXPECTED_ERROR, _unexpected_detail(exc), fallback)
 
         if violations:
             return self._fell_back(FallbackReason.VALIDATION_FAILED, _rendered(violations), fallback)
@@ -263,3 +264,28 @@ class AgentBackedComposer:
 
 def _rendered(violations: tuple[Violation, ...]) -> str:
     return "; ".join(f"{violation.rule.value}: {violation.detail}" for violation in violations)
+
+
+def _unexpected_detail(exc: Exception) -> str:
+    """An unanticipated exception, worded for an operator notice — sanitized.
+
+    This is the one detail in this module that carries model-influenced text
+    without an escaping step. An SDK error routinely quotes the response body
+    it failed on, so the model's own output ends up inside `str(exc)`,
+    unbounded and carrying whatever characters it carried — and the operator
+    reads this in a terminal, where `ConsoleNotifier` renders the notice body
+    line-oriented. Reproduced: a live ANSI escape, a surviving right-to-left
+    override, and a newline that wrote a forged `Recomendaciones:` block of
+    its own, five hundred characters of padding behind it.
+
+    The other two details need nothing. `AgentInvocationError.detail` is
+    written by the invoker, and every `Violation.detail` interpolates the
+    model's token with `!r`, which quotes and escapes it.
+
+    `sanitize_source_text` is the same function the scraped aviso title
+    passes through at all four of its rendering boundaries. Using it here
+    rather than a local guard is the point of that module: the character
+    class lives in one place, because two copies of it is how a bidi override
+    eventually gets through one of them.
+    """
+    return sanitize_source_text(f"{type(exc).__name__}: {exc}")

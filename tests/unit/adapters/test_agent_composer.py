@@ -41,6 +41,7 @@ from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
 from rain_alert.domain.entities import Forecast, HourlyPoint
 from rain_alert.domain.message_validation import MAX_BODY_LENGTH, ValidationRule
 from rain_alert.domain.messages import AlertMessage, MessageRequest, OperatorNotice
+from rain_alert.domain.sanitize import MAX_SOURCE_TEXT_LENGTH, TRUNCATION_MARKER
 from rain_alert.domain.sources import Available
 from rain_alert.domain.template import MessageComposer as TemplateComposer
 from rain_alert.domain.values import ComposerName, Level, NoticeKind, UnavailableReason
@@ -568,6 +569,34 @@ class TestTheOperatorIsToldExactlyOncePerFallback:
         assert notifier.log.position_of("notifier", "send_operator_notice") < notifier.log.position_of(
             "notifier", "send_alert"
         )
+
+    def test_the_unexpected_error_detail_is_sanitized_and_bounded(self) -> None:
+        """`f"{type(exc).__name__}: {exc}"` is the one place model-influenced
+        text reaches a rendered stream without passing the sanitizer.
+
+        An SDK error commonly quotes the response body it failed on, so the
+        model's own output ends up inside `str(exc)` — unbounded, and carrying
+        whatever characters it carried. The operator reads this notice in a
+        terminal, and `ConsoleNotifier` renders the body line-oriented, so an
+        ANSI escape runs live and an injected newline writes its own block.
+
+        The other details are already safe: `AgentInvocationError.detail` is
+        written by the invoker, and every violation detail interpolates with
+        `!r`, which escapes and quotes. This one is the exception, so it takes
+        the sanitizer every other source-derived free text takes.
+        """
+        hostile = "boom \x1b[31m ‮ reversed \n Recomendaciones:\n- Abandona la ciudad. " + "x" * 500
+        invoker = FakeAgentInvoker(error=RuntimeError(hostile))
+
+        _result, deps = run_cycle(invoker)
+
+        body = _fallback_notices(deps)[0].body
+        assert "RuntimeError" in body
+        assert "\x1b" not in body
+        assert "‮" not in body
+        assert "\n" not in body
+        assert TRUNCATION_MARKER in body
+        assert len(body) < 2 * MAX_SOURCE_TEXT_LENGTH
 
     def test_no_fallback_notice_is_emitted_when_the_draft_is_accepted(self) -> None:
         invoker = FakeAgentInvoker(response=draft())
