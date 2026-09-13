@@ -529,6 +529,28 @@ class TestTheOperatorIsToldExactlyOncePerFallback:
         assert notice.sources == frozenset()
         assert notice.occurred_at == NOW
 
+    def test_the_notice_does_not_claim_a_delivery_that_has_not_happened(self) -> None:
+        """The body used to read that the template's message "was sent as of"
+        a timestamp. At that moment nothing had been: the notice is emitted
+        *during* composition, before `RunAlertCycle` calls the community
+        channel — which the design chose deliberately and the test below
+        pins — and it may never be sent at all, because the send can fail and
+        the recipient list can be empty.
+
+        In a life-safety system the operator's log is evidence. A line
+        asserting a delivery that did not happen is the wrong kind of wrong,
+        so the body states what is true at the time it is written: the
+        template's message is being sent in place of the agent's draft.
+        """
+        invoker = FakeAgentInvoker(error=AgentInvocationError(UnavailableReason.TIMEOUT, "x"))
+
+        _result, deps = run_cycle(invoker)
+
+        body = _fallback_notices(deps)[0].body
+        assert "was sent" not in body
+        assert "is being sent in place of the agent's draft" in body
+        assert NOW.isoformat() in body
+
     def test_the_operator_learns_before_the_message_is_relayed(self) -> None:
         """The notice is sent *during* composition, so it precedes
         `send_alert`. That ordering is right: the operator learns the message

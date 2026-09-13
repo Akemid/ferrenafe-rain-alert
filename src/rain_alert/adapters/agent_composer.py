@@ -211,6 +211,13 @@ class AgentBackedComposer:
         operator learns the message they are about to relay came from the
         template, rather than learning it afterwards.
 
+        **The body states a substitution, not a delivery.** It used to read
+        that the template's message "was sent as of" the timestamp. At that
+        moment nothing had been sent, and it may never be: the send can fail
+        and the recipient list can be empty. In a life-safety system the
+        operator's log is evidence, and a line asserting a delivery that did
+        not happen is the wrong kind of wrong.
+
         **Telling the operator is best-effort, and the `suppress` is what
         makes it structurally so.** Both operations here can raise: the
         injected clock, and the notifier. Three of this method's four call
@@ -244,8 +251,8 @@ class AgentBackedComposer:
                     kind=NoticeKind.AGENT_FALLBACK_USED,
                     subject=f"Agent composer fell back to the template: {reason.value}",
                     body=(
-                        f"The deterministic template's message was sent as of {now.isoformat()}. "
-                        f"Fault: {reason.value}. Detail: {detail}"
+                        f"The deterministic template's message is being sent in place of the agent's draft, "
+                        f"as of {now.isoformat()}. Fault: {reason.value}. Detail: {detail}"
                     ),
                     sources=frozenset(),
                     occurred_at=now,
