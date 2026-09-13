@@ -195,6 +195,32 @@ class TestAlertRecordRoundTrip:
         assert restored.message.composed_by is ComposerName(composer)
         assert restored == record
 
+    def test_a_provenance_label_this_version_does_not_know_does_not_abort_the_cycle(self) -> None:
+        """Deliberately *not* the rule an unknown reason kind gets, and the
+        asymmetry is the point.
+
+        `alert_record_from_dict` runs on the dedup path, before any send.
+        `ComposerName(document["composer"])` raised on a label this version
+        does not know, so an older binary meeting a newer one refused to warn
+        anybody — a provenance label, descriptive metadata about an alert
+        already sent, stopping the next alert from going out.
+
+        Nothing is lost by softening it, which is what separates this case
+        from the reason tag. The raw label stays on `AlertRecord.composer`, so
+        the audit trail still says exactly what was written; only
+        `message.composed_by`, which has no reading for an unknown label,
+        falls to the conservative one. That direction is the one `messages.py`
+        already chose for the field's default: under-claim agent involvement
+        rather than over-claim it.
+        """
+        document = alert_record_to_dict(_record())
+        document["composer"] = "agent-claude-5"
+
+        restored = alert_record_from_dict(document)
+
+        assert restored.composer == "agent-claude-5"
+        assert restored.message.composed_by is ComposerName.TEMPLATE
+
     def test_the_document_shape_did_not_change_when_provenance_was_added(self) -> None:
         """`composed_by` adds no attribute: the `composer` attribute already
         existed and already round-tripped, so change 3's DynamoDB item stays
