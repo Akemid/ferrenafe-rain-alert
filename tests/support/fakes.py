@@ -167,9 +167,25 @@ class FakeContactRepository:
 
 @dataclass
 class FakeNotifier:
+    """Both notifier channels, recorded, with the operator one breakable.
+
+    `notice_error` exists because the two channels fail independently in
+    production. `ConsoleNotifier` writes to a stream today, so a closed
+    descriptor, a full disk or a piped-into command that exited all reach the
+    operator channel alone; in change 3 it becomes a network notifier where
+    transient failure is routine. A test sets it *after* `build_fake_deps`
+    has built the graph, because the agent-backed composer must be given the
+    very notifier the cycle delivers the alert through.
+
+    The attempt is recorded **before** the raise: "exactly one notice per
+    fallback" is a claim about attempts, and a notice that was tried and
+    failed still consumed the fallback's one chance to speak.
+    """
+
     alert_calls: list[tuple[AlertMessage, tuple[Contact, ...]]] = field(default_factory=list)
     notice_calls: list[OperatorNotice] = field(default_factory=list)
     log: CallLog = field(default_factory=CallLog)
+    notice_error: BaseException | None = None
 
     def send_alert(self, message: AlertMessage, recipients: tuple[Contact, ...]) -> None:
         self.alert_calls.append((message, recipients))
@@ -178,6 +194,8 @@ class FakeNotifier:
     def send_operator_notice(self, notice: OperatorNotice) -> None:
         self.notice_calls.append(notice)
         self.log.record("notifier", "send_operator_notice", notice.kind.value)
+        if self.notice_error is not None:
+            raise self.notice_error
 
 
 @dataclass(frozen=True)

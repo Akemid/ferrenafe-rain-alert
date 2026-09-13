@@ -340,6 +340,87 @@ def _raise_on_build(_request: MessageRequest) -> str:
     raise ValueError("the prompt builder is broken")
 
 
+def _deps_with_a_broken_operator_channel(invoker: FakeAgentInvoker) -> tuple[CycleDependencies, FakeNotifier]:
+    """The usual cycle, except that telling the operator raises.
+
+    The break is applied after the graph is built because the composer must
+    hold the same notifier the cycle delivers the community alert through:
+    the point of row 13 is that one channel is broken and the other is not.
+    """
+    deps = build_fake_deps(forecast=_storm(), composer=_agent(invoker))
+    notifier = deps.notifier
+    assert isinstance(notifier, FakeNotifier)
+    notifier.notice_error = BrokenPipeError(32, "Broken pipe")
+    return deps, notifier
+
+
+class TestTheOperatorChannelCannotCostTheCommunityItsAlert:
+    """Row 13: the notice is best-effort, and structurally so.
+
+    Reproduced before the guard existed: `_fell_back` performed two unguarded
+    operations — the clock call and `send_operator_notice` — and three of its
+    four call sites sit outside the `try` or inside an `except`, so either
+    raising left `compose` by exception. `RunAlertCycle` has no `try` by
+    design (change 1 made failure travel as data), so the cycle died and the
+    community got nothing, for a fault in the channel that exists only to
+    *describe* the fallback.
+
+    That is not a hypothetical. `ConsoleNotifier` writes to a stream: piping
+    the command into another that exits, a full disk, or a closed descriptor
+    under a supervisor all raise `OSError` here. Change 3 makes it a network
+    notifier, where transient failure is the normal case.
+    """
+
+    def test_row_13_a_notifier_whose_operator_channel_raises_still_warns_the_community(self) -> None:
+        invoker = FakeAgentInvoker(error=AgentInvocationError(UnavailableReason.TRANSPORT_ERROR, "ConnectError"))
+        deps, notifier = _deps_with_a_broken_operator_channel(invoker)
+
+        result = RunAlertCycle(deps).execute()
+
+        assert_the_template_was_sent(result, deps)
+        assert len(notifier.notice_calls) == 1, "the notice was retried, or never attempted"
+
+    def test_a_notice_that_fails_is_attempted_once_and_keeps_its_own_fault_name(self) -> None:
+        """The malformed-payload branch is *inside* the `try`, so a raising
+        notice used to be caught by the broad handler, which called
+        `_fell_back` again. Three faults from one cause: the alert was lost,
+        the "exactly one notice per fallback" rule broke, and the second
+        notice named `unexpected_error` — the precise operator misdirection
+        `test_row_5_is_reported_as_a_malformed_payload_and_not_as_a_surprise`
+        exists to prevent.
+        """
+        invoker = FakeAgentInvoker(response={key: value for key, value in draft().items() if key != "body"})
+        deps, notifier = _deps_with_a_broken_operator_channel(invoker)
+
+        result = RunAlertCycle(deps).execute()
+
+        assert_the_template_was_sent(result, deps)
+        assert len(notifier.notice_calls) == 1
+        assert FallbackReason.MALFORMED_PAYLOAD.value in notifier.notice_calls[0].subject
+
+    def test_a_clock_that_raises_does_not_cost_the_alert_either(self) -> None:
+        """The other unguarded operation in `_fell_back`. The guard covers the
+        whole notice construction, not only the send, so neither can be moved
+        back out of it without this turning red."""
+        deps = build_fake_deps(
+            forecast=_storm(),
+            composer=lambda notifier, _now: AgentBackedComposer(
+                invoker=FakeAgentInvoker(error=AgentInvocationError(UnavailableReason.TIMEOUT, "read timed out")),
+                build_prompt=lambda _request: PROMPT,
+                notifier=notifier,
+                now=_raise_on_clock,
+            ),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert_the_template_was_sent(result, deps)
+
+
+def _raise_on_clock() -> datetime:
+    raise RuntimeError("the clock is broken")
+
+
 class TestTheOperatorIsToldExactlyOncePerFallback:
     """D21; spec "Operator is notified exactly once per fallback, never on
     success".

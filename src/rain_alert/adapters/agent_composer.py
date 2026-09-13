@@ -12,6 +12,13 @@ check by looking, and a reviewer can check by deleting the `except` and
 watching twelve tests turn red. The cost is one pure string join per sending
 cycle, paid also on the accepted path.
 
+**Telling the operator is best-effort, and structurally so.** `_fell_back` is
+called from outside the `try` and from inside two `except` clauses, so
+anything it raises leaves `compose` by exception — and `RunAlertCycle` has no
+`try` by design. Its clock call and its notice are therefore wrapped in
+`suppress`, and `return fallback` is the last statement, reachable past
+nothing that can raise. Row 13 of the fault table pins it.
+
 **Where the `except` lives.** Here, never in `RunAlertCycle`. The use case
 contains zero `try` blocks: change 1 made failure travel as data
 (`SourceResult`). Failure cannot be data here, because the port returns
@@ -40,6 +47,7 @@ mutations remain separable.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime
 from enum import StrEnum
@@ -181,30 +189,53 @@ class AgentBackedComposer:
         return replace(candidate, composed_by=ComposerName.AGENT)
 
     def _fell_back(self, reason: FallbackReason, detail: str, fallback: AlertMessage) -> AlertMessage:
-        """Tell the operator what went wrong, then return the template's message.
+        """Tell the operator what went wrong — best effort — and return the template's message.
 
         The notice goes out *before* `RunAlertCycle` calls `send_alert`,
         because composition happens first. That ordering is right: the
         operator learns the message they are about to relay came from the
         template, rather than learning it afterwards.
 
+        **Telling the operator is best-effort, and the `suppress` is what
+        makes it structurally so.** Both operations here can raise: the
+        injected clock, and the notifier. Three of this method's four call
+        sites are outside the `try` in `compose` or inside one of its
+        `except` clauses, so before the guard either raise left `compose` by
+        exception — and `RunAlertCycle` has no `try` by design (change 1 made
+        failure travel as data), so the whole cycle died. Reproduced with a
+        notifier whose operator channel raises while its community channel
+        works: the alert was lost, the malformed-payload branch notified
+        *twice* because the broad handler caught its own failed notice, and
+        the surviving notice named `unexpected_error` instead of the real
+        fault. One cause, three consequences, all three of them the opposite
+        of what this adapter exists to guarantee. `ConsoleNotifier` writes to
+        a stream today — a closed pipe, a full disk, a dead supervisor — and
+        change 3 makes it a network notifier where transient failure is
+        routine. Row 13 of the fault table is the mutant that kills this
+        guard if anyone removes it.
+
+        `return fallback` is deliberately the last statement, reachable past
+        nothing that can raise: the community's message must not depend on
+        the operator's.
+
         `sources` is empty — no data source failed. `ConsoleNotifier` will
         print `sources: ` with nothing after it; the subject and body carry
         the information.
         """
-        now = self._now()
-        self._notifier.send_operator_notice(
-            OperatorNotice(
-                kind=NoticeKind.AGENT_FALLBACK_USED,
-                subject=f"Agent composer fell back to the template: {reason.value}",
-                body=(
-                    f"The deterministic template's message was sent as of {now.isoformat()}. "
-                    f"Fault: {reason.value}. Detail: {detail}"
-                ),
-                sources=frozenset(),
-                occurred_at=now,
+        with suppress(Exception):
+            now = self._now()
+            self._notifier.send_operator_notice(
+                OperatorNotice(
+                    kind=NoticeKind.AGENT_FALLBACK_USED,
+                    subject=f"Agent composer fell back to the template: {reason.value}",
+                    body=(
+                        f"The deterministic template's message was sent as of {now.isoformat()}. "
+                        f"Fault: {reason.value}. Detail: {detail}"
+                    ),
+                    sources=frozenset(),
+                    occurred_at=now,
+                )
             )
-        )
         return fallback
 
 
