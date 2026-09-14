@@ -258,6 +258,18 @@ class AgentBackedComposer:
         nothing that can raise: the community's message must not depend on
         the operator's.
 
+        **What the `suppress` costs, and what still tells the operator.** It
+        swallows a programming error here as readily as a broken channel: a
+        clock that raises produces a correct alert and *no notice at all*.
+        Verified by probe. That is the accepted side of the trade, because
+        the alternative is the fault this guard was added to fix. It is not
+        silence, though. Provenance rides on the message itself, so
+        `AlertRecord.composer` and the `--json` document's `composed_by` both
+        read `template` on a cycle where the agent was selected. An operator
+        reading either sees the fallback happened even when no notice
+        arrived; what they lose is *why*. That is the backstop, and it is why
+        provenance belongs on the message rather than only in the notice.
+
         `sources` is empty — no data source failed. `ConsoleNotifier` will
         print `sources: ` with nothing after it; the subject and body carry
         the information.
