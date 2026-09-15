@@ -894,3 +894,255 @@ no type was loosened to reach green.
 | `tests/unit/adapters/test_serialization.py` | Modified | The unknown provenance label |
 | `tests/unit/entrypoints/test_cli.py` | Modified | The document's message provenance, on a send, on an agent-written message and on a preview |
 | `openspec/changes/composer-agent/design.md` | Modified | D15's mutation table, corrected |
+
+---
+
+# PR 3 of five — the `agent/` deployment unit — 2026-09-15
+
+Branch `feat/composer-agent-unit`, cut from `main` (clean, 861 tests). Not
+pushed; the correctness and security reviews run first.
+
+## Scope
+
+Phase 2's deployment unit, minus the golden contract. In: `agent/` as a second
+uv project, the Pydantic output model, the model configuration, the AgentCore
+entrypoint, the prompt construction, `agent/`'s own suite, and the
+architecture test in both directions. Out and untouched:
+`adapters/agent_composer.py`, the wiring, the CLI, the real invoker, the
+runbook, the live test, `docs/` and `openspec/specs/`.
+
+## Tasks completed
+
+2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 2.11, 2.12, 2.13, 2.16,
+2.17, 2.18, 2.19, 2.20, 2.21.
+
+**Left undone, deliberately: 2.14 and 2.15 — `contracts/agent-composition.json`.**
+Not a forgotten task. The brief's in-scope list named the output model, the
+model configuration, the entrypoint, the prompt and the boundary test, and did
+not name the contract; the slice landed at 1 005 reviewable lines against a
+~800 target with a 1 100 stop line, and the honest call was to stop rather than
+spend the remainder. Neither half of the contract is unguarded in the meantime:
+the prompt payload's key set is pinned in full by
+`test_every_value_traces_to_a_field_on_the_request`, and the output key set by
+`test_the_dumped_output_is_json_serializable_and_carries_exactly_the_contract`.
+What is missing is only the third file that would force a change to one unit to
+touch something the *other* unit's suite reads. The natural place for it is the
+pull request that first has a consumer — the invoker reads the output keys and
+writes the envelope key.
+
+2.22 (security review) and 2.23 (PR gate) remain, as planned.
+
+## The sanitizer boundary question, and how it was answered
+
+The brief asked for this deliberately rather than by reflex. The `agent/` unit
+must not import `rain_alert` — inside AgentCore Runtime the package does not
+exist — yet the scraped aviso title has to be sanitized before a model reads
+it.
+
+**Answer: the prompt is built on the application's side of the wire, so the
+sanitizer is used where it lives and nothing crosses the boundary but
+already-sanitized text.** `adapters/agent_prompt.build_prompt` calls
+`domain.sanitize.sanitize_source_text` on `WarningSummary.title` and on every
+`WarningReason.title`, encodes the result into the `<datos>` fence, and hands
+the finished prompt string to the invoker. `agent/app.py` receives that string
+and adds nothing to it.
+
+Neither shortcut was taken. **Not a copy** in `agent/`: the character class is
+a Unicode-property rule with a named-exception list, and two copies of it is
+how a bidi override eventually gets through one of them — the sanitizer's own
+docstring says so, and this change would have been the second copy. **Not a
+cross-boundary import**: it works on a developer's machine, where both trees
+sit on `sys.path`, and fails only after deploy.
+
+This was not a free choice, and it is worth being clear about why. The
+invocation seam merged in PR 2 is `AgentInvoker.invoke(prompt: str)`, and
+`AgentBackedComposer` already takes `build_prompt` as an injected
+`Callable[[MessageRequest], str]`. A prompt built inside `agent/` would have
+meant structured data crossing the wire and a different seam — a change to
+`agent_composer.py`, which this slice was told not to touch. design.md section
+10 puts `agent_prompt.py` under `src/` for the same reason, and that is where
+it landed.
+
+**The residual, recorded rather than fixed.** The `agent/` unit trusts that
+whoever called it sanitized. Nothing inside it could check, and the
+architecture test guarantees it cannot acquire the ability. The trust is
+narrow — one caller, in this repository, with a test that fails if the
+sanitizing is removed — but it is trust, and a second caller some day would
+inherit it silently.
+
+## Prompt wording is not enforcement, and the module says so
+
+`agent_prompt.py`'s docstring and the `INSTRUCTIONS` comment both record that
+the instruction block asks and does not enforce, and that two of the rules it
+asks for have no validator behind them yet: the closed instruction vocabulary
+(the model may rephrase, never instruct) and the flat refusal of contact
+channels including inside a verbatim span. Those remain the blocking condition
+on the pull request that first wires this output into a live cycle. The test
+class asserting the wording says the same thing in its own docstring, so nobody
+reads a green test as a control.
+
+## Two deliberate departures from design.md D20
+
+Both have one cause: **a figure in the prompt that the validator cannot trace
+is a trap the model walks into**, and the cost is a needless fallback every
+cycle.
+
+| D20 asked for | Shipped | Why |
+|---|---|---|
+| window start/end as ISO UTC **and** rendered local | rendered local only | `_allowed_moments` in `domain/message_validation.py` builds its allowed dates and times from the local `%d/%m/%Y` and `%H:%M` renderings **alone**. Design section 6 claimed "plus their UTC ISO components"; the shipped validator has no such branch. An ISO instant in the prompt is three or four digit tokens the model may copy and the validator must then refuse |
+| `warning.source_id` digits in the allowed set | `source_id` omitted from the payload | Same: the shipped `_allowed_numbers` has no `source_id` branch either. The sanitized aviso title carries the context, and it earns the verbatim-span exemption on its own |
+
+`test_every_value_the_payload_carries_survives_the_number_rule` walks every
+leaf value of the payload, writes each into a body of its own and asks the
+real `validate_message` about it;
+`test_an_utc_instant_would_have_broken_that_rule` is its triangulation, and it
+is the test that found both gaps.
+
+Millimetre amounts are rendered at one decimal place (`float(f"{v:.1f}")`),
+which is both the precision `domain/template.py` prints and a member of the
+validator's allowed set. `29.799999999999997` is a figure no message should
+carry and no reader can check.
+
+## TDD Cycle Evidence
+
+Strict TDD throughout. Every RED below was run and its failure read before any
+implementation existed.
+
+| Tasks | RED — observed failure | GREEN | REFACTOR |
+|---|---|---|---|
+| 2.4 / 2.5 | `ModuleNotFoundError: No module named 'models'` | `agent/models.py`; 10 passed | none needed |
+| 2.20 / 2.21 | `ModuleNotFoundError: No module named 'app'` | `agent/app.py`; 22 passed | none needed |
+| 2.6 / 2.7 | `ModuleNotFoundError: No module named 'rain_alert.adapters.agent_prompt'` | `build_prompt` / `prompt_payload`; 7 passed | none needed |
+| 2.8–2.11 | 3 failed: the raw hostile title reached the payload, and `json.dumps(ensure_ascii=False)` wrote U+202E through verbatim. 2.10 passed already, which is what it is for | `sanitize_source_text` on the warning title and every reason title; 11 passed | none needed |
+| 2.12 / 2.13 | 4 failed on the absent wording; `test_it_carries_no_figure_of_its_own` passed already and now guards the new block | the full instruction block; 16 passed | `_fenced_payload` moved to `rsplit`, because the instruction block names both fence markers |
+| 2.16–2.19 | `NameError: name '_agent_import_is_forbidden' is not defined` (5 failed) | both scanners, the dot-directory skip, four triangulation cases; 10 passed | none needed |
+
+**Mutation proof for the new architecture tests.** A scan over a directory
+that is not there reports no violation and reads as a pass, which is the
+failure mode both new boundary tests share. `AGENT_ROOT` was pointed at
+`"agnet"`: `test_both_scans_actually_reach_a_file` turned red and the other
+nine stayed green. Reverted and re-run green.
+
+*Gotcha worth recording, because it cost a confused minute:* the revert
+appeared not to take. Both `sed` edits were the same byte length and ran
+inside the same second, so CPython reused the `__pycache__` entry from the
+mutated source — the pyc validity check is source mtime at one-second
+resolution plus size. Deleting `tests/architecture/__pycache__` resolved it.
+Any future mutation run in this repository should clear the cache between
+directions.
+
+## Verification gate
+
+Every command run from the repository root on `feat/composer-agent-unit`.
+
+| Command | Result | Exit |
+|---|---|---|
+| `uv run pytest` | `883 passed, 15 deselected` (from 861) | 0 |
+| `uv run ruff check .` | `All checks passed!` | 0 |
+| `uv run ruff format --check .` | `90 files already formatted` | 0 |
+| `uv run mypy` | `Success: no issues found in 39 source files` | 0 |
+| `uv run rain-alert-cycle` | live run, `Level none`, `NOT SENT`, `Notices 0 emitted` | 0 |
+| `uv run --directory agent pytest` | `22 passed, 1 warning` | 0 |
+| `env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION uv run --directory agent pytest` | `22 passed` | 0 |
+
+**The agent project's own test command is `uv run --directory agent pytest`,
+and the `--directory` is load-bearing.** A second uv project is new to this
+repository, so the shape is worth stating. `uv run --project agent pytest agent`
+also runs the tests, but pytest takes its rootdir from the invocation directory
+and therefore reads the **root** `pyproject.toml`, applying the root project's
+`addopts` and ignoring `agent/`'s own. `--directory` moves the working
+directory, so `agent/pyproject.toml` is the config file and `pythonpath = ["."]`
+makes the flat `app` and `models` modules importable exactly as AgentCore will
+import them.
+
+`uv run pytest` at the root collects **zero** tests from `agent/`; verified
+with `--collect-only`, not assumed. The one warning is
+`PydanticDeprecatedSince20` raised inside `bedrock_agentcore` itself, not by
+anything here.
+
+## The library facts this slice depended on
+
+Given in the brief as verified against live documentation on 2026-09-15, and
+confirmed here by import and by construction rather than re-derived.
+
+| Fact | Confirmed how |
+|---|---|
+| `from strands import Agent`, `from strands.models import BedrockModel`, `from bedrock_agentcore.runtime import BedrockAgentCoreApp` | imported in the installed environment |
+| Resolved versions | `strands-agents 1.55.1`, `bedrock-agentcore 1.23.0`, `pydantic 2.13.5`, on CPython 3.12.13 |
+| `@app.entrypoint` returns the function itself | called directly in `test_the_entrypoint_is_the_function_the_runtime_calls` |
+| `BedrockModel(model_id=…, temperature=…, top_p=…)` and `Agent(model=…, tools=[])` construct with no credential and no region | both tests run with every AWS environment variable unset |
+| `MODEL_ID = "anthropic.claude-haiku-4-5"` | pinned as a string **and** as a shape: `anthropic.` prefix present, no date suffix. The regional inference-profile prefix (`us.`) is an account fact, recorded in the constant's comment as confirmed at deploy |
+| Context window | `BedrockModel.get_config()` reports `context_window_limit: 200000` |
+| `effort` / extended thinking | neither is passed. Nothing in this unit sets `output_config` |
+
+## Commits
+
+| Commit | Message |
+|---|---|
+| `e1945f1` | `feat(agent): add the deployment unit and its output contract` |
+| `7cd85e6` | `feat(agent): compose one structured message and register no tool` |
+| `afbbdcf` | `feat(adapters): build the composer prompt from the request alone` |
+| `077a06c` | `test(architecture): pin the agent deployment boundary in both directions` |
+
+## Files changed
+
+| File | Action | What |
+|---|---|---|
+| `agent/pyproject.toml` | Created | Second uv project: three dependencies, no build, its own pytest config |
+| `agent/.python-version` | Created | 3.12, matching the application |
+| `agent/uv.lock` | Created | 828 lines, generated |
+| `agent/models.py` | Created | `CompositionOutput`, closed to extra fields, aware `valid_until` |
+| `agent/app.py` | Created | `MODEL_ID`, `build_model`, `build_agent` with `tools=[]`, `compose`, the `@app.entrypoint` |
+| `agent/tests/test_models.py` | Created | 10 tests |
+| `agent/tests/test_app.py` | Created | 12 tests, one hand-written spy, no `unittest.mock` |
+| `src/rain_alert/adapters/agent_prompt.py` | Created | `INSTRUCTIONS`, the fence, `prompt_payload`, `build_prompt` |
+| `tests/unit/adapters/test_agent_prompt.py` | Created | 16 tests |
+| `tests/architecture/test_layer_boundaries.py` | Modified | Both boundary directions, four triangulation cases, the dot-directory skip, `pydantic` added to `DOMAIN_FORBIDDEN_ROOTS` |
+
+## Budget
+
+1 833 changed lines, of which **828 are the generated lockfile**. Reviewable
+diff: **1 005 lines** against a ~800 target and an 1 100 stop line. Work
+stopped at the stop line rather than continuing into tasks 2.14/2.15; see
+"Tasks completed" for why that was the piece to drop.
+
+## Contradictions and gaps found in the planning artifacts
+
+1. **design.md D20 vs the shipped validator, twice.** Section 6 step 4 claims
+   the allowed set includes "their UTC ISO components" and "`warning.source_id`
+   digits". The merged `domain/message_validation.py` has neither branch. D20
+   accordingly asks the prompt to carry data the validator would refuse.
+   Resolved in favour of the code, since the code is what runs; both items
+   dropped from the payload and the reasoning recorded above and in the module.
+2. **The spec's "operator-owned text is not sanitized" costs something the
+   spec does not mention.** `_verbatim_spans` compares against
+   `sanitize_source_text(item)` for checklist items, because that is what
+   `domain/template.py` renders. An operator item whose sanitized form differs
+   is therefore handed to the model raw, and a faithful quotation of it earns
+   no exemption — its digits face the full number rule. Wrong-strict, so the
+   direction of error is a fallback and never a looser message. The spec was
+   followed; the cost is recorded in the test's own docstring.
+3. **tasks.md 2.14/2.15 place the golden contract's `src/`-side assertions in
+   `test_agent_prompt.py` and its `agent/`-side assertions in
+   `agent/tests/test_models.py`.** Both remain the right homes. Noted only
+   because those two tasks are the ones this slice did not do.
+4. **Nothing in the spec or the design says what the invocation *envelope*
+   looks like** — the payload the invoker sends and the entrypoint reads. The
+   entrypoint pins it here as a single `prompt` key (`PROMPT_KEY`), refusing a
+   payload without one, so PR 5's invoker has something to write against
+   rather than a choice to make twice.
+
+## Residuals, accepted and recorded
+
+- `agent/` trusts that its caller sanitized. See the boundary section above.
+- The instruction block carries no figure of its own, so the length caps are
+  never requested in the prompt (design section 8, non-capability 8). A model
+  that writes an over-long body is refused by the validator rather than warned
+  in advance. Deliberate: a digit in the prompt is a digit that can be copied.
+- `agent/app.py` builds the `Agent` at import rather than per invocation, so a
+  deploy that cannot construct the model fails at startup rather than on the
+  first alert of the season. The cycle is six-hourly and should expect no warm
+  reuse either way (D19).
+- The entrypoint refuses a blank prompt with `ValueError`. How AgentCore
+  surfaces that to the caller — the status and body the invoker will see — is
+  not verified here and belongs with PR 5's invocation work.

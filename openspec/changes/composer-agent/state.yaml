@@ -107,19 +107,51 @@ phases:
     artifact: openspec/changes/composer-agent/apply-progress.md
     engram_topic_key: sdd/composer-agent/apply-progress
     engram_saved: true
-    pr_slice: 2
+    pr_slice: 3
     pr_slices_planned: 5
-    pr_branch: feat/composer-agent-fallback  # cut from main; not pushed, no PR opened
+    pr_branch: feat/composer-agent-unit  # cut from main; not pushed, no PR opened
+    # Quoted from PR 3 on. Unquoted, YAML reads these as floats, so "1.10"
+    # and "1.1" are one value and "2.20" and "2.2" are another — a list that
+    # silently loses an entry every time a task number ends in a zero.
     tasks_completed:
       # PR 1 — the pure validator
-      [1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, 1.16,
+      ["1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16",
        # PR 2 — provenance, seam, fallback composer, fault table, notice
-       1.1, 1.2, 1.3, 1.4, 1.5, 1.6,
-       1.17, 1.18, 1.19, 1.20,
-       1.21, 1.22, 1.23, 1.24, 1.25, 1.26, 1.27, 1.28, 1.29, 1.30, 1.31, 1.32,
-       1.33, 1.34, 1.35, 1.36, 1.37, 1.38, 1.39, 1.40,
-       1.41, 1.42, 1.43, 1.44]
+       "1.1", "1.2", "1.3", "1.4", "1.5", "1.6",
+       "1.17", "1.18", "1.19", "1.20",
+       "1.21", "1.22", "1.23", "1.24", "1.25", "1.26", "1.27", "1.28", "1.29", "1.30", "1.31", "1.32",
+       "1.33", "1.34", "1.35", "1.36", "1.37", "1.38", "1.39", "1.40",
+       "1.41", "1.42", "1.43", "1.44",
+       # PR 3 — the agent/ deployment unit, the prompt, the boundary
+       "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.8", "2.9", "2.10", "2.11", "2.12", "2.13",
+       "2.16", "2.17", "2.18", "2.19", "2.20", "2.21"]
     note: >-
+      PR 3 of five (branch feat/composer-agent-unit): agent/ as a second uv
+      project with its own lockfile, Python pin and test command; the Pydantic
+      CompositionOutput; the AgentCore entrypoint with zero tools registered
+      and the Bedrock model id pinned as a string and as a shape;
+      adapters/agent_prompt.build_prompt with its instruction block and
+      <datos> fence; and the architecture boundary tested in both directions
+      with four triangulation cases. Resolves open_decisions.bedrock-model-id
+      (anthropic.claude-haiku-4-5, regional inference-profile prefix confirmed
+      at deploy) and design §13 to-verify #4 and #7. Gate green: 883 tests
+      (from 861), ruff check, ruff format --check, mypy, a live
+      `uv run rain-alert-cycle`, and `uv run --directory agent pytest` (22
+      tests) — all exit 0; root `uv run pytest` collects zero agent/ tests,
+      verified with --collect-only. adapters/agent_composer.py, the wiring,
+      the CLI, docs/ and openspec/specs/ were untouched. Landed at 1833
+      changed lines of which 828 are the generated lockfile — 1005 reviewable
+      — against a ~800 target and an 1100 stop line; work stopped at the stop
+      line. Tasks 2.14/2.15 (contracts/agent-composition.json) are the piece
+      deliberately dropped: the brief's in-scope list did not name it, and
+      both key sets it would pin are already asserted inside their own suites.
+      Phase 2 is complete except those two, 2.22 (security review) and 2.23
+      (PR gate). Two deliberate departures from D20 are recorded in
+      apply-progress: instants are rendered locally only and source_id is
+      omitted, because the shipped validator's allowed set has no ISO-UTC and
+      no source_id branch despite design §6 claiming both — a figure in the
+      prompt the validator cannot trace is a trap the model walks into.
+    note_pr_2: >-
       PR 2 of five: provenance (ComposerName, AlertMessage.composed_by, the
       serialization restore), the AgentInvoker seam and FakeAgentInvoker, the
       AgentBackedComposer with parse_candidate and FallbackReason, the
