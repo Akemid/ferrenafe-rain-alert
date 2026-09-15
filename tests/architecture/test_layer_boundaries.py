@@ -10,10 +10,23 @@ import ast
 from collections.abc import Callable
 from pathlib import Path
 
-SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "rain_alert"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = REPO_ROOT / "src" / "rain_alert"
+AGENT_ROOT = REPO_ROOT / "agent"
+
+#: The deployment boundary, in the direction that protects the Lambda: nothing
+#: the alert path ships may reach the agent unit or a model SDK (D22). Stated
+#: at `src/` rather than at `domain/`, which is what
+#: `state.yaml → resolved_decisions.pydantic-boundary` actually requires.
+SRC_FORBIDDEN_ROOTS = {"agent", "pydantic", "strands", "bedrock_agentcore"}
+
+#: The same boundary in the direction that protects the deploy. See the test
+#: class for why this one is not inferable from the first.
+AGENT_FORBIDDEN_ROOTS = {"rain_alert", "src"}
 
 # Extended by change 2 and change 3 in one line each (design.md section 10).
 DOMAIN_FORBIDDEN_ROOTS = {
+    "pydantic",
     "httpx",
     "requests",
     "urllib3",
@@ -72,10 +85,18 @@ def _imported_roots(tree: ast.AST, module_package: str) -> set[str]:
 
 
 def _violations(package_dir: Path, is_forbidden: Callable[[str], bool], *, package: str) -> dict[str, set[str]]:
-    """{relative_file: forbidden_roots_found} for every .py file under package_dir."""
+    """{relative_file: forbidden_roots_found} for every .py file under package_dir.
+
+    Dot-directories are skipped. `agent/` carries its own `.venv`, and every
+    dependency installed in it imports something one of these scans forbids —
+    without the skip the boundary tests would report the SDK rather than
+    anything a person in this repository wrote.
+    """
     found: dict[str, set[str]] = {}
     for path in sorted(package_dir.rglob("*.py")):
         relative = path.relative_to(package_dir)
+        if any(part.startswith(".") for part in relative.parts):
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         roots = _imported_roots(tree, _module_package(package, relative))
         bad = {root for root in roots if is_forbidden(root)}
@@ -88,6 +109,14 @@ def _domain_import_is_forbidden(root: str) -> bool:
     if root.split(".")[0] in {forbidden.split(".")[0] for forbidden in DOMAIN_FORBIDDEN_ROOTS}:
         return True
     return root.startswith(DOMAIN_FORBIDDEN_PREFIXES)
+
+
+def _src_import_is_forbidden(root: str) -> bool:
+    return root.split(".")[0] in SRC_FORBIDDEN_ROOTS
+
+
+def _agent_import_is_forbidden(root: str) -> bool:
+    return root.split(".")[0] in AGENT_FORBIDDEN_ROOTS
 
 
 def _ports_import_is_forbidden(root: str) -> bool:
@@ -114,6 +143,70 @@ def test_scanner_flags_a_forbidden_import_hidden_inside_a_function(tmp_path: Pat
     result = _violations(fake_domain, _domain_import_is_forbidden, package="rain_alert.domain")
 
     assert result == {"leaky.py": {"httpx"}}
+
+
+class TestTheAgentDeploymentUnitIsASeparateArtifact:
+    """D22, enforced in both directions.
+
+    **Why the second direction needs a test at all**, since it is the part a
+    reader cannot infer: an `agent/` module importing `rain_alert.domain`
+    **works on a developer's machine**, because both trees sit on `sys.path`
+    during local development. It fails only after deploy, inside AgentCore
+    Runtime, where the `rain_alert` package does not exist. That is the most
+    expensive place in this project to discover an import.
+
+    The first direction protects the Lambda change 3 ships: `pydantic`,
+    `strands` and `bedrock_agentcore` are deployment weight the alert path
+    must never carry, and `state.yaml → resolved_decisions.pydantic-boundary`
+    puts the line at `src/` rather than at `domain/`.
+    """
+
+    def test_the_application_never_imports_the_agent_unit_or_a_model_sdk(self) -> None:
+        assert _violations(SRC_ROOT, _src_import_is_forbidden, package="rain_alert") == {}
+
+    def test_the_agent_unit_never_imports_the_application_package(self) -> None:
+        assert _violations(AGENT_ROOT, _agent_import_is_forbidden, package="agent") == {}
+
+    def test_both_scans_actually_reach_a_file(self) -> None:
+        """A scan over a directory that does not exist reports no violation and
+        reads as a pass. Mutation-checked by pointing `AGENT_ROOT` at a name
+        that is not there: without this, nothing turned red."""
+        assert sorted(path.name for path in AGENT_ROOT.glob("*.py")) == ["app.py", "models.py"]
+        assert (SRC_ROOT / "adapters" / "agent_prompt.py").is_file()
+
+    def test_the_application_side_scanner_detects_a_planted_import(self, tmp_path: Path) -> None:
+        """Triangulation. A clean tree passing proves nothing about a scanner
+        that was never asked a question it could answer wrongly."""
+        (tmp_path / "composer.py").write_text(
+            "from strands import Agent\nimport pydantic\nfrom agent.models import CompositionOutput\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "clean.py").write_text("from rain_alert.domain import template\n", encoding="utf-8")
+
+        result = _violations(tmp_path, _src_import_is_forbidden, package="rain_alert")
+
+        assert result == {"composer.py": {"strands", "pydantic", "agent.models"}}
+
+    def test_the_agent_side_scanner_detects_a_planted_import(self, tmp_path: Path) -> None:
+        (tmp_path / "leaky.py").write_text(
+            "def build():\n    from rain_alert.domain.sanitize import sanitize_source_text\n", encoding="utf-8"
+        )
+        (tmp_path / "clean.py").write_text("from models import CompositionOutput\n", encoding="utf-8")
+
+        result = _violations(tmp_path, _agent_import_is_forbidden, package="agent")
+
+        assert result == {"leaky.py": {"rain_alert.domain.sanitize"}}
+
+    def test_the_scan_ignores_the_virtual_environment_it_would_otherwise_walk(self, tmp_path: Path) -> None:
+        """`agent/` carries its own `.venv`, and every dependency in it imports
+        something this scan forbids. Skipping dot-directories is what makes the
+        scan about *this* project's code; without it the test fails on the SDK
+        rather than on anything anyone wrote."""
+        (tmp_path / ".venv").mkdir()
+        (tmp_path / ".venv" / "installed.py").write_text("import rain_alert\n", encoding="utf-8")
+        (tmp_path / "clean.py").write_text("x = 1\n", encoding="utf-8")
+
+        assert _violations(tmp_path, _agent_import_is_forbidden, package="agent") == {}
 
 
 def test_scanner_resolves_relative_imports_before_checking_them(tmp_path: Path) -> None:
