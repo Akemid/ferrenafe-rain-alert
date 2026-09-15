@@ -1,0 +1,36 @@
+[project]
+# A second, separate uv project (design.md D22). It is not a package inside
+# `src/rain_alert`, is not part of the `rain-alert` wheel, and is never on the
+# change-3 Lambda's dependency graph: `strands-agents`, `bedrock-agentcore` and
+# `pydantic` are deployed to AgentCore Runtime and nowhere else. The boundary is
+# enforced in both directions by tests/architecture/test_layer_boundaries.py.
+name = "rain-alert-composer-agent"
+version = "0.1.0"
+description = "AgentCore Runtime deployment unit: composes one community alert message from pre-digested data."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "bedrock-agentcore>=1.23.0",
+    "pydantic>=2.13.5",
+    "strands-agents>=1.55.1",
+]
+
+[tool.uv]
+# Not built into a wheel and not installed into its own environment. AgentCore
+# packages the directory and runs `app.py` from it, so the modules are flat and
+# importable by name rather than through an installed distribution.
+package = false
+
+[tool.pytest.ini_options]
+# `--directory agent` is what makes this file the one pytest reads: rootdir is
+# taken from the invocation directory, and the root project's own
+# `testpaths = ["tests"]` is relative to the repository root, so `uv run pytest`
+# there never reaches these tests. The command is
+# `uv run --directory agent pytest`.
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
