@@ -424,3 +424,473 @@ on it. The check was left alone and the prose was rewritten to describe the
 number instead of printing it. Worth recording twice over: the guard works,
 and the repository already refuses in *its own files* exactly the pattern the
 composed body has no rule against.
+
+---
+
+# Apply Progress: composer-agent — PR 2 of five
+
+**Branch**: `feat/composer-agent-fallback`, cut from `main` (which already
+carries PR 1). Not pushed, no pull request opened.
+**Slice**: PR 2 of five — provenance, the invocation seam, the fallback
+composer, the twelve-row fault table, the mutation proof, the fallback notice
+**Mode**: Strict TDD (`openspec/config.yaml → rules.apply.tdd: true`)
+**Baseline**: 793 tests passing → **848 tests passing**
+
+## Scope
+
+**In and delivered**: `ComposerName`, `NoticeKind.AGENT_FALLBACK_USED`,
+`AlertMessage.composed_by` and its serialization round trip; the `AgentInvoker`
+Protocol and `AgentInvocationError`; `FakeAgentInvoker`; `AgentBackedComposer`
+with `parse_candidate` and `FallbackReason`; the twelve-row fault table as
+twelve separate tests; the mutation proof in both directions; the operator
+notice; real provenance replacing the hardcoded composer literal in the cycle.
+
+**Out, as instructed**: `agent/`, the Pydantic model, the prompt, any Strands /
+AgentCore / boto3 import, the real invocation adapter, the CLI flag, the deploy
+runbook. No dependency was added; `agent/` was not created; `docs/` and
+`openspec/specs/` were not touched.
+
+**Not delivered, and why** — `entrypoints/wiring.select_composer` (tasks
+3.12/3.13). See "Budget stop" below.
+
+## Tasks completed
+
+Phase 1, everything except 1.45 (security review) and 1.46 (PR gate):
+
+- [x] 1.1–1.6 Provenance plumbing — `ComposerName`, `NoticeKind.AGENT_FALLBACK_USED`, `AlertMessage.composed_by`, serialization restore
+- [x] 1.17–1.19 The invocation seam, its exception, and `FakeAgentInvoker`
+- [x] 1.20 `build_fake_deps` gains a `composer=` override (shape deviation below)
+- [x] 1.21–1.26 Rows 1–4 and 12, and the fallback `try`
+- [x] 1.27–1.34 Rows 5–11, `parse_candidate`, and the validator wired into `compose`
+- [x] 1.35–1.36 The accepted path
+- [x] 1.37–1.38 The fallback notice
+- [x] 1.39–1.40 The mutation proof, both directions, seven mutants
+- [x] 1.41–1.44 `RunAlertCycle` provenance and the zero-invocation properties
+
+Tasks 1.7–1.16 were completed by PR 1 and are unchanged.
+
+## TDD cycle evidence
+
+| Work unit | RED — the failure, and that it was the intended one | GREEN |
+|---|---|---|
+| 1.1–1.2 Enum spellings | `ImportError: cannot import name 'ComposerName' from 'rain_alert.domain.values'` (collection error) | 26 pass |
+| 1.3–1.4 `composed_by` | `TypeError: AlertMessage.__init__() got an unexpected keyword argument 'composed_by'`, ×2 | 797 pass — the defaulted field broke none of the eight merged construction sites |
+| 1.5–1.6 Serialization | `assert <ComposerName.TEMPLATE> is <ComposerName.AGENT>` — the restored message defaulted to TEMPLATE whatever the document stored, exactly as task 1.5 predicted | 800 pass |
+| 1.17–1.18 The seam | `ModuleNotFoundError: No module named 'rain_alert.adapters.agent_invoker'` | 9 pass |
+| 1.19–1.20 The fake | `ImportError: cannot import name 'FakeAgentInvoker' from 'tests.support.fakes'` | 14 pass |
+| 1.21–1.25 Rows 1–4, 12 | `ModuleNotFoundError: No module named 'rain_alert.adapters.agent_composer'` | — |
+| 1.26 The `try` | (intermediate, deliberately unvalidated) | **6 of 12 green, rows 6–11 red** — see below |
+| 1.27–1.34 Rows 5–11 | 6 failures: rows 6, 7, 8, 9, 10, 11, all because `validate_message` was not yet wired into `compose` | 20 pass |
+| 1.37–1.38 The notice | 6 failures: `_fallback_notices(deps)` empty — no notice was wired | 27 pass |
+| 1.41–1.42 Provenance in the cycle | `assert 'agent' == 'template'` on `AlertRecord.composer` — the hardcoded literal at `run_alert_cycle.py:189` | 847 pass |
+| 1.39 (extra) Row 5's reason | Mutation E survived; the test written to kill it failed first with `unexpected_error` in the subject | 848 pass |
+
+**The 1.26 intermediate is worth recording.** Task 1.26 predicted the `try`
+alone would make 5 of 12 rows pass. It made **6**: row 5 (a payload missing
+`body`) passed too, because the `KeyError` from reading the missing key was
+absorbed by the broad `except`. Row 5 was therefore closed *incidentally*
+rather than by a shape check — which is exactly the gap mutation E then
+exposed.
+
+## Mutation evidence — both directions, seven mutants
+
+Each mutation was applied to the shipped code, the suite was run, the output
+recorded, and the mutation reverted. `pytest` output is quoted as produced.
+
+### The mutants that bite
+
+**Mutation C — both `except` clauses deleted** (the mutation D15 names):
+
+```
+--- MUTATION C: both except clauses deleted ---
+FAILED ...::TestTransportFaultsFallBackToTheTemplate::test_row_1_deadline_exceeded
+FAILED ...::TestTransportFaultsFallBackToTheTemplate::test_row_2_transport_error
+FAILED ...::TestTransportFaultsFallBackToTheTemplate::test_row_3_bad_status
+FAILED ...::TestTransportFaultsFallBackToTheTemplate::test_row_4_malformed_payload
+FAILED ...::TestTransportFaultsFallBackToTheTemplate::test_row_12_an_exception_type_nobody_anticipated
+FAILED ...::TestTransportFaultsFallBackToTheTemplate::test_an_unavailable_reason_outside_the_four_transport_ones_is_still_absorbed
+FAILED ...::TestTheTryCoversEverythingTheAgentCanInfluence::test_a_payload_that_raises_while_being_parsed_still_sends_the_template
+FAILED ...::TestTheTryCoversEverythingTheAgentCanInfluence::test_a_prompt_builder_that_raises_still_sends_the_template
+FAILED ...::TestTheOperatorIsToldExactlyOncePerFallback::test_one_notice_of_the_fallback_kind_is_emitted_on_a_transport_fault
+FAILED ...::TestTheOperatorIsToldExactlyOncePerFallback::test_the_notice_names_the_fault_and_carries_its_detail
+FAILED ...::TestTheOperatorIsToldExactlyOncePerFallback::test_the_notice_carries_no_source_and_the_cycle_clock
+FAILED ...::TestTheOperatorIsToldExactlyOncePerFallback::test_the_operator_learns_before_the_message_is_relayed
+FAILED ...::TestTheOperatorIsToldExactlyOncePerFallback::test_the_notice_does_not_travel_on_the_cycle_result
+13 failed, 14 passed in 0.13s
+```
+
+**Mutation B — only `except Exception` deleted**: 3 failed, 24 passed. Row 12's
+failure is the injected exception travelling out of `compose`, out of
+`RunAlertCycle.execute` and out of the test, precisely as D15 predicts:
+
+```
+    def invoke(self, prompt: str) -> Mapping[str, Any]:
+        ...
+>           raise self._error
+E           RuntimeError: botocore raised something new
+tests/support/fakes.py:151: RuntimeError
+```
+
+**Mutation D — the `if violations:` guard deleted**: 7 failed, 20 passed —
+rows 6, 7, 8, 9, 10, 11 plus the notice test that reports which rules broke.
+
+**Mutation G — composition hoisted above the authorized-send branch** in
+`run_alert_cycle.py`, which is the mutant for "a deduplicated cycle invokes the
+seam zero times": 6 failed, 824 passed, including both zero-invocation tests
+(`Left contains one more item: '<prompt>'`) and, usefully, two pre-existing
+change-1 tests and one CLI test.
+
+**Mutation E — `parse_candidate`'s required-field check deleted**: **survived,
+27 passed.** See below.
+
+### Reverted, green
+
+```
+$ uv run pytest   →  848 passed, 15 deselected   exit=0
+```
+
+### What the proof found that the design did not
+
+1. **Mutation A — only `except AgentInvocationError` deleted — barely bites.**
+   1 failed, 26 passed. Every transport row still falls back, because
+   `except Exception` catches an `AgentInvocationError` too. The narrow clause's
+   single failing mutant is the test asserting the notice **names** the fault:
+   with it gone, a `BAD_STATUS` fault is reported to the operator as
+   `unexpected_error`. So the two clauses are *not* independent guards. The
+   narrow one buys accurate reporting, not survival, and D15's wording
+   ("deleting **either** `except` makes the corresponding rows raise") is
+   wrong about the narrow one.
+
+2. **Mutation E survived, and that was a real gap.** Deleting the required-field
+   check left all 27 tests green, because the `KeyError` is absorbed anyway. A
+   guard with no failing mutant is decoration, so
+   `test_row_5_is_reported_as_a_malformed_payload_and_not_as_a_surprise` was
+   written; it fails against the mutant and passes against the shipped code.
+   The point is operator-facing: `unexpected_error` sends someone looking for a
+   bug in this codebase, `malformed_payload` says the model returned the wrong
+   shape.
+
+## Deliberate deviations from the design, each with its reason
+
+1. **The `try` spans the prompt build, the invocation, the parse and the
+   validation** — D15 draws it around the invocation alone. PR 1's own notes
+   record that `validate_message` raises on an unusable timezone and that "the
+   fallback adapter must not assume this function cannot raise". A guarantee
+   that holds only while three downstream functions stay total is not a
+   guarantee. It is still *one* `try`, which is all D15's rationale asks for,
+   and the `if violations:` branch stays outside it so mutations C and D remain
+   separable. Two tests pin it: a payload that raises while being read, and a
+   prompt builder that raises.
+
+2. **`fallback_reason_for` instead of `FallbackReason(exc.reason)`.** The
+   design's expression raises `ValueError` **inside the `except` clause** for
+   any `UnavailableReason` outside the four transport ones — an exception
+   escaping the handler whose whole job is to absorb exceptions.
+   `UnavailableReason` already has seven members. Pinned by
+   `test_an_unavailable_reason_outside_the_four_transport_ones_is_still_absorbed`.
+
+3. **`parse_candidate(draft)` takes no `MessageRequest`**, where task 1.34 names
+   `parse_candidate(draft, request)`. A parser that could fill a missing field
+   from the request would let the agent omit precisely the value the validator
+   then checks against that same request, and the check would pass by
+   construction. The parameter was also dead.
+
+4. **`build_fake_deps(composer=...)` takes a factory**, not a ready-made
+   composer. The agent-backed composer must be handed the *same* `FakeNotifier`
+   the graph builds, because it sends the fallback notice itself (D21); a notice
+   landing in a second notifier would be invisible to the shared `CallLog` that
+   makes cross-port ordering assertable. The default is unchanged, so the
+   existing tests are untouched.
+
+5. **`build_prompt` is injected into `AgentBackedComposer`** rather than
+   imported. `agent_prompt.py` is a later slice and writing one here would be
+   out of scope; injecting it also means anything it raises is absorbed like any
+   other fault, which mutation B proves.
+
+6. **The fault table runs through `RunAlertCycle`, not against `compose`.**
+   Task 1.34 asks each row to assert "an alert was sent" and
+   `composer == "template"`, and both are cycle-level facts. It is also what
+   makes mutations B and C produce the failure D15 describes.
+
+## Things the specification or design says that did not survive contact
+
+1. **D15's mutation claim is inaccurate about the narrow `except`** — see
+   mutation A above. The document says deleting *either* clause turns the
+   corresponding rows red; deleting the narrow one turns exactly one test red,
+   and it is a reporting test, not a survival one.
+
+2. **`CycleResult.notices` and the spec's "exactly one operator notice".** The
+   spec requires exactly one notice per fallback through
+   `Notifier.send_operator_notice`, and D21 records that `CycleResult.notices`
+   carries outage notices only. Both are honoured and they *look* contradictory
+   to a reader who expects a cycle's notices to be on its result. Stated plainly
+   here and in the `CycleResult.notices` docstring: the operator sees the
+   fallback notice because `ConsoleNotifier` writes it to the same stream, and
+   it is deliberately absent from that field.
+
+3. **Task 1.26's "5 of 12" was 6 of 12** — recorded above. Not a contradiction,
+   but the difference is the whole reason mutation E was worth running.
+
+4. **The design has no home for `FallbackReason`.** D15 uses the name in its
+   sketch and nothing defines it. It is defined in
+   `adapters/agent_composer.py`, reusing `UnavailableReason`'s own four
+   spellings so the mapping needs no translation table.
+
+## Budget stop — reported, not pushed through
+
+The brief set ~900 changed lines and said to stop rather than push on at 1200.
+The slice stands at **1 238 insertions, 15 deletions** across `src/` and
+`tests/`. Work stopped there.
+
+**What that leaves undone: `entrypoints/wiring.select_composer` (tasks
+3.12/3.13), which the brief listed as in scope.** It is also the one item in
+this slice that could not have been finished honestly:
+
+- `select_composer(config, ...)` branches on `config.composer`, which does not
+  exist yet (tasks 3.8/3.9), so the switch pulls `AlertConfig` in with it.
+- Its `AGENT` branch must return "a fully-wired `AgentBackedComposer`", and a
+  fully-wired one needs a real `AgentInvoker` and a real `build_prompt` —
+  `agentcore_invoker.py` (3.6/3.7) and `agent_prompt.py` (2.6/2.7), both
+  explicitly out of this slice.
+
+Written now, that branch would either construct a composer from two
+placeholders or raise on a configuration nothing can set, and PR 3 or PR 5
+would rewrite it. The composer is nonetheless *selectable*: `CycleDependencies`
+is a frozen dataclass and the test wiring's `composer=` factory exercises the
+cycle with the agent-backed composer end to end. Production wiring still builds
+`domain.template.MessageComposer`, so `main`'s behaviour is unchanged by
+construction, which is the property D23 asks for.
+
+## Verification gate
+
+```
+$ uv run pytest                → 848 passed, 15 deselected              exit=0
+$ uv run ruff check .          → All checks passed!                     exit=0
+$ uv run ruff format --check . → 84 files already formatted             exit=0
+$ uv run mypy                  → Success: no issues found in 38 source files   exit=0
+$ uv run rain-alert-cycle      → Level none, PREVIEW (NOT SENT)         exit=0
+```
+
+The live run is against the real SENAMHI page and Open-Meteo: two warnings
+discarded as non-flood phenomena, level `none`, nothing sent. No test was
+weakened and no type was loosened to reach green.
+
+## Commits
+
+| Commit | Work unit |
+|---|---|
+| `b99b065` | `feat(domain): carry composer provenance on the composed message` |
+| `a618ec7` | `feat(adapters): add the agent invocation seam and its offline fake` |
+| `d89925c` | `feat(adapters): fall back to the template on every composer fault` |
+| `8991f7c` | `feat(application): record the composer that actually wrote the message` |
+| `b2d45e7` | `test(adapters): name a malformed payload as one, not as a surprise` |
+
+## Files changed
+
+| File | Action | What |
+|---|---|---|
+| `src/rain_alert/domain/values.py` | Modified | `ComposerName`; `NoticeKind.AGENT_FALLBACK_USED` |
+| `src/rain_alert/domain/messages.py` | Modified | `AlertMessage.composed_by`, defaulted |
+| `src/rain_alert/adapters/serialization.py` | Modified | Restore `composed_by` from the existing `composer` attribute; document shape unchanged |
+| `src/rain_alert/adapters/agent_invoker.py` | Created | `AgentInvoker` Protocol, `AgentInvocationError` |
+| `src/rain_alert/adapters/agent_composer.py` | Created | `AgentBackedComposer`, `parse_candidate`, `FallbackReason`, the notice |
+| `src/rain_alert/application/run_alert_cycle.py` | Modified | `composer=message.composed_by.value`; `notices` docstring |
+| `tests/support/fakes.py` | Modified | `FakeAgentInvoker` |
+| `tests/support/wiring.py` | Modified | `composer=` factory override; notifier and clock built before the graph |
+| `tests/unit/adapters/test_agent_invoker.py` | Created | The seam and the fake |
+| `tests/unit/adapters/test_agent_composer.py` | Created | The twelve rows, the notice, the accepted path |
+| `tests/unit/adapters/test_serialization.py` | Modified | Provenance round trip, both composers |
+| `tests/unit/application/test_run_alert_cycle.py` | Modified | Recorded provenance; the zero-invocation properties |
+| `tests/unit/domain/test_messages.py` | Modified | Default provenance and the equality change |
+| `tests/unit/domain/test_values.py` | Modified | The two wire spellings |
+
+## Next
+
+A correctness review and a security review on this branch, then PR 3. The
+security review's scope for this slice: the new `AlertMessage` field and its
+equality change, the `serialization.py` round trip, the fallback notice path,
+and the fact that an accepted agent body now reaches a recipient through the
+cycle for the first time — which is the condition `tasks.md` marks **BLOCKING**
+under "Raised by the 2026-09-10 second adversarial review". That finding is
+recorded, not built, and it is not this slice's to close: nothing in production
+wiring can select the agent composer yet.
+
+---
+
+# PR 2 — adversarial review remediation (2026-09-12)
+
+A third adversarial review of the fallback composer on
+`feat/composer-agent-fallback`. One CRITICAL, one HIGH, three MEDIUM and six
+LOW findings, all confirmed and all fixed. Strict TDD throughout: every
+finding became a test that is the attack itself, run red before the fix.
+
+## CRITICAL — a failing operator notifier cost the community its alert
+
+`_fell_back` performed two unguarded operations, the injected clock call and
+`send_operator_notice`. Three of its four call sites sit outside the `try` in
+`compose` or inside one of its `except` clauses, so either raising left
+`compose` by exception. `RunAlertCycle` holds no `try` by design — change 1
+made failure travel as data — so the cycle died.
+
+Reproduced with a notifier whose operator channel raises while its community
+channel works, before the fix:
+
+```
+agent raises a transport error, operator notifier broken:
+  COMPOSE RAISED: BrokenPipeError: [Errno 32] Broken pipe
+  -> the cycle aborts, the community gets NO alert
+  notice attempts: 1
+  surviving notice names: Agent composer fell back to the template: transport_error
+
+agent returns a malformed payload, operator notifier broken:
+  COMPOSE RAISED: BrokenPipeError: [Errno 32] Broken pipe
+  -> the cycle aborts, the community gets NO alert
+  notice attempts: 2
+  surviving notice names: Agent composer fell back to the template: unexpected_error
+```
+
+One cause, three consequences. The alert is lost. The "exactly one notice per
+fallback" rule breaks, because the malformed-payload branch sits inside the
+`try`, so the failed notice is caught by the broad handler, which calls
+`_fell_back` again. And the surviving notice then names `unexpected_error` —
+precisely the operator misdirection row 5 exists to prevent.
+
+This is not hypothetical. `ConsoleNotifier` writes to a stream today, so a
+broken pipe from piping the command into another, a full disk or a closed
+descriptor under a supervisor all reach it. In change 3 it becomes a network
+notifier where transient failure is routine.
+
+The same run after the fix:
+
+```
+agent raises a transport error, operator notifier broken:
+  cycle completed, alerts sent to the community: 1
+  notice attempts: 1
+  surviving notice names: Agent composer fell back to the template: transport_error
+
+agent returns a malformed payload, operator notifier broken:
+  cycle completed, alerts sent to the community: 1
+  notice attempts: 1
+  surviving notice names: Agent composer fell back to the template: malformed_payload
+```
+
+Telling the operator is best-effort, and structurally so: the clock call and
+the notice sit inside `suppress(Exception)`, and `return fallback` is the last
+statement, reachable past nothing that can raise. Row 13 of the fault table is
+the mutant that kills the guard if anyone removes it; a raising-clock row
+covers the other unguarded operation.
+
+## HIGH — a non-mapping response was not shape-rejected
+
+`parse_candidate` never checked that the draft is a mapping, so its docstring's
+promise that it raises nothing on a bad shape was false. `field not in draft`
+is membership for a list and *substring* for a string, so a list of the four
+field names and a string containing them both passed the required-field check
+and failed later with a `TypeError`. A real invoker decodes JSON, and JSON
+yields exactly these: a list, a null, a bare string, a number.
+
+The alert survived either way. The operator was told `unexpected_error`.
+
+`draft` is typed `object` now, because the annotation was never the guard it
+looked like: `AgentInvoker.invoke` declares a mapping and a real SDK-backed
+implementation can fail to honour it.
+
+`test_a_response_that_is_not_a_mapping_at_all_is_refused` passed an ordinary
+dictionary with wrong field types — a real case under a false name, which in a
+suite whose value is that each row's name can be trusted is itself a defect.
+Split into a parametrized row over a null, a list, a string and an integer
+asserting the fault name, and the wrong-types case under an accurate name.
+
+## MEDIUM — four rows proved survival but not separability
+
+Rows 1, 2, 4 and 12 differed only in the fault handed to the fake invoker and
+each asserted only that the template was sent. Mutating `fallback_reason_for`
+to return the unexpected-error value for everything turned **one** test red.
+With the fault-name assertions the same mutation turns **five** red. Row 12
+does not travel through the mapping — the broad handler names that fault
+itself — so it is pinned by its own mutant: naming `timeout` there turns row
+12 and only row 12 red.
+
+## MEDIUM — the machine-readable document could not see a fallback
+
+`message` gains `composed_by`. Additive: no existing key changes meaning. The
+fallback *notice* stays off `CycleResult.notices` by design (D21), so without
+this the document a calibration log or change 3's Lambda entrypoint parses
+said nothing about a fallback at all — under `--json` the notifier writes to
+standard error, so it was visible only to a human watching that stream.
+
+## MEDIUM — the notice claimed a send that had not happened
+
+Wording only. The body read that the template's message "was sent as of" a
+timestamp, but the notice is emitted during composition, before the cycle
+calls the community channel. At that moment nothing has been sent, and it may
+never be: the send can fail and the recipient list can be empty. In a
+life-safety system the operator's log is evidence.
+
+## LOW — all six fixed
+
+| Finding | Disposition |
+|---|---|
+| Row 11 breaks two rules, so deleting the one it names left it green | Asserts the notice names `empty_body`; deleting that rule now turns row 11 red |
+| An unreadable provenance label aborted the cycle on the dedup path | Softened. The raw label stays on `AlertRecord.composer`, so nothing is lost; only `message.composed_by` falls to the conservative value. The asymmetry with the unknown-reason rule is recorded in the module docstring next to it |
+| Two vacuous assertions | `isinstance(alerts, object)` narrows to `FakeAlertRepository` and its type ignore is gone; `sent != template_message`, true for every accepted draft since provenance joined value equality, compares bodies |
+| The Protocol docstring omitted the deadline | Added as the third obligation, stated as the one with no safety net: the composer cannot absorb an invocation that never returns |
+| A hang and a `BaseException` | Recorded in the composer docstring as the two faults this shape cannot absorb. `except Exception` stays: a cycle being shut down is not a composer fault, and widening the catch would swallow shutdown |
+| The unexpected-error detail reached a rendered stream unsanitized | Passes `sanitize_source_text`. Reproduced a live ANSI escape, a surviving right-to-left override, a newline writing a forged `Recomendaciones:` block and 500 characters of padding. The other two details need nothing: the invoker writes one, and every `Violation.detail` interpolates with `!r` |
+
+## Design amended
+
+D15 claimed deleting either `except` clause makes the corresponding rows raise
+and the "an alert was sent" assertion fail. Wrong about the narrow one:
+`AgentInvocationError` is an `Exception`, so the broad clause catches it too.
+Deleting the narrow clause leaves every survival assertion green and turns
+five tests red on the fault name alone. D15 now carries a mutation table with
+every mutant reproduced and its red count recorded, and states the shape four
+findings shared: a guard downstream of a broad handler is almost never there
+to keep the alert alive, so it has a failing mutant only when a test asserts
+the name the operator is given.
+
+## Verification gate
+
+```
+$ uv run pytest                → 861 passed, 15 deselected              exit=0
+$ uv run ruff check .          → All checks passed!                     exit=0
+$ uv run ruff format --check . → 84 files already formatted             exit=0
+$ uv run mypy                  → Success: no issues found in 38 source files   exit=0
+$ uv run rain-alert-cycle      → Level none, PREVIEW (NOT SENT)         exit=0
+```
+
+The live run is against the real SENAMHI page and Open-Meteo: two warnings
+discarded as non-flood phenomena (wind, high temperature), level `none`,
+nothing sent. `uv run rain-alert-cycle --json` reports
+`message.composed_by = "template"` on the same run. No test was weakened and
+no type was loosened to reach green.
+
+## Commits
+
+| Commit | Work unit |
+|---|---|
+| `b076bc7` | `fix(adapters): keep a failing operator notice from costing the alert` |
+| `97ec49a` | `fix(adapters): refuse a draft that is not a mapping, and say so` |
+| `5a76d6d` | `test(adapters): pin the fault name each transport row reports` |
+| `b1e408f` | `fix(adapters): say the template is being sent, not that it was` |
+| `dfeb01e` | `feat(entrypoints): carry message provenance in the machine-readable document` |
+| `61b8550` | `test(adapters): give row 11 a mutant and drop two vacuous assertions` |
+| `4c4ef67` | `fix(adapters): sanitize and bound the unexpected-error detail` |
+| `f1c345b` | `fix(adapters): read an unknown provenance label without aborting the cycle` |
+| `8a82c0e` | `docs(adapters): record the deadline, the hang and the BaseException gap` |
+| `4d15abf` | `docs(composer-agent): correct D15's mutation claim for the narrow handler` |
+
+## Files changed
+
+| File | Action | What |
+|---|---|---|
+| `src/rain_alert/adapters/agent_composer.py` | Modified | `suppress` in `_fell_back`; mapping check in `parse_candidate`; `_unexpected_detail`; notice wording; the hang and `BaseException` notes |
+| `src/rain_alert/adapters/agent_invoker.py` | Modified | The deadline obligation on the Protocol |
+| `src/rain_alert/adapters/serialization.py` | Modified | `_composer_name`; the asymmetry with the unknown-reason rule |
+| `src/rain_alert/entrypoints/cli.py` | Modified | `message.composed_by` in the `--json` document |
+| `tests/support/fakes.py` | Modified | `FakeNotifier.notice_error`; `FakeAgentInvoker` scriptable with a non-mapping and with `None` |
+| `tests/unit/adapters/test_agent_composer.py` | Modified | Row 13 and its two companions; fault names on rows 1, 2, 3, 4, 11, 12; the split shape test; the sanitization test; the wording test |
+| `tests/unit/adapters/test_serialization.py` | Modified | The unknown provenance label |
+| `tests/unit/entrypoints/test_cli.py` | Modified | The document's message provenance, on a send, on an agent-written message and on a preview |
+| `openspec/changes/composer-agent/design.md` | Modified | D15's mutation table, corrected |

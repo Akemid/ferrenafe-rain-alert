@@ -107,22 +107,43 @@ phases:
     artifact: openspec/changes/composer-agent/apply-progress.md
     engram_topic_key: sdd/composer-agent/apply-progress
     engram_saved: true
-    pr_slice: 1
+    pr_slice: 2
     pr_slices_planned: 5
-    tasks_completed: [1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, 1.16]
+    pr_branch: feat/composer-agent-fallback  # cut from main; not pushed, no PR opened
+    tasks_completed:
+      # PR 1 — the pure validator
+      [1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, 1.16,
+       # PR 2 — provenance, seam, fallback composer, fault table, notice
+       1.1, 1.2, 1.3, 1.4, 1.5, 1.6,
+       1.17, 1.18, 1.19, 1.20,
+       1.21, 1.22, 1.23, 1.24, 1.25, 1.26, 1.27, 1.28, 1.29, 1.30, 1.31, 1.32,
+       1.33, 1.34, 1.35, 1.36, 1.37, 1.38, 1.39, 1.40,
+       1.41, 1.42, 1.43, 1.44]
     note: >-
-      PR 1 of five: the pure validator only — nine rules, the Violation type,
-      and invariant V0, plus the has_unsafe_characters predicate rule 7 needs.
-      Tests only; nothing is wired into the cycle and agent/ was not created.
-      Phase 1's remaining tasks (1.1-1.6 provenance, 1.17-1.20 seam and fakes,
-      1.21-1.40 fallback composer and mutation proof, 1.41-1.44 RunAlertCycle
-      wiring, 1.45-1.46 review and gate) are unstarted and split across PRs
-      2-5. Gate green: 638 tests, ruff check, ruff format --check, mypy — all
-      exit 0. Landed at 942 additions against a ~500 target; the overrun is
-      reported in apply-progress.md rather than absorbed, and no task beyond
-      1.16 was started. Five contradictions between spec and design are
-      recorded there, one of which (probability_threshold_pct in the allowed
-      number set) needs an owner decision.
+      PR 2 of five: provenance (ComposerName, AlertMessage.composed_by, the
+      serialization restore), the AgentInvoker seam and FakeAgentInvoker, the
+      AgentBackedComposer with parse_candidate and FallbackReason, the
+      twelve-row fault table as twelve separate cycle-level tests, the
+      mutation proof in both directions, the operator fallback notice, and
+      real provenance replacing the hardcoded composer literal in
+      RunAlertCycle. agent/ was not created, no dependency was added, no
+      Strands/AgentCore/boto3 import exists anywhere, and docs/ and
+      openspec/specs/ were untouched. Gate green: 848 tests (from 793), ruff
+      check, ruff format --check, mypy, and a live `uv run rain-alert-cycle` —
+      all exit 0. Phase 1 is now complete except 1.45 (security review) and
+      1.46 (PR gate). Landed at 1238 insertions / 15 deletions against a ~900
+      target; work stopped at the brief's 1200-line stop line rather than
+      continuing. The one in-scope item left undone is
+      entrypoints.wiring.select_composer (tasks 3.12/3.13): its AGENT branch
+      needs AlertConfig.composer (3.8/3.9), a real invoker (3.6/3.7) and a
+      real prompt (2.6/2.7), all out of this slice, so writing it now would
+      have produced a branch PR 3 or PR 5 rewrites. Production wiring still
+      builds domain.template.MessageComposer, so main's behaviour is
+      unchanged by construction. Four deliberate deviations from the design
+      and four documentation inaccuracies found by the mutation proof are
+      recorded in apply-progress.md; the most consequential is that deleting
+      the narrow `except AgentInvocationError` does NOT turn the transport
+      rows red, contrary to D15, because the broad except catches it too.
   verify:
     status: pending
     depends_on: [apply]

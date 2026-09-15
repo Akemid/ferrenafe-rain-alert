@@ -42,7 +42,25 @@ class NoticeKind(StrEnum):
 
     SOURCE_UNAVAILABLE = "source_unavailable"
     SOURCES_RECOVERED = "sources_recovered"
-    # change 2 adds: AGENT_FALLBACK_USED = "agent_fallback_used"
+    #: The agent composer fell back to the deterministic template (D21). Sent
+    #: by the adapter rather than by the use case, because only the adapter
+    #: knows *why* it fell back, and a notice reading "fallback happened" with
+    #: no fault and no violation list is a slower version of silent
+    #: degradation. Reserved by this exact spelling since change 1.
+    AGENT_FALLBACK_USED = "agent_fallback_used"
+
+
+class ComposerName(StrEnum):
+    """Which implementation of the `MessageComposer` port wrote a message.
+
+    The value is a persisted contract: `adapters/serialization.py` writes it
+    as the alert document's `"composer"` attribute and reads it back, and
+    change 3's DynamoDB mapper reuses that attribute name. Renaming a member
+    makes stored records unreadable, which no type checker can see.
+    """
+
+    TEMPLATE = "template"
+    AGENT = "agent"
 
 
 class UnavailableReason(StrEnum):

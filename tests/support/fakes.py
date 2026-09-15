@@ -19,9 +19,10 @@ community was told, so the genuine alert is deduplicated away.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from rain_alert.adapters.local.in_memory_alert_repository import InMemoryAlertRepository
 from rain_alert.domain.config import AlertConfig
@@ -31,6 +32,9 @@ from rain_alert.domain.risk import RiskEvaluator
 from rain_alert.domain.sources import SourceResult
 from rain_alert.domain.template import MessageComposer as TemplateMessageComposer
 from rain_alert.domain.values import Coordinates
+
+#: "Nothing was scripted", distinct from a scripted `None`. See `FakeAgentInvoker`.
+_UNSET: Any = object()
 
 
 @dataclass
@@ -112,6 +116,54 @@ class FakeMessageComposer:
         return self._delegate.compose(request)
 
 
+class FakeAgentInvoker:
+    """`AgentInvoker` that returns a scripted mapping or raises a scripted error.
+
+    It is the whole offline fault table's driver: every transport row scripts
+    an `AgentInvocationError`, every payload row scripts a response, and row
+    12 scripts a bare `RuntimeError` to prove an exception type the composer
+    never anticipated is still absorbed.
+
+    `calls` is the list of prompts. Two properties are asserted on it and
+    nowhere else: a deduplicated cycle invokes the seam **zero** times, and an
+    authorized one invokes it **exactly once**, with no retry.
+
+    Constructing it with neither a response nor an error raises rather than
+    returning `None`, because a silent `None` reaching a composer typed to
+    receive a mapping fails somewhere else entirely and reads as a defect in
+    the code under test. `_UNSET` rather than `None` marks "nothing was
+    scripted", because `None` is itself one of the shapes worth scripting: a
+    real invoker decodes JSON, and `null` decodes to it.
+
+    `response` is deliberately `Any`, and `invoke` keeps the Protocol's
+    `Mapping[str, Any]` return annotation while being able to return
+    something else. That mismatch **is** the fault under test: the composer's
+    shape rows stand for an SDK-backed invoker that breaks its own declared
+    contract, which is precisely the case a type annotation cannot prevent.
+    """
+
+    def __init__(
+        self,
+        response: Any = _UNSET,
+        error: BaseException | None = None,
+        log: CallLog | None = None,
+    ) -> None:
+        if response is _UNSET and error is None:
+            raise ValueError("FakeAgentInvoker needs a scripted response or a scripted error")
+        self._response = response
+        self._error = error
+        self.calls: list[str] = []
+        self.log = log if log is not None else CallLog()
+
+    def invoke(self, prompt: str) -> Mapping[str, Any]:
+        self.calls.append(prompt)
+        self.log.record("invoker", "invoke", str(len(self.calls)))
+        if self._error is not None:
+            raise self._error
+        assert self._response is not _UNSET  # guarded at construction
+        return self._response
+
+
 @dataclass
 class FakeContactRepository:
     contacts: tuple[Contact, ...]
@@ -126,9 +178,25 @@ class FakeContactRepository:
 
 @dataclass
 class FakeNotifier:
+    """Both notifier channels, recorded, with the operator one breakable.
+
+    `notice_error` exists because the two channels fail independently in
+    production. `ConsoleNotifier` writes to a stream today, so a closed
+    descriptor, a full disk or a piped-into command that exited all reach the
+    operator channel alone; in change 3 it becomes a network notifier where
+    transient failure is routine. A test sets it *after* `build_fake_deps`
+    has built the graph, because the agent-backed composer must be given the
+    very notifier the cycle delivers the alert through.
+
+    The attempt is recorded **before** the raise: "exactly one notice per
+    fallback" is a claim about attempts, and a notice that was tried and
+    failed still consumed the fallback's one chance to speak.
+    """
+
     alert_calls: list[tuple[AlertMessage, tuple[Contact, ...]]] = field(default_factory=list)
     notice_calls: list[OperatorNotice] = field(default_factory=list)
     log: CallLog = field(default_factory=CallLog)
+    notice_error: BaseException | None = None
 
     def send_alert(self, message: AlertMessage, recipients: tuple[Contact, ...]) -> None:
         self.alert_calls.append((message, recipients))
@@ -137,6 +205,8 @@ class FakeNotifier:
     def send_operator_notice(self, notice: OperatorNotice) -> None:
         self.notice_calls.append(notice)
         self.log.record("notifier", "send_operator_notice", notice.kind.value)
+        if self.notice_error is not None:
+            raise self.notice_error
 
 
 @dataclass(frozen=True)

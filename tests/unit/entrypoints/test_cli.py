@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -19,11 +20,14 @@ from rain_alert.adapters.console_notifier import ALERT_PREFIX, NOTICE_PREFIX
 from rain_alert.adapters.local.json_alert_repository import JsonFileAlertRepository
 from rain_alert.adapters.open_meteo import OpenMeteoForecastProvider
 from rain_alert.adapters.senamhi_scraper import SenamhiWarningScraper
+from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
+from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.messages import OperatorNotice
-from rain_alert.domain.values import NoticeKind, SourceName
+from rain_alert.domain.values import ComposerName, NoticeKind, SourceName
 from rain_alert.entrypoints.cli import (
     OPEN_METEO_FIXTURE_NAME,
     SENAMHI_FIXTURE_NAME,
+    as_json,
     default_now,
     main,
     parse_now,
@@ -329,6 +333,70 @@ class TestJsonOutput:
 
         assert document["evaluated_at"] == NOW_DT.isoformat()
         assert document["evaluated_at"] != document["window_start"]
+
+
+def _cycle(tmp_path: Path, **fixture_kwargs) -> tuple[CycleResult, AlertConfig]:
+    """One cycle through the CLI's own object graph, returned rather than printed.
+
+    `main` prints and returns an exit code, so a test that needs the
+    `CycleResult` itself builds the same graph `main` does — the real
+    scraper, parser, evaluator, template and file repository, with the two
+    fetch leaves on fixtures.
+    """
+    deps = build_local_deps(
+        state_file=tmp_path / "state.json",
+        now=lambda: NOW_DT,
+        offline_fixtures=_fixtures(tmp_path, **fixture_kwargs),
+        notifier_stream=io.StringIO(),
+    )
+    return RunAlertCycle(deps).execute(), deps.config.load()
+
+
+class TestTheDocumentCanSeeWhoWroteTheMessage:
+    """The machine-readable document could not tell a fallback from a normal run.
+
+    It emits `CycleResult.notices`, which by design carries outage notices
+    only — the agent composer's fallback notice is emitted by the adapter
+    during composition and deliberately never travels on that field. Under
+    `--json` the notifier writes to standard error, so the fallback was
+    visible to a human watching that stream and to nobody else. The document
+    a calibration log or change 3's Lambda entrypoint parses said nothing at
+    all about it, even though the message now carries its own provenance.
+
+    Adding the provenance to the message object is additive and breaks no
+    existing reader: `message` gains a key, and no key changes meaning.
+    """
+
+    def test_the_message_object_names_the_composer_that_wrote_it(self, capsys, tmp_path: Path) -> None:
+        _, output = _run(capsys, tmp_path, "--json", mm=30.0, probability=90)
+
+        document = json.loads(output)
+
+        assert document["message"]["composed_by"] == "template"
+
+    def test_an_agent_written_message_is_reported_as_agent_written(self, tmp_path: Path) -> None:
+        """The value the field exists for. Production wiring cannot select the
+        agent composer yet, so the provenance is set on the result rather than
+        produced by a run — which is exactly the substitution a future run
+        makes, and the one thing a calibration log has to be able to see."""
+        result, config = _cycle(tmp_path, mm=30.0, probability=90)
+        assert result.message is not None
+        agent_written = replace(result, message=replace(result.message, composed_by=ComposerName.AGENT))
+
+        document = json.loads(as_json(agent_written, config))
+
+        assert document["message"]["composed_by"] == "agent"
+
+    def test_a_preview_is_attributed_to_the_template_that_rendered_it(self, capsys, tmp_path: Path) -> None:
+        """On a non-sending run no composer is invoked and `as_json` renders
+        the preview with the deterministic template, so `template` is the true
+        answer rather than a default standing in for a missing one."""
+        _, output = _run(capsys, tmp_path, "--json")
+
+        document = json.loads(output)
+
+        assert document["sent"] is False
+        assert document["message"]["composed_by"] == "template"
 
 
 class TestTheJsonDocumentOwnsStandardOutputAlone:

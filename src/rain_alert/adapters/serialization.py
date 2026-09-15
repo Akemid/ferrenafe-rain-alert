@@ -26,6 +26,15 @@ Three decisions worth stating:
   ever produces records where the two agree (the composer is handed the
   decided level and copies it). The message level is therefore restored from
   the record level rather than duplicated in the document.
+- **Provenance is the second fact stored once.** `AlertRecord.composer` and
+  `AlertMessage.composed_by` agree by construction for the same reason, so
+  the `composer` attribute that already existed carries both and the
+  document shape is unchanged by change 2 (D13).
+- **An unknown provenance label does *not* raise**, and the asymmetry with
+  the rule above is deliberate. It is read on the dedup path, before any
+  send, so raising meant an older binary meeting a newer label refused to
+  warn anybody; and unlike a dropped reason, nothing is lost, because the raw
+  label stays on `AlertRecord.composer`. `_composer_name` states the case.
 """
 
 from __future__ import annotations
@@ -43,7 +52,7 @@ from rain_alert.domain.reasons import (
     WarningReason,
 )
 from rain_alert.domain.sanitize import sanitize_source_text
-from rain_alert.domain.values import Level, SourceName, TimeWindow, WarningLevel
+from rain_alert.domain.values import ComposerName, Level, SourceName, TimeWindow, WarningLevel
 
 
 def _moment(value: Any, field: str) -> datetime:
@@ -133,6 +142,31 @@ def reason_from_dict(document: dict[str, Any]) -> Reason:
             return NoQualifyingWarningReason()
 
 
+def _composer_name(raw: Any) -> ComposerName:
+    """A stored provenance label as a `ComposerName`, total by construction.
+
+    **The one place this module does not fail loudly, and why.** An unknown
+    reason tag raises, because dropping a reason makes the audit trail lie
+    about why an alert went out and nothing else holds that fact. An unknown
+    provenance label is the opposite case on both counts.
+
+    It is read on the **dedup path**, before any send: raising here meant an
+    older binary meeting a label a newer one wrote refused to warn anybody at
+    all, over descriptive metadata about an alert that already went out.
+
+    And nothing is lost. The raw label stays on `AlertRecord.composer`, so the
+    audit trail still records exactly what was written; only
+    `AlertMessage.composed_by`, which has no reading for a label this version
+    does not know, falls to the conservative value. That is the direction
+    `messages.py` already chose for the field's default — under-claim agent
+    involvement rather than over-claim it.
+    """
+    try:
+        return ComposerName(raw)
+    except ValueError:
+        return ComposerName.TEMPLATE
+
+
 def alert_record_to_dict(record: AlertRecord) -> dict[str, Any]:
     """A sent-alert record as the document design.md 4.1 pins."""
     return {
@@ -168,6 +202,11 @@ def alert_record_from_dict(document: dict[str, Any]) -> AlertRecord:
             body=document["body"],
             level=level,
             valid_until=_moment(document["valid_until"], "valid_until"),
+            # Provenance is stored once, like `level`: the record and the
+            # message agree by construction (`RunAlertCycle` copies one from
+            # the other), so the document keeps one `composer` attribute and
+            # both fields are restored from it. Its shape did not change.
+            composed_by=_composer_name(document["composer"]),
         ),
         reasons=tuple(reason_from_dict(reason) for reason in document.get("reasons", ())),
         senamhi_status=document["senamhi_status"],

@@ -37,12 +37,12 @@ PR 1 (this slice) → PR 2 (agent/ unit) → PR 3 (invocation + runbook)
 
 ### Provenance plumbing
 
-- [ ] 1.1 [RED] `tests/unit/domain/test_values.py` — assert `ComposerName.TEMPLATE`/`.AGENT` exist and `NoticeKind.AGENT_FALLBACK_USED == "agent_fallback_used"`. Expects `AttributeError`: neither exists yet. Design D13, D21.
-- [ ] 1.2 [GREEN] `domain/values.py` — add `ComposerName(StrEnum)` and `NoticeKind.AGENT_FALLBACK_USED`. Verify: `uv run pytest tests/unit/domain/test_values.py -q`
-- [ ] 1.3 [RED] `tests/unit/domain/test_messages.py` — `AlertMessage` accepts `composed_by`, defaults to `ComposerName.TEMPLATE`; equality now includes it. Expects `TypeError`: no such field. Design D13, design §3 breaking-change table.
-- [ ] 1.4 [GREEN] `domain/messages.py` — add `composed_by: ComposerName = ComposerName.TEMPLATE` (additive, frozen dataclass).
-- [ ] 1.5 [RED] `tests/unit/adapters/test_serialization.py` — `alert_record_from_dict` restores `composed_by` from `document["composer"]` for both `"template"` and `"agent"` records. Expects: restored message always defaults to `TEMPLATE` regardless of the stored value. Design D13.
-- [ ] 1.6 [GREEN] `adapters/serialization.py` — read `composed_by=ComposerName(document["composer"])` in `alert_record_from_dict`; document shape unchanged. Verify: `uv run pytest tests/unit/adapters/test_serialization.py -q`
+- [x] 1.1 [RED] `tests/unit/domain/test_values.py` — assert `ComposerName.TEMPLATE`/`.AGENT` exist and `NoticeKind.AGENT_FALLBACK_USED == "agent_fallback_used"`. Expects `AttributeError`: neither exists yet. Design D13, D21.
+- [x] 1.2 [GREEN] `domain/values.py` — add `ComposerName(StrEnum)` and `NoticeKind.AGENT_FALLBACK_USED`. Verify: `uv run pytest tests/unit/domain/test_values.py -q`
+- [x] 1.3 [RED] `tests/unit/domain/test_messages.py` — `AlertMessage` accepts `composed_by`, defaults to `ComposerName.TEMPLATE`; equality now includes it. Expects `TypeError`: no such field. Design D13, design §3 breaking-change table.
+- [x] 1.4 [GREEN] `domain/messages.py` — add `composed_by: ComposerName = ComposerName.TEMPLATE` (additive, frozen dataclass).
+- [x] 1.5 [RED] `tests/unit/adapters/test_serialization.py` — `alert_record_from_dict` restores `composed_by` from `document["composer"]` for both `"template"` and `"agent"` records. Expects: restored message always defaults to `TEMPLATE` regardless of the stored value. Design D13.
+- [x] 1.6 [GREEN] `adapters/serialization.py` — read `composed_by=ComposerName(document["composer"])` in `alert_record_from_dict`; document shape unchanged. Verify: `uv run pytest tests/unit/adapters/test_serialization.py -q`
 
 ### The validator (domain/message_validation.py)
 
@@ -59,46 +59,46 @@ PR 1 (this slice) → PR 2 (agent/ unit) → PR 3 (invocation + runbook)
 
 ### The invocation seam and fakes
 
-- [ ] 1.17 [RED] `tests/unit/adapters/test_agent_invoker.py` — `AgentInvoker` is a `Protocol` with `invoke(prompt: str) -> Mapping[str, Any]`; `AgentInvocationError(reason, detail)` constructs and carries both. Expects `ModuleNotFoundError`. Design D18.
-- [ ] 1.18 [GREEN] `adapters/agent_invoker.py` — define both. Verify: `uv run pytest tests/unit/adapters/test_agent_invoker.py -q`
-- [ ] 1.19 [RED] `tests/support/fakes.py` — `FakeAgentInvoker` (scripted response or scripted exception, `calls` list, no `unittest.mock`) exists and conforms to `AgentInvoker`. Expects `ImportError`.
-- [ ] 1.20 [GREEN] `tests/support/fakes.py`, `tests/support/wiring.py` — implement `FakeAgentInvoker`; `build_fake_deps` gains a `composer=` override (default stays `FakeMessageComposer`, so the 559 existing tests stay untouched). Verify: `uv run pytest tests/unit -q`
+- [x] 1.17 [RED] `tests/unit/adapters/test_agent_invoker.py` — `AgentInvoker` is a `Protocol` with `invoke(prompt: str) -> Mapping[str, Any]`; `AgentInvocationError(reason, detail)` constructs and carries both. Expects `ModuleNotFoundError`. Design D18.
+- [x] 1.18 [GREEN] `adapters/agent_invoker.py` — define both. Verify: `uv run pytest tests/unit/adapters/test_agent_invoker.py -q`
+- [x] 1.19 [RED] `tests/support/fakes.py` — `FakeAgentInvoker` (scripted response or scripted exception, `calls` list, no `unittest.mock`) exists and conforms to `AgentInvoker`. Expects `ImportError`.
+- [x] 1.20 [GREEN] `tests/support/fakes.py`, `tests/support/wiring.py` — implement `FakeAgentInvoker`; `build_fake_deps` gains a `composer=` override (default stays `FakeMessageComposer`, so the 559 existing tests stay untouched). Verify: `uv run pytest tests/unit -q`
 
 ### The 12-row fault-injection table (design D15, spec "Every composer failure mode falls back to the template" — each row is its own task, not collapsed)
 
-- [ ] 1.21 [RED] Row 1/12 — deadline exceeded: `FakeAgentInvoker` raises `AgentInvocationError(TIMEOUT, ...)`. Expects `ModuleNotFoundError`: `adapters/agent_composer.py` does not exist yet.
-- [ ] 1.22 [RED] Row 2/12 — transport error / connection refused: raises `AgentInvocationError(TRANSPORT_ERROR, ...)`. Same expected failure as 1.21 until the module exists.
-- [ ] 1.23 [RED] Row 3/12 — non-2xx response: raises `AgentInvocationError(BAD_STATUS, ...)`.
-- [ ] 1.24 [RED] Row 4/12 — non-JSON body: raises `AgentInvocationError(MALFORMED_PAYLOAD, ...)`.
-- [ ] 1.25 [RED] Row 12/12 — invoker raises an unexpected exception type: `FakeAgentInvoker.invoke` raises a bare `RuntimeError`, not `AgentInvocationError`.
-- [ ] 1.26 [GREEN] `adapters/agent_composer.py` — `AgentBackedComposer.compose`: compute `fallback = self._template.compose(request)` first (unconditionally), `try: draft = self._invoker.invoke(...)`, `except AgentInvocationError` and `except Exception` both route to `_fell_back(...)` and return `fallback`. Makes rows 1, 2, 3, 4, 12 pass — 5 of 12. Design D15. Verify: `uv run pytest tests/unit/adapters/test_agent_composer.py -k "deadline or transport or bad_status or malformed or unexpected" -q`
-- [ ] 1.27 [RED] Row 5/12 — JSON missing a required field: `FakeAgentInvoker` returns a decoded dict without `body`. Expects: no shape check exists, candidate wrongly proceeds to acceptance.
-- [ ] 1.28 [RED] Row 6/12 — level disagreeing with the evaluated level: well-shaped candidate, `level != request.level`. Expects: `validate_message` is not yet wired into `compose`, so the mismatch is never checked.
-- [ ] 1.29 [RED] Row 7/12 — body omitting the city.
-- [ ] 1.30 [RED] Row 8/12 — body over the length cap (>1500 chars).
-- [ ] 1.31 [RED] Row 9/12 — body containing a number absent from the input ("se esperan 80 mm").
-- [ ] 1.32 [RED] Row 10/12 — body containing a newline-forged second `Recomendaciones:` header.
-- [ ] 1.33 [RED] Row 11/12 — empty body.
-- [ ] 1.34 [GREEN] `adapters/agent_composer.py::parse_candidate(draft, request) -> AlertMessage | None` (returns `None` on a missing/malformed field, closing row 5) + wire `validate_message(request, candidate)` into `compose`: any violation → `_fell_back(VALIDATION_FAILED, ...)`; no violation → `replace(candidate, composed_by=ComposerName.AGENT)`. Closes rows 6–11 and the accepted path. Design D15, D16. Verify: `uv run pytest tests/unit/adapters/test_agent_composer.py -q` (all 12 rows green; each asserts an alert was sent, its text is byte-identical to the template's output for the same `MessageRequest`, and `composer == "template"`)
-- [ ] 1.35 [RED] Accepted path: scripted valid `FakeAgentInvoker` response passing every validator rule. Expects: `composed_by == ComposerName.TEMPLATE` still, because 1.34's `replace(...)` branch is unexercised until this test drives it.
-- [ ] 1.36 [GREEN] Confirm 1.34 already satisfies this (no new production code expected); if not, fix the happy-path branch. Verify: `uv run pytest tests/unit/adapters/test_agent_composer.py -k accepted -q`
+- [x] 1.21 [RED] Row 1/12 — deadline exceeded: `FakeAgentInvoker` raises `AgentInvocationError(TIMEOUT, ...)`. Expects `ModuleNotFoundError`: `adapters/agent_composer.py` does not exist yet.
+- [x] 1.22 [RED] Row 2/12 — transport error / connection refused: raises `AgentInvocationError(TRANSPORT_ERROR, ...)`. Same expected failure as 1.21 until the module exists.
+- [x] 1.23 [RED] Row 3/12 — non-2xx response: raises `AgentInvocationError(BAD_STATUS, ...)`.
+- [x] 1.24 [RED] Row 4/12 — non-JSON body: raises `AgentInvocationError(MALFORMED_PAYLOAD, ...)`.
+- [x] 1.25 [RED] Row 12/12 — invoker raises an unexpected exception type: `FakeAgentInvoker.invoke` raises a bare `RuntimeError`, not `AgentInvocationError`.
+- [x] 1.26 [GREEN] `adapters/agent_composer.py` — `AgentBackedComposer.compose`: compute `fallback = self._template.compose(request)` first (unconditionally), `try: draft = self._invoker.invoke(...)`, `except AgentInvocationError` and `except Exception` both route to `_fell_back(...)` and return `fallback`. Makes rows 1, 2, 3, 4, 12 pass — 5 of 12. Design D15. Verify: `uv run pytest tests/unit/adapters/test_agent_composer.py -k "deadline or transport or bad_status or malformed or unexpected" -q`
+- [x] 1.27 [RED] Row 5/12 — JSON missing a required field: `FakeAgentInvoker` returns a decoded dict without `body`. Expects: no shape check exists, candidate wrongly proceeds to acceptance.
+- [x] 1.28 [RED] Row 6/12 — level disagreeing with the evaluated level: well-shaped candidate, `level != request.level`. Expects: `validate_message` is not yet wired into `compose`, so the mismatch is never checked.
+- [x] 1.29 [RED] Row 7/12 — body omitting the city.
+- [x] 1.30 [RED] Row 8/12 — body over the length cap (>1500 chars).
+- [x] 1.31 [RED] Row 9/12 — body containing a number absent from the input ("se esperan 80 mm").
+- [x] 1.32 [RED] Row 10/12 — body containing a newline-forged second `Recomendaciones:` header.
+- [x] 1.33 [RED] Row 11/12 — empty body.
+- [x] 1.34 [GREEN] `adapters/agent_composer.py::parse_candidate(draft, request) -> AlertMessage | None` (returns `None` on a missing/malformed field, closing row 5) + wire `validate_message(request, candidate)` into `compose`: any violation → `_fell_back(VALIDATION_FAILED, ...)`; no violation → `replace(candidate, composed_by=ComposerName.AGENT)`. Closes rows 6–11 and the accepted path. Design D15, D16. Verify: `uv run pytest tests/unit/adapters/test_agent_composer.py -q` (all 12 rows green; each asserts an alert was sent, its text is byte-identical to the template's output for the same `MessageRequest`, and `composer == "template"`)
+- [x] 1.35 [RED] Accepted path: scripted valid `FakeAgentInvoker` response passing every validator rule. Expects: `composed_by == ComposerName.TEMPLATE` still, because 1.34's `replace(...)` branch is unexercised until this test drives it.
+- [x] 1.36 [GREEN] Confirm 1.34 already satisfies this (no new production code expected); if not, fix the happy-path branch. Verify: `uv run pytest tests/unit/adapters/test_agent_composer.py -k accepted -q`
 
 ### Fallback notice (design D21)
 
-- [ ] 1.37 [RED] `tests/unit/adapters/test_agent_composer.py` — with a `FakeNotifier`, `AgentBackedComposer` sends exactly one `OperatorNotice(kind=AGENT_FALLBACK_USED)` before returning `fallback`; zero notices on acceptance. Expects: `FakeNotifier.calls == []` — no notice is wired yet.
-- [ ] 1.38 [GREEN] `adapters/agent_composer.py` — inject `Notifier` + clock; `_fell_back` calls `notifier.send_operator_notice(...)` before returning. Verify: `uv run pytest tests/unit/adapters/test_agent_composer.py -k notice -q`
+- [x] 1.37 [RED] `tests/unit/adapters/test_agent_composer.py` — with a `FakeNotifier`, `AgentBackedComposer` sends exactly one `OperatorNotice(kind=AGENT_FALLBACK_USED)` before returning `fallback`; zero notices on acceptance. Expects: `FakeNotifier.calls == []` — no notice is wired yet.
+- [x] 1.38 [GREEN] `adapters/agent_composer.py` — inject `Notifier` + clock; `_fell_back` calls `notifier.send_operator_notice(...)` before returning. Verify: `uv run pytest tests/unit/adapters/test_agent_composer.py -k notice -q`
 
 ### Mutation proof (proposal success criterion 2 — its own task, evidence recorded in both directions)
 
-- [ ] 1.39 Manually delete the `except AgentInvocationError` / `except Exception` clauses (and separately, the `if violations:` guard) in `adapters/agent_composer.py`; re-run the 12-row table. Expect and record: the corresponding rows now raise out of `compose`/`RunAlertCycle.execute`/the test instead of falling back. Paste the failing `pytest` output into apply-progress.
-- [ ] 1.40 Revert the mutation; re-run the 12-row table; record the all-green `pytest` output. Design D15 "Mutation proof"; proposal success criterion "Removing the fallback except turns those rows red."
+- [x] 1.39 Manually delete the `except AgentInvocationError` / `except Exception` clauses (and separately, the `if violations:` guard) in `adapters/agent_composer.py`; re-run the 12-row table. Expect and record: the corresponding rows now raise out of `compose`/`RunAlertCycle.execute`/the test instead of falling back. Paste the failing `pytest` output into apply-progress.
+- [x] 1.40 Revert the mutation; re-run the 12-row table; record the all-green `pytest` output. Design D15 "Mutation proof"; proposal success criterion "Removing the fallback except turns those rows red."
 
 ### Wiring into RunAlertCycle
 
-- [ ] 1.41 [RED] `tests/unit/application/test_run_alert_cycle.py` — with `build_fake_deps(composer=<agent fake>)`: `AlertRecord.composer` reads `"agent"` when accepted, `"template"` on fallback. Expects: `run_alert_cycle.py:189` still hardcodes `composer="template"`, so an accepted agent message is misrecorded.
-- [ ] 1.42 [GREEN] `application/run_alert_cycle.py` — replace the hardcoded literal with `composer=message.composed_by.value`; amend `CycleResult.notices`' docstring to state it carries outage notices only (D21). Verify: `uv run pytest tests/unit/application/test_run_alert_cycle.py -q`
-- [ ] 1.43 [RED] `tests/unit/application/test_run_alert_cycle.py::test_deduplicated_cycle_invokes_agent_seam_zero_times` — dedup policy denies the send; assert `FakeAgentInvoker.calls == []`. Expects: fails if any code path calls `composer.compose` before the authorized-send branch. Spec "Deduplicated cycle invokes nothing"; proposal success criterion "A deduplicated cycle invokes the agent seam zero times."
-- [ ] 1.44 [GREEN] Confirm `run_alert_cycle.py` already scopes composition inside the `if decision.send and not suppress_community_alert` block (design §8 row 1); this task exists to pin the property with a test, not to change behavior. Verify: `uv run pytest tests/unit/application/test_run_alert_cycle.py -k zero -q`
+- [x] 1.41 [RED] `tests/unit/application/test_run_alert_cycle.py` — with `build_fake_deps(composer=<agent fake>)`: `AlertRecord.composer` reads `"agent"` when accepted, `"template"` on fallback. Expects: `run_alert_cycle.py:189` still hardcodes `composer="template"`, so an accepted agent message is misrecorded.
+- [x] 1.42 [GREEN] `application/run_alert_cycle.py` — replace the hardcoded literal with `composer=message.composed_by.value`; amend `CycleResult.notices`' docstring to state it carries outage notices only (D21). Verify: `uv run pytest tests/unit/application/test_run_alert_cycle.py -q`
+- [x] 1.43 [RED] `tests/unit/application/test_run_alert_cycle.py::test_deduplicated_cycle_invokes_agent_seam_zero_times` — dedup policy denies the send; assert `FakeAgentInvoker.calls == []`. Expects: fails if any code path calls `composer.compose` before the authorized-send branch. Spec "Deduplicated cycle invokes nothing"; proposal success criterion "A deduplicated cycle invokes the agent seam zero times."
+- [x] 1.44 [GREEN] Confirm `run_alert_cycle.py` already scopes composition inside the `if decision.send and not suppress_community_alert` block (design §8 row 1); this task exists to pin the property with a test, not to change behavior. Verify: `uv run pytest tests/unit/application/test_run_alert_cycle.py -k zero -q`
 
 ### Close-out
 

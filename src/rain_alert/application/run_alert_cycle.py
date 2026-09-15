@@ -60,6 +60,13 @@ class CycleResult:
     message: AlertMessage | None  # only when composed
     sent: bool
     recipients_count: int
+    #: **Outage notices only** (D21). The agent composer's fallback notice is
+    #: emitted by the adapter, during composition, and therefore never
+    #: appears here — only the adapter knows *why* it fell back, and a notice
+    #: without that reason is a slower version of silent degradation. The
+    #: operator still sees it: `ConsoleNotifier` writes it to the same stream.
+    #: Keeping it off this field is what stops the field from meaning two
+    #: different things to change 3's Lambda entrypoint.
     notices: tuple[OperatorNotice, ...]
 
 
@@ -186,7 +193,12 @@ class RunAlertCycle:
                 reasons=assessment.reasons,
                 senamhi_status=assessment.senamhi_status,
                 open_meteo_status=assessment.open_meteo_status,
-                composer="template",
+                # Read off the message rather than branched on the composer
+                # (D13). The record must state what was *sent*, and an
+                # agent-backed composer that fell back sent the template's
+                # text — so a literal here, or an `isinstance` check, would
+                # record an attribution the body contradicts.
+                composer=message.composed_by.value,
             )
             deps.alerts.record_alert(record)
             sent = True
