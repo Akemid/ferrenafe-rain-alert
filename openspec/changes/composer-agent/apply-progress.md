@@ -1228,3 +1228,94 @@ reasoning recorded there too.
 --directory agent pytest`, `uv run ruff check .`, `uv run ruff format
 --check .`, `uv run mypy`, `uv run rain-alert-cycle` (manual smoke run,
 NOT SENT preview as expected for the current forecast).
+
+---
+
+# PR 3 — pre-PR review remediation (2026-09-15)
+
+Two fresh-context reviews ran on the branch diff before the pull request was
+opened, per the owner's standing rule: one security, one correctness.
+
+## Security review — no findings
+
+Verified by probe, not by reading: a title carrying `"}`, a forged
+`</datos:00…>` and injected instruction text stays inside the JSON payload;
+the forged marker cannot match a token drawn *after* the title was written;
+the real close marker is a true suffix of the prompt. Contact data reaches no
+prompt because `MessageRequest` has no contact field and `RunAlertCycle`
+reads contacts only after composing. `agent/app.py` registers `tools=[]`,
+reaches no network or filesystem, and its refusal message echoes no payload
+content. `agent/uv.lock` adds only `bedrock-agentcore`, `pydantic` and
+`strands-agents`, all from pypi.org; no `eval`, `exec`, `pickle`,
+`yaml.load`, `subprocess` or credential literal anywhere in the diff.
+
+The review re-flagged, without treating it as a finding here, the gap this
+module's own docstring already records: `domain/message_validation.py` still
+refuses no model-originated imperative and no contact channel inside a quoted
+span. That stays a **blocking condition on PR 4**, the first PR that wires
+this unit's output into a live cycle.
+
+## Correctness review — three findings, all fixed
+
+Each was demonstrated by mutation on a scratch copy rather than argued, and
+each fix was re-checked the same way: the mutation that used to survive now
+fails.
+
+### HIGH — the payload annotation was a promise nothing kept
+
+`agent/app.py::compose` was annotated `Mapping[str, Any]` and went straight to
+`payload.get(PROMPT_KEY)`. AgentCore's `_handle_invocation` passes
+`await request.json()` through **unchanged**, and `null`, a list, a bare
+string, a number and a boolean are all valid JSON documents there. Each of
+those raised `AttributeError: '…' object has no attribute 'get'` instead of
+the `ValueError` the docstring promised.
+
+The runtime's outer `except Exception` turned either one into a 500, so the
+failure was always closed — no fabricated message, no model call, no cost.
+What was wrong was the contract, and that nothing tested it.
+
+**Fix**: `compose` and `compose_message` take `object`, which is what is
+actually true at this edge, and `compose` narrows with an explicit
+`isinstance(payload, Mapping)` check. Typing the parameter honestly is what
+makes the guard reachable — annotated `Mapping`, the check is statically dead
+code, and a type checker says so.
+
+### CRITICAL (test quality) — two of the three levels were never exercised
+
+`CompositionOutput.level` is `Literal["none", "prepare", "imminent"]`; every
+fixture used `"imminent"` and the only rejection tested was `"catastrophic"`.
+Deleting `"prepare"` from the literal left all 22 tests green.
+
+The cost of that surviving: every PREPARE draft is refused by the output
+model, the composer falls back to the deterministic template, and nothing
+reports why. The community still gets an alert — the fallback is what makes
+this survivable — but the capability silently stops existing at one of the
+two levels it was built for.
+
+**Fix**: acceptance parametrized over all three members.
+
+### MEDIUM (test quality) — nothing held the entrypoint to the import-time agent
+
+`AGENT` is built once at import so a deploy that cannot construct the model
+fails at startup rather than on the first alert of the season. Rewriting
+`compose_message` to call `build_agent()` per invocation kept the whole suite
+green — the property the constant exists for was unguarded.
+
+**Fix**: a test that substitutes the module-level `AGENT` with a spy
+(`monkeypatch`, no `unittest.mock`, per the standing rule) and asserts the
+entrypoint composed with *that* object.
+
+## Also fixed on this branch
+
+`tests/unit/adapters/test_agent_prompt.py` passed the string
+`"opaque-token"` into `Contact.consent_at`, which is typed `datetime | None`.
+The sentinel's purpose was sound — a value only a contact leak could put in
+the prompt — but a datetime leaks in ISO form, so the sentinel is now a
+`datetime` far from every instant the prompt legitimately renders, searched
+for as `.isoformat()`. mypy could not see this: `files = ["src"]`.
+
+## Verification gate, all green
+
+`uv run pytest` (890 passed, 15 deselected) · `uv run --directory agent
+pytest` (32 passed) · `uv run ruff check` · `uv run ruff format --check` ·
+`uv run mypy` (39 source files).
