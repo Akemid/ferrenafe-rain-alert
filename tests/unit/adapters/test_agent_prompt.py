@@ -45,6 +45,9 @@ from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
 
 NOW = DEFAULT_NOW  # 2026-09-03 12:00 UTC, which is 07:00 in America/Lima
 WINDOW = TimeWindow(start=NOW, end=NOW + timedelta(hours=24))
+#: A consent instant far from every timestamp the prompt legitimately renders,
+#: so finding it in the output can only mean a contact field leaked.
+CONSENT_AT = NOW - timedelta(days=417, minutes=37)
 AVISO_TITLE = "PRECIPITACIONES DE MODERADA INTENSIDAD EN LA COSTA NORTE"
 CHECKLIST = (
     "Almacena agua potable para al menos dos días.",
@@ -432,12 +435,15 @@ def test_no_contact_identifier_reaches_the_prompt() -> None:
     )
     deps = build_fake_deps(
         forecast=Available(data=Forecast(location=DEFAULT_CONFIG.coordinates, points=points), fetched_at=NOW),
-        contacts=(Contact("contact-identifier", "console", "recipient-address", "opaque-token"),),
+        contacts=(Contact("contact-identifier", "console", "recipient-address", CONSENT_AT),),
     )
     request = RunAlertCycle(deps).execute().message_request
     assert request is not None
 
     prompt = build_prompt(request)
 
-    for secret in ("contact-identifier", "recipient-address", "opaque-token"):
+    # The consent timestamp is searched for in the shape a leak would take.
+    # It is a `datetime`, so anything carrying it into the prompt renders it,
+    # and an ISO string is how every other instant in this payload appears.
+    for secret in ("contact-identifier", "recipient-address", CONSENT_AT.isoformat()):
         assert secret not in prompt
