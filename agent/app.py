@@ -100,12 +100,16 @@ def build_agent() -> Agent:
 AGENT = build_agent()
 
 
-def compose(payload: Mapping[str, Any], composer: StructuredComposer) -> dict[str, Any]:
+def compose(payload: object, composer: StructuredComposer) -> dict[str, Any]:
     """The prompt in `payload`, composed into the output contract.
 
     Args:
-        payload: The invocation payload. Must carry a non-blank string under
-            `PROMPT_KEY`.
+        payload: The invocation payload, **as the runtime produced it**. Typed
+            `object` rather than `Mapping` because that is the truth at this
+            edge: the runtime hands the entrypoint `await request.json()`
+            unchanged, and `null`, a list and a bare string are all valid JSON
+            documents. Narrowing it is this function's job, not its caller's.
+            Must carry a non-blank string under `PROMPT_KEY`.
         composer: Whatever answers `structured_output`. The real one is
             `AGENT`; the tests pass a spy, which is why this is a parameter.
 
@@ -114,12 +118,15 @@ def compose(payload: Mapping[str, Any], composer: StructuredComposer) -> dict[st
         keys `adapters/agent_composer.py::parse_candidate` reads.
 
     Raises:
-        ValueError: If the payload carries no usable prompt. Refused rather
-            than passed on: an empty prompt is a paid invocation answering no
-            question, and the application would then validate an answer it
-            never asked for. The error travels back as an unsuccessful
-            response, which the invoker turns into one more fallback.
+        ValueError: If the payload is not a mapping, or carries no usable
+            prompt. Refused rather than passed on: an empty prompt is a paid
+            invocation answering no question, and the application would then
+            validate an answer it never asked for. The error travels back as an
+            unsuccessful response, which the invoker turns into one more
+            fallback.
     """
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"payload must be a mapping carrying {PROMPT_KEY!r}")
     prompt = payload.get(PROMPT_KEY)
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError(f"payload must carry a non-blank string under {PROMPT_KEY!r}")
@@ -127,7 +134,7 @@ def compose(payload: Mapping[str, Any], composer: StructuredComposer) -> dict[st
 
 
 @app.entrypoint
-def compose_message(payload: Mapping[str, Any]) -> dict[str, Any]:
+def compose_message(payload: object) -> dict[str, Any]:
     """What AgentCore Runtime calls. Thin on purpose: everything worth testing
     is in `compose`, which takes its model as an argument."""
     return compose(payload, AGENT)

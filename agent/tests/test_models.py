@@ -39,6 +39,19 @@ def test_a_complete_payload_is_accepted() -> None:
     assert output.valid_until == datetime(2026, 9, 4, 12, tzinfo=UTC)
 
 
+@pytest.mark.parametrize("level", ["none", "prepare", "imminent"])
+def test_every_level_the_domain_can_ask_for_is_accepted(level: str) -> None:
+    """All three members, not just the one the other fixtures happen to use.
+
+    `domain/values.py` persists these three; the model spells them out again
+    because the two trees cannot import each other. With only `imminent`
+    exercised, dropping a member from the literal keeps every other test green
+    and costs the community every alert at that level — the draft is refused,
+    the composer falls back, and nothing says why.
+    """
+    assert CompositionOutput.model_validate({**COMPLETE, "level": level}).level == level
+
+
 @pytest.mark.parametrize("missing", ["title", "body", "level", "valid_until"])
 def test_a_payload_missing_a_required_field_is_rejected(missing: str) -> None:
     payload = {key: value for key, value in COMPLETE.items() if key != missing}

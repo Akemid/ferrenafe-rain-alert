@@ -16,6 +16,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+import app as app_module
 import pytest
 from app import AGENT, MODEL_ID, PROMPT_KEY, build_model, compose, compose_message
 from models import CompositionOutput
@@ -78,6 +79,49 @@ def test_a_payload_carrying_no_usable_prompt_is_refused_before_the_model_is_call
         compose(payload, model)
 
     assert model.calls == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [None, [], ["prompt"], "prompt", 123, True],
+    ids=["null body", "empty list", "list body", "string body", "number body", "boolean body"],
+)
+def test_a_payload_that_is_not_a_mapping_at_all_is_refused_the_same_way(payload: object) -> None:
+    """The runtime hands the entrypoint `await request.json()` **unchanged**
+    (`bedrock_agentcore/runtime/app.py`), and every JSON document is valid
+    there — `null`, a list, a bare string, a number. Nothing on the wire
+    promises a mapping, which is why `compose` takes `object` and narrows.
+
+    Without the guard these raise `AttributeError: 'NoneType' object has no
+    attribute 'get'` — a message about Python internals rather than about the
+    payload, reaching the invoker as the body of a 500. The runtime's outer
+    handler turned either one into a 500, so the failure was always closed;
+    what this pins is that every bad shape earns the *same* refusal, and that
+    the annotation stops being a promise no caller can keep.
+    """
+    model = FakeStructuredModel(DRAFT)
+
+    with pytest.raises(ValueError, match=PROMPT_KEY):
+        compose(payload, model)
+
+    assert model.calls == []
+
+
+def test_the_entrypoint_composes_with_the_agent_built_once_at_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`AGENT` exists so a deploy that cannot construct the model fails at
+    startup rather than on the first alert of the season. That property only
+    holds if the entrypoint actually *uses* it: rewriting `compose_message` to
+    call `build_agent()` per invocation keeps every other test green and moves
+    the failure back to the first alert, which is exactly what the constant was
+    written to prevent.
+    """
+    spy = FakeStructuredModel(DRAFT)
+    monkeypatch.setattr(app_module, "AGENT", spy)
+
+    result = compose_message({PROMPT_KEY: "<prompt>"})
+
+    assert spy.calls == [(CompositionOutput, "<prompt>")]
+    assert result == DRAFT.model_dump(mode="json")
 
 
 def test_the_agent_has_no_tool_registered() -> None:
