@@ -15,8 +15,10 @@ from typing import Any
 import pytest
 from botocore.exceptions import ClientError, ConnectTimeoutError, EndpointConnectionError
 
+from rain_alert.adapters import agentcore_invoker
 from rain_alert.adapters.agent_invoker import AgentInvocationError
 from rain_alert.adapters.agentcore_invoker import (
+    CONNECT_TIMEOUT,
     MAX_RESPONSE_BYTES,
     READ_TIMEOUT,
     AgentRuntimeSettings,
@@ -135,6 +137,30 @@ def test_a_non_2xx_response_raises_agent_invocation_error_tagged_bad_status() ->
     assert exc_info.value.reason is UnavailableReason.BAD_STATUS
 
 
+def test_status_299_the_top_of_the_accepted_range_is_accepted() -> None:
+    """The gate is `200 <= status < 300`; 299 is inside it and 300 is not.
+    Neither boundary was exercised before — only far-outside values
+    (`200`, `500`) were, which a widened or narrowed comparison would not
+    disturb."""
+    client = _FakeBotoClient(response=_json_response({"title": "t", "body": "b"}, status=299))
+    invoker = BedrockAgentCoreInvoker(ARN, client=client)
+
+    assert dict(invoker.invoke("hello")) == {"title": "t", "body": "b"}
+
+
+def test_status_300_just_outside_the_accepted_range_is_bad_status() -> None:
+    """Widening the gate to `200 <= status <= 300` survives against a
+    fixture of `500` alone; `300` is the one value that distinguishes the
+    two comparisons."""
+    client = _FakeBotoClient(response=_json_response({"title": "t", "body": "b"}, status=300))
+    invoker = BedrockAgentCoreInvoker(ARN, client=client)
+
+    with pytest.raises(AgentInvocationError) as exc_info:
+        invoker.invoke("hello")
+
+    assert exc_info.value.reason is UnavailableReason.BAD_STATUS
+
+
 def test_a_modeled_client_error_raises_agent_invocation_error_tagged_bad_status() -> None:
     """`ValidationException`, `ThrottlingException` and the rest of the
     operation's modeled errors all arrive as `botocore.exceptions.ClientError`."""
@@ -187,12 +213,21 @@ def test_a_non_mapping_json_body_is_also_malformed_payload() -> None:
 def test_an_unsupported_content_type_is_malformed_payload() -> None:
     """A streaming response is a shape this application never produces
     (`agent/app.py`'s entrypoint returns a plain dict, not a generator), so an
-    event-stream body is unsupported rather than parsed."""
+    event-stream body is unsupported rather than parsed.
+
+    The body here is deliberately valid, parseable JSON — the same shape a
+    successful call would carry. Disabling the content-type gate (`if False`)
+    used to survive because the old fixture, `b"data: {}\\n\\n"`, is not
+    valid JSON either, so the body still failed downstream for an unrelated
+    reason and the test's `MALFORMED_PAYLOAD` assertion passed regardless of
+    whether the gate ran at all. With a body that *would* decode cleanly,
+    only the gate itself can make this test raise.
+    """
     client = _FakeBotoClient(
         response={
             "statusCode": 200,
             "contentType": "text/event-stream",
-            "response": _FakeStream(b"data: {}\n\n"),
+            "response": _FakeStream(json.dumps({"title": "t", "body": "b"}).encode("utf-8")),
         }
     )
     invoker = BedrockAgentCoreInvoker(ARN, client=client)
@@ -201,6 +236,7 @@ def test_an_unsupported_content_type_is_malformed_payload() -> None:
         invoker.invoke("hello")
 
     assert exc_info.value.reason is UnavailableReason.MALFORMED_PAYLOAD
+    assert "contentType" in exc_info.value.detail
 
 
 def test_an_oversized_body_is_refused_before_it_is_parsed() -> None:
@@ -215,6 +251,40 @@ def test_an_oversized_body_is_refused_before_it_is_parsed() -> None:
         invoker.invoke("hello")
 
     assert exc_info.value.reason is UnavailableReason.MALFORMED_PAYLOAD
+
+
+def test_the_cap_fires_even_when_truncating_at_it_would_parse_cleanly() -> None:
+    """`test_an_oversized_body_is_refused_before_it_is_parsed` mutates
+    `stream.read(MAX_RESPONSE_BYTES + 1)` to `stream.read(MAX_RESPONSE_BYTES)`
+    and survives: its fixture is one huge unterminated JSON string, so
+    truncating it anywhere — cap or no cap — lands mid-string and fails to
+    parse for an unrelated reason, and the test only asserts the *reason*
+    (`MALFORMED_PAYLOAD`), not *why*.
+
+    This fixture's first `MAX_RESPONSE_BYTES` bytes are a complete, valid,
+    whitespace-padded JSON object on their own; only a run of non-whitespace
+    bytes appended after that pushes the whole body over the cap. Reading
+    exactly `MAX_RESPONSE_BYTES` (the mutation) would therefore parse
+    without error and return a *decoded* result, distinguishing "the cap
+    fired" from "the parser choked" and making `+ 1` load-bearing again.
+    """
+    valid_prefix = json.dumps({"title": "t", "body": "b"}).encode("utf-8")
+    padded = valid_prefix + b" " * (MAX_RESPONSE_BYTES - len(valid_prefix))
+    assert json.loads(padded) == {"title": "t", "body": "b"}
+    oversized = padded + b"x" * 8
+    assert len(oversized) > MAX_RESPONSE_BYTES
+
+    client = _FakeBotoClient(
+        response={"statusCode": 200, "contentType": "application/json", "response": _FakeStream(oversized)}
+    )
+    invoker = BedrockAgentCoreInvoker(ARN, client=client)
+
+    with pytest.raises(AgentInvocationError) as exc_info:
+        invoker.invoke("hello")
+
+    assert exc_info.value.reason is UnavailableReason.MALFORMED_PAYLOAD
+    assert "exceeds" in exc_info.value.detail
+    assert str(MAX_RESPONSE_BYTES) in exc_info.value.detail
 
 
 def test_an_unexpected_exception_type_is_not_swallowed_here() -> None:
@@ -235,6 +305,40 @@ def test_no_client_is_built_until_the_first_invoke() -> None:
     invoker = BedrockAgentCoreInvoker(ARN)
 
     assert invoker._client is None  # noqa: SLF001 — the property under test
+
+
+def test_the_real_client_is_built_with_the_designed_service_and_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_resolved_client` is the one method every other test bypasses by
+    injecting `client=` directly, so it never ran under test before this
+    case: neither `_SERVICE_NAME` nor the `Config` it builds was ever
+    checked. `boto3.client` is monkeypatched here — not `unittest.mock` — as
+    the client-factory seam, so the real `bedrock-agentcore` client is still
+    never constructed offline.
+
+    Two mutations this reproduces surviving before this test existed:
+    `"total_max_attempts"` renamed to `"max_attempts"` (the exact
+    wrong-semantics trap the module's own docstring warns about — with
+    `max_attempts: 1` a failed call gets one retry instead of none), and the
+    whole `Config` block deleted in favour of `boto3.client(_SERVICE_NAME)`
+    alone.
+    """
+    captured: dict[str, Any] = {}
+
+    def fake_boto3_client(service_name: str, config: Any) -> _FakeBotoClient:
+        captured["service_name"] = service_name
+        captured["config"] = config
+        return _FakeBotoClient(response=_json_response({"title": "t", "body": "b"}))
+
+    monkeypatch.setattr(agentcore_invoker.boto3, "client", fake_boto3_client)
+    invoker = BedrockAgentCoreInvoker(ARN)
+
+    invoker.invoke("hello")
+
+    assert captured["service_name"] == "bedrock-agentcore"
+    config = captured["config"]
+    assert config.connect_timeout == CONNECT_TIMEOUT
+    assert config.read_timeout == READ_TIMEOUT
+    assert config.retries == {"total_max_attempts": 1}
 
 
 class TestAgentRuntimeSettings:
