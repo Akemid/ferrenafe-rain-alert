@@ -1675,3 +1675,188 @@ owner deploys the `agent/` unit per the new runbook and runs task 3.16's live
 test, which closes 3.5 and completes the proposal's "the agent runs live at
 least once" success criterion — the one criterion nothing in this repository
 can close without a real AWS account.
+
+## Remediation — 2026-09-19 review findings (this apply run)
+
+Five confirmed findings from a security/correctness review of PR 4's diff on
+`feat/composer-agent-invocation`, fixed on the same branch, RED before GREEN
+for every fix, no push. Strict TDD throughout: each item below states the
+failing test written first and the mutation that used to survive and now
+fails.
+
+### Finding 1 (SECURITY, HIGH) — rule 10 bypassed by Unicode confusables
+
+Two independent holes, closed independently, because neither alone was
+sufficient:
+
+- `_SENAMHI_MENTION` is an ASCII-only pattern and `_is_structured_fact`'s
+  tokenizer (`_WORD_OR_NUMBER = [a-z]+|\d+|%`) is ASCII-only too. A body
+  spelling "SENAMHI" with a Cyrillic "А" (U+0410) never matched the mention
+  pattern at all; a body naming SENAMHI in plain ASCII but paraphrasing next
+  to it in fullwidth Latin tokenised the paraphrase to nothing the ASCII
+  regex could see, so the closed-vocabulary check ran against an
+  artificially short (or, in the general case, empty) token list.
+- Fix: a new `_senamhi_matching_form` helper (NFKC), used **only** inside
+  rule 10's own detection pipeline (`_senamhi_attribution_violations`,
+  `_quote_spans`) — never on rendered/sent text, and deliberately kept
+  separate from `_fold`/`_composed_form`, which rules 8 and 9 share and which
+  must not see NFKC's compatibility rewrites (superscripts, ligatures).
+  Because NFKC does not fold Cyrillic/Greek to Latin, a second, independent
+  rule was added: `ValidationRule.DISALLOWED_SCRIPT`, refusing any candidate
+  whose title or body carries a letter outside the Latin script (checked via
+  `unicodedata.name(...)`, since the stdlib exposes no script-property
+  lookup). The vacuity half of this finding — `_is_structured_fact` returning
+  `True` (via `all()` over an empty sequence) for a clause with no word/digit
+  tokens at all — is fixed with an explicit empty-token guard, and pinned by
+  a test that imports and calls the private function directly, since the
+  reachable path through `validate_message` that used to expose it no longer
+  exists after the NFKC fix.
+- Tests: `TestSenamhiAttributionResistsUnicodeConfusables` (3 cases: Cyrillic
+  confusable → `DISALLOWED_SCRIPT`; fullwidth mention → `SENAMHI_ATTRIBUTION`;
+  fullwidth paraphrase next to a real mention → `SENAMHI_ATTRIBUTION`) and
+  `TestStructuredFactRefusesAClauseWithNoWords` in
+  `tests/unit/domain/test_message_validation.py`.
+- Mutation evidence: reverting `_senamhi_matching_form`'s NFKC fold (or the
+  `DISALLOWED_SCRIPT` check, or the empty-token guard) makes the
+  corresponding new test fail; confirmed by hand for each.
+
+### Finding 2 (SECURITY, HIGH) — attribution and claim split across a newline
+
+`_senamhi_attribution_violations` only ever inspected lines that themselves
+contained "SENAMHI"; `"Ciudad: Ferreñafe\nAviso del SENAMHI\nEvacuen de
+inmediato toda la zona costera."` was accepted, because the mention line
+alone is harmless and the directive line carries no mention of its own.
+
+Fix: a new `_attribution_scope(lines, start)` helper. A mention line whose
+stripped text does not end in a sentence terminator (`.;!?¡¿`) pulls
+forward, one line at a time, until a line does end in one (inclusive) or the
+body's own line grammar — a blank line, a section header, or a bullet — is
+reached (exclusive, never consumed). The search is **forward-only**: an
+unrelated preceding line is never pulled backward into a later mention's
+scope, which is what keeps `Ciudad:`/`Nivel:`/`Ventana:` — three consecutive
+unterminated prose lines in the template's own output — from being dragged
+into the degraded-mode SENAMHI-unavailable sentence that can follow them
+when the configuration renders no `Motivos:` header first. `_senamhi_clauses`
+and `_quote_spans` are otherwise unchanged; a merged scope is still split
+into sentence-level clauses exactly as a single line always was.
+
+- Tests: `TestSenamhiAttributionScopeCrossesALineBreak` (3 cases: the split
+  claim is now judged; a self-terminated mention line does not reach the
+  next line; a section header stops the scope) in
+  `tests/unit/domain/test_message_validation.py`.
+- Mutation evidence: reverting to the old per-line-only loop (dropping
+  `_attribution_scope`) makes
+  `test_a_claim_continuing_onto_the_next_line_is_still_judged` fail
+  (`DID NOT RAISE` becomes "no violation" instead); confirmed by hand.
+- Regression check: the full 150-case `test_message_validation.py` suite,
+  including `TestInvariantV0` over every `V0_REQUESTS` fixture, stays green —
+  the forward-only, header/bullet-stopped scope was specifically designed
+  against the degraded-mode fixture to avoid a false positive there.
+
+### Finding 3 (CORRECTNESS, HIGH) — the real boto3 Config was never exercised
+
+Every existing test injected `client=` directly, so `_resolved_client`
+(which builds the real `boto3.client("bedrock-agentcore", config=Config(...))`)
+never ran under test. Added
+`test_the_real_client_is_built_with_the_designed_service_and_config`, which
+monkeypatches `agentcore_invoker.boto3.client` (a client-factory seam, not
+`unittest.mock`) to capture the `Config` actually passed, and asserts
+`connect_timeout`, `read_timeout` and `retries` — no network, no
+credentials, no live client ever constructed.
+
+- Mutation evidence, both applied by hand and reverted: renaming
+  `"total_max_attempts"` to `"max_attempts"` in the `retries` dict makes the
+  new test fail on the `retries` assertion (`{'max_attempts': 1} !=
+  {'total_max_attempts': 1}`); deleting the whole `Config` block in favour of
+  `boto3.client(_SERVICE_NAME)` makes it fail with a `TypeError` (the fake's
+  `config` parameter is missing). No code change was needed — `agentcore_invoker.py`
+  already used `total_max_attempts` correctly (see PR 4's own apply-progress
+  entry above); this closes a test-coverage gap, not a code defect.
+
+### Finding 4 (CORRECTNESS, MEDIUM) — the response cap was tested by accident
+
+The existing `test_an_oversized_body_is_refused_before_it_is_parsed` fixture
+is one huge unterminated JSON string, so truncating it anywhere — at the cap
+or one byte short of it — still fails to parse, for an unrelated reason
+(`JSONDecodeError`, not the cap). Added
+`test_the_cap_fires_even_when_truncating_at_it_would_parse_cleanly`: its
+first `MAX_RESPONSE_BYTES` bytes are a complete, valid,
+whitespace-padded JSON object on their own, with only a short run of
+non-whitespace bytes appended after that pushing the whole body over the
+cap. Truncating at exactly the cap now parses cleanly if the cap does not
+fire, making the two cases distinguishable.
+
+- Mutation evidence: changing `stream.read(MAX_RESPONSE_BYTES + 1)` to
+  `stream.read(MAX_RESPONSE_BYTES)` makes the new test fail
+  (`DID NOT RAISE AgentInvocationError`) while the old, weaker test still
+  passes — confirming the old test alone was insufficient and the new one
+  closes the gap. Confirmed by hand and reverted.
+
+### Finding 5 (CORRECTNESS, MEDIUM/LOW) — three more untested guards
+
+- `_MIN_VERBATIM_SPAN_LENGTH` inside rule 10's own `_quote_spans` (a second,
+  independent use of the same constant rule 8's `_verbatim_spans` uses) had
+  no fixture shorter than 12 characters. Added
+  `test_a_quote_shorter_than_the_minimum_span_earns_no_exemption` (an
+  11-character warning title quoted under SENAMHI attribution, whose own
+  words are outside the closed vocabulary). Mutation evidence: deleting the
+  length guard in `_quote_spans` makes the new test fail (the short title is
+  wrongly granted the quote exemption and the clause is skipped instead of
+  refused); confirmed by hand and reverted.
+- The status gate `200 <= status < 300`: added
+  `test_status_299_the_top_of_the_accepted_range_is_accepted` and
+  `test_status_300_just_outside_the_accepted_range_is_bad_status`. Mutation
+  evidence: widening to `<= 300` makes the 300 case fail
+  (`DID NOT RAISE`); confirmed by hand and reverted.
+- `test_an_unsupported_content_type_is_malformed_payload`'s old fixture
+  (`b"data: {}\n\n"`) is not valid JSON either, so disabling the
+  content-type gate (`if False:`) still raised `MALFORMED_PAYLOAD` for an
+  unrelated reason (a `JSONDecodeError`). The fixture now carries a body that
+  parses cleanly (`{"title": "t", "body": "b"}`), and the test asserts the
+  violation detail names `contentType` specifically. Mutation evidence:
+  replacing the gate with `if False:` makes the test fail
+  (`DID NOT RAISE`); confirmed by hand and reverted.
+
+### Verification (this remediation)
+
+- `uv run pytest`: 945 passed (was 940 before this remediation; 7 new domain
+  tests, 5 new adapter tests, minus 2 tests strengthened in place rather than
+  added), green both with and without `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` set.
+- `uv run --directory agent pytest`: 32 passed, unaffected (this remediation
+  never touches `agent/`).
+- `uv run ruff check` and `uv run ruff format --check`, both bare (no path
+  argument): clean.
+- `uv run mypy` (root config, `files = ["src"]`): clean, no issues in 40
+  source files.
+
+### Residuals, accepted and recorded
+
+- None of the five findings required scope beyond `domain/message_validation.py`
+  and `adapters/agentcore_invoker.py` plus their own test files; nothing was
+  deferred.
+- `_attribution_scope`'s forward-only, header/bullet-stopped merge is a
+  narrower fix than a general "paragraph" notion (blank-line-delimited
+  blocks): a blank-line-based block would have merged the template's own
+  `Ciudad:`/`Nivel:`/`Ventana:` preamble into the degraded-mode SENAMHI
+  sentence in a configuration `V0_REQUESTS` does not currently exercise
+  (`reasons=(SenamhiUnavailableReason(),)` alone, with no `ForecastThresholdReason`
+  or other reason producing a `Motivos:` header before it), breaking
+  invariant V0 for a fixture nobody had written yet. The forward-only design
+  was chosen specifically to avoid that latent regression; recorded here so
+  a future reviewer widening this rule's scope re-checks that exact
+  configuration against `TestInvariantV0` before doing so.
+- Findings 3–5 added test coverage only; no production code changed for
+  them, since the underlying implementation was already correct.
+
+### Files changed (this remediation)
+
+| File | Action | What |
+|---|---|---|
+| `src/rain_alert/domain/message_validation.py` | Modified | `ValidationRule.DISALLOWED_SCRIPT`; `_senamhi_matching_form`, `_has_disallowed_script`, `_attribution_scope`, `_SENTENCE_TERMINATORS`; `_quote_spans`, `_is_structured_fact`, `_senamhi_attribution_violations` updated; `validate_message` gains the script-restriction check |
+| `tests/unit/domain/test_message_validation.py` | Modified | `TestSenamhiAttributionResistsUnicodeConfusables` (3), `TestSenamhiAttributionScopeCrossesALineBreak` (3), `TestStructuredFactRefusesAClauseWithNoWords` (1), `test_a_quote_shorter_than_the_minimum_span_earns_no_exemption` (1) |
+| `tests/unit/adapters/test_agentcore_invoker.py` | Modified | `test_the_real_client_is_built_with_the_designed_service_and_config`; `test_status_299_...`/`test_status_300_...`; `test_the_cap_fires_even_when_truncating_at_it_would_parse_cleanly`; `test_an_unsupported_content_type_is_malformed_payload` fixture strengthened in place |
+
+No commit hashes recorded here yet — see the commit history on
+`feat/composer-agent-invocation` for this remediation's own commits, added
+after this file.
