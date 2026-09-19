@@ -35,10 +35,16 @@ import os
 from collections.abc import Mapping
 
 from rain_alert.domain.config import AlertConfig, CoordinatesSource, RiskThresholds
-from rain_alert.domain.values import Coordinates, WarningLevel
+from rain_alert.domain.values import ComposerName, Coordinates, WarningLevel
 
 LAT_ENV_VAR = "RAIN_ALERT_LAT"
 LON_ENV_VAR = "RAIN_ALERT_LON"
+#: The kill switch's environment override (design D23). Absent or unset
+#: means `ComposerName.TEMPLATE` — the change lands inert until an operator
+#: sets this explicitly. `AlertConfig` is what SSM feeds in change 3, so
+#: flipping it there needs no deploy; this env var is the local-CLI
+#: equivalent of the same switch.
+COMPOSER_ENV_VAR = "RAIN_ALERT_COMPOSER"
 
 #: The city centre, `6°38'10"S 79°47'23"W`. Sourced from public references,
 #: not surveyed on the ground. See the module docstring.
@@ -94,6 +100,23 @@ def _resolve_coordinates(env: Mapping[str, str]) -> tuple[Coordinates, Coordinat
     return supplied, CoordinatesSource.OPERATOR_SUPPLIED
 
 
+def _resolve_composer(env: Mapping[str, str]) -> ComposerName:
+    """`ComposerName.TEMPLATE` unless the operator explicitly overrides it.
+
+    Raises loudly on an unrecognised value, the same posture the coordinate
+    overrides take: falling back to the default would hide an operator typo
+    and silently keep the template running when the operator believed they
+    had switched to the agent.
+    """
+    raw = env.get(COMPOSER_ENV_VAR)
+    if raw is None:
+        return ComposerName.TEMPLATE
+    try:
+        return ComposerName(raw)
+    except ValueError as exc:
+        raise ValueError(f"{COMPOSER_ENV_VAR} must be one of {[m.value for m in ComposerName]}, got {raw!r}") from exc
+
+
 class StaticConfigRepository:
     """`ConfigRepository` over module constants plus optional env overrides."""
 
@@ -115,4 +138,5 @@ class StaticConfigRepository:
             active_channel=ACTIVE_CHANNEL,
             forecast_hours=FORECAST_HOURS,
             dedup_lookback_hours=DEDUP_LOOKBACK_HOURS,
+            composer=_resolve_composer(self._env),
         )

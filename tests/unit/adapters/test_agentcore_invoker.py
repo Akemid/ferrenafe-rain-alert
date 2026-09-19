@@ -18,6 +18,8 @@ from botocore.exceptions import ClientError, ConnectTimeoutError, EndpointConnec
 from rain_alert.adapters.agent_invoker import AgentInvocationError
 from rain_alert.adapters.agentcore_invoker import (
     MAX_RESPONSE_BYTES,
+    READ_TIMEOUT,
+    AgentRuntimeSettings,
     BedrockAgentCoreInvoker,
 )
 from rain_alert.domain.values import UnavailableReason
@@ -233,3 +235,49 @@ def test_no_client_is_built_until_the_first_invoke() -> None:
     invoker = BedrockAgentCoreInvoker(ARN)
 
     assert invoker._client is None  # noqa: SLF001 — the property under test
+
+
+class TestAgentRuntimeSettings:
+    """`RAIN_ALERT_AGENT_RUNTIME_ARN` / `RAIN_ALERT_AGENT_TIMEOUT_S` (design D23).
+
+    Built here rather than through `StaticConfigRepository`/`AlertConfig`: an
+    ARN is an AWS concern, and putting it on `AlertConfig` would widen the
+    frozen stdlib core with infrastructure (D1), violating domain purity.
+    Precedent: `DEFAULT_TIMEOUT` lives in `adapters/http.py`.
+    """
+
+    def test_the_arn_is_required(self) -> None:
+        with pytest.raises(ValueError, match="RAIN_ALERT_AGENT_RUNTIME_ARN"):
+            AgentRuntimeSettings.from_env({})
+
+    def test_the_arn_is_read_from_its_env_var(self) -> None:
+        settings = AgentRuntimeSettings.from_env({"RAIN_ALERT_AGENT_RUNTIME_ARN": ARN})
+
+        assert settings.agent_runtime_arn == ARN
+
+    def test_the_timeout_defaults_to_the_designed_deadline(self) -> None:
+        settings = AgentRuntimeSettings.from_env({"RAIN_ALERT_AGENT_RUNTIME_ARN": ARN})
+
+        assert settings.timeout_seconds == READ_TIMEOUT
+
+    def test_the_timeout_env_var_overrides_the_default(self) -> None:
+        """Tunable, not a constant (D19): the first live measurements can move
+        it without a code change."""
+        settings = AgentRuntimeSettings.from_env(
+            {"RAIN_ALERT_AGENT_RUNTIME_ARN": ARN, "RAIN_ALERT_AGENT_TIMEOUT_S": "15"}
+        )
+
+        assert settings.timeout_seconds == 15.0
+
+    def test_an_unparseable_timeout_fails_loudly(self) -> None:
+        with pytest.raises(ValueError, match="RAIN_ALERT_AGENT_TIMEOUT_S"):
+            AgentRuntimeSettings.from_env({"RAIN_ALERT_AGENT_RUNTIME_ARN": ARN, "RAIN_ALERT_AGENT_TIMEOUT_S": "soon"})
+
+    def test_the_invoker_honours_a_configured_timeout(self) -> None:
+        settings = AgentRuntimeSettings.from_env(
+            {"RAIN_ALERT_AGENT_RUNTIME_ARN": ARN, "RAIN_ALERT_AGENT_TIMEOUT_S": "3"}
+        )
+
+        invoker = BedrockAgentCoreInvoker.from_settings(settings)
+
+        assert invoker._read_timeout == 3.0  # noqa: SLF001 — the property under test

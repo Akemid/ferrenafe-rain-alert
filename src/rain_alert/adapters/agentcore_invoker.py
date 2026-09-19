@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import boto3
@@ -55,6 +56,14 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from rain_alert.adapters.agent_invoker import AgentInvocationError
 from rain_alert.domain.values import UnavailableReason
+
+#: design D23's two environment variables. Read here, not through
+#: `StaticConfigRepository`/`AlertConfig`: an ARN is an AWS concern, and
+#: putting it on `AlertConfig` would widen the frozen stdlib core with
+#: infrastructure (D1). Precedent: `DEFAULT_TIMEOUT` lives in `adapters/http.py`,
+#: and the Open-Meteo endpoint lives in its own adapter.
+AGENT_RUNTIME_ARN_ENV_VAR = "RAIN_ALERT_AGENT_RUNTIME_ARN"
+AGENT_TIMEOUT_ENV_VAR = "RAIN_ALERT_AGENT_TIMEOUT_S"
 
 #: 10 s wall clock, one attempt, no retry (D19). `read_timeout` bounds each
 #: socket read, not total wall clock; the two coincide here because this
@@ -79,6 +88,38 @@ _JSON_CONTENT_TYPE = "application/json"
 PROMPT_PAYLOAD_KEY = "prompt"
 
 
+@dataclass(frozen=True, slots=True)
+class AgentRuntimeSettings:
+    """Where the runtime is, and how long to wait for it (design D19, D23).
+
+    `region` is deliberately absent as a `RAIN_ALERT_*` env var: `boto3`
+    already resolves a region from `AWS_REGION`/`AWS_DEFAULT_REGION`/the
+    shared config file, and a second, redundant knob would only be one more
+    thing that can disagree with it.
+    """
+
+    agent_runtime_arn: str
+    timeout_seconds: float = READ_TIMEOUT
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> AgentRuntimeSettings:
+        """Read from the environment, per design D23. Raises loudly rather
+        than falling back to a guess: an operator relying on a deploy step
+        that never set the ARN needs to hear about it before the first
+        invocation, not after."""
+        arn = env.get(AGENT_RUNTIME_ARN_ENV_VAR)
+        if not arn:
+            raise ValueError(f"{AGENT_RUNTIME_ARN_ENV_VAR} must be set to select the agent composer")
+        raw_timeout = env.get(AGENT_TIMEOUT_ENV_VAR)
+        if raw_timeout is None:
+            return cls(agent_runtime_arn=arn)
+        try:
+            timeout = float(raw_timeout)
+        except ValueError as exc:
+            raise ValueError(f"{AGENT_TIMEOUT_ENV_VAR} must be a number of seconds, got {raw_timeout!r}") from exc
+        return cls(agent_runtime_arn=arn, timeout_seconds=timeout)
+
+
 class BedrockAgentCoreInvoker:
     """`AgentInvoker` over `boto3`'s `bedrock-agentcore` data-plane client.
 
@@ -89,6 +130,9 @@ class BedrockAgentCoreInvoker:
             never builds a real client and never needs a region configured.
         qualifier: The runtime alias/version to invoke. `None` uses the
             service's own default.
+        read_timeout: Tunable, not a constant (D19): the first live
+            measurements can move it without a code change. Defaults to the
+            designed deadline.
     """
 
     def __init__(
@@ -97,10 +141,16 @@ class BedrockAgentCoreInvoker:
         *,
         client: Any | None = None,
         qualifier: str | None = None,
+        read_timeout: float = READ_TIMEOUT,
     ) -> None:
         self._agent_runtime_arn = agent_runtime_arn
         self._qualifier = qualifier
         self._client = client
+        self._read_timeout = read_timeout
+
+    @classmethod
+    def from_settings(cls, settings: AgentRuntimeSettings, *, client: Any | None = None) -> BedrockAgentCoreInvoker:
+        return cls(settings.agent_runtime_arn, client=client, read_timeout=settings.timeout_seconds)
 
     def _resolved_client(self) -> Any:
         if self._client is None:
@@ -108,7 +158,7 @@ class BedrockAgentCoreInvoker:
                 _SERVICE_NAME,
                 config=Config(
                     connect_timeout=CONNECT_TIMEOUT,
-                    read_timeout=READ_TIMEOUT,
+                    read_timeout=self._read_timeout,
                     retries={"total_max_attempts": 1},
                 ),
             )

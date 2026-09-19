@@ -15,6 +15,7 @@ import pytest
 from rain_alert.adapters.local.in_memory_alert_repository import InMemoryAlertRepository
 from rain_alert.adapters.local.json_alert_repository import JsonFileAlertRepository
 from rain_alert.adapters.local.static_config_repository import (
+    COMPOSER_ENV_VAR,
     LAT_ENV_VAR,
     LON_ENV_VAR,
     SOURCED_CITY_CENTRE_COORDINATES,
@@ -24,7 +25,7 @@ from rain_alert.adapters.local.static_contact_repository import StaticContactRep
 from rain_alert.domain.config import CoordinatesSource
 from rain_alert.domain.messages import AlertMessage, AlertRecord, OutageRecord
 from rain_alert.domain.reasons import ForecastThresholdReason
-from rain_alert.domain.values import Level, SourceName, TimeWindow, WarningLevel
+from rain_alert.domain.values import ComposerName, Level, SourceName, TimeWindow, WarningLevel
 from tests.support.fakes import FakeAlertRepository
 
 CITY = "ferrenafe"
@@ -405,6 +406,24 @@ class TestStaticConfigRepository:
     def test_an_out_of_range_override_fails_loudly(self) -> None:
         with pytest.raises(ValueError):
             StaticConfigRepository(env={LAT_ENV_VAR: "-600", LON_ENV_VAR: "-79.7889"}).load()
+
+    def test_the_composer_defaults_to_template_with_no_environment_override(self) -> None:
+        """design D23: the change lands inert until the owner sets the
+        environment variable that flips it."""
+        config = StaticConfigRepository(env={}).load()
+
+        assert config.composer is ComposerName.TEMPLATE
+
+    def test_the_composer_env_var_selects_the_agent(self) -> None:
+        config = StaticConfigRepository(env={COMPOSER_ENV_VAR: "agent"}).load()
+
+        assert config.composer is ComposerName.AGENT
+
+    def test_an_unrecognised_composer_value_fails_loudly(self) -> None:
+        """Falling back to the default would hide an operator typo — the same
+        posture the coordinate overrides already take."""
+        with pytest.raises(ValueError, match=COMPOSER_ENV_VAR):
+            StaticConfigRepository(env={COMPOSER_ENV_VAR: "gpt"}).load()
 
 
 class TestStaticContactRepository:
