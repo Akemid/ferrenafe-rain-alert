@@ -53,6 +53,7 @@ from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.reasons import render_reasons_en
 from rain_alert.domain.sources import Available, SourceResult
 from rain_alert.domain.template import MessageComposer
+from rain_alert.domain.values import ComposerName
 from rain_alert.entrypoints.wiring import (
     OPEN_METEO_FIXTURE_NAME,
     SENAMHI_FIXTURE_NAME,
@@ -88,6 +89,11 @@ def _parser() -> argparse.ArgumentParser:
             f"directory holding {SENAMHI_FIXTURE_NAME} and {OPEN_METEO_FIXTURE_NAME}; "
             "runs the whole cycle with no network access"
         ),
+    )
+    parser.add_argument(
+        "--composer",
+        choices=[member.value for member in ComposerName],
+        help="force the composer for this run; absent uses whatever configuration says (default: template)",
     )
     return parser
 
@@ -157,11 +163,19 @@ def _message_lines(result: CycleResult) -> list[str]:
     non-send the deterministic template is called here on
     `message_request` — the composer itself is never invoked, so a
     deduplicated cycle stays free.
+
+    The header names the composer that actually wrote the text (design D24):
+    `SENT [composer: agent]` on an accepted agent draft, `SENT [composer:
+    template]` on a send or a fallback, `PREVIEW (NOT SENT) [composer:
+    template]` always — the preview is rendered by calling the template
+    directly, never the configured composer, so `template` is the true
+    answer here and not a default standing in for a missing one.
     """
     message = result.message
-    header = "SENT" if message is not None else _PREVIEW_LABEL
+    label = "SENT" if message is not None else _PREVIEW_LABEL
     if message is None:
         message = MessageComposer().compose(result.message_request)
+    header = f"{label} [composer: {message.composed_by.value}]"
     return [header, f"title: {message.title}", "body:", *(f"  {line}" for line in message.body.splitlines())]
 
 
@@ -279,12 +293,21 @@ def main(argv: Sequence[str] | None = None, stdout: TextIO | None = None, stderr
     # that sent or emitted a notice — the runs a calibration log exists for.
     # On the human-readable path the whole operator view belongs together, so
     # the notifier writes to the same stream everything else does.
-    deps = build_local_deps(
-        state_file=arguments.state_file,
-        now=lambda: now,
-        offline_fixtures=fixtures,
-        notifier_stream=err if arguments.json else out,
-    )
+    try:
+        deps = build_local_deps(
+            state_file=arguments.state_file,
+            now=lambda: now,
+            offline_fixtures=fixtures,
+            notifier_stream=err if arguments.json else out,
+            composer_override=None if arguments.composer is None else ComposerName(arguments.composer),
+        )
+    except ValueError as exc:
+        # `select_composer` raises when `--composer agent` (or
+        # `RAIN_ALERT_COMPOSER=agent`) names a runtime nothing configured —
+        # an operator asking for the agent composer needs to hear about a
+        # missing deploy before a cycle runs, not on the first send.
+        print(f"--composer: {exc}", file=err)
+        return EXIT_CANNOT_START
     config = deps.config.load()
     result = RunAlertCycle(deps).execute()
 

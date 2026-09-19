@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import TextIO
@@ -90,6 +91,7 @@ def build_local_deps(
     now: Callable[[], datetime],
     offline_fixtures: Path | None = None,
     notifier_stream: TextIO | None = None,
+    composer_override: ComposerName | None = None,
 ) -> CycleDependencies:
     """The full dependency graph for a local cycle.
 
@@ -101,6 +103,10 @@ def build_local_deps(
             network call at all.
         notifier_stream: Where `ConsoleNotifier` writes its blocks. `None`
             keeps the notifier's own default of standard output.
+        composer_override: The CLI's `--composer` flag (design D24). `None`
+            (the default, and every path except that one flag) uses
+            `config.composer` unchanged. Absent flag = "whatever config
+            says", never a boolean default.
 
             This is a parameter because the caller, not the notifier, knows
             what else is going to standard output. The CLI's `--json` mode
@@ -126,7 +132,10 @@ def build_local_deps(
     # for the cycle itself (D14). For `StaticConfigRepository` that is free;
     # a memoizing `ConfigRepository` is the natural fix if a future backend
     # makes it not free, not a change here.
-    composer = select_composer(config_repository.load(), notifier=notifier, now=now)
+    config = config_repository.load()
+    if composer_override is not None:
+        config = replace(config, composer=composer_override)
+    composer = select_composer(config, notifier=notifier, now=now)
 
     return CycleDependencies(
         config=config_repository,

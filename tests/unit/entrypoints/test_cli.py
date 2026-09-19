@@ -31,6 +31,7 @@ from rain_alert.entrypoints.cli import (
     default_now,
     main,
     parse_now,
+    render,
 )
 from rain_alert.entrypoints.wiring import build_local_deps
 from tests.support.fixtures import (
@@ -375,10 +376,11 @@ class TestTheDocumentCanSeeWhoWroteTheMessage:
         assert document["message"]["composed_by"] == "template"
 
     def test_an_agent_written_message_is_reported_as_agent_written(self, tmp_path: Path) -> None:
-        """The value the field exists for. Production wiring cannot select the
-        agent composer yet, so the provenance is set on the result rather than
-        produced by a run — which is exactly the substitution a future run
-        makes, and the one thing a calibration log has to be able to see."""
+        """The value the field exists for. `select_composer` can wire the
+        agent composer now (this slice), but exercising an *accepted* agent
+        draft still needs a live runtime, so the provenance is set on the
+        result directly — the exact substitution a live run makes, and the
+        one thing a calibration log has to be able to see."""
         result, config = _cycle(tmp_path, mm=30.0, probability=90)
         assert result.message is not None
         agent_written = replace(result, message=replace(result.message, composed_by=ComposerName.AGENT))
@@ -447,6 +449,86 @@ class TestTheJsonDocumentOwnsStandardOutputAlone:
 
         assert ALERT_PREFIX in out
         assert ALERT_PREFIX not in err
+
+
+class TestTheMessageHeaderNamesTheComposer:
+    """design.md D24: `SENT [composer: agent]` / `PREVIEW (NOT SENT) [composer:
+    template]`. Exercised on a manually-built `CycleResult` — like
+    `TestTheDocumentCanSeeWhoWroteTheMessage` does for `as_json` — because
+    production wiring cannot yet reach an accepted agent draft without a live
+    runtime."""
+
+    def test_a_sent_agent_written_message_names_the_agent(self, tmp_path: Path) -> None:
+        result, config = _cycle(tmp_path, mm=30.0, probability=90)
+        assert result.message is not None
+        agent_written = replace(result, message=replace(result.message, composed_by=ComposerName.AGENT))
+
+        output = render(agent_written, config)
+
+        assert "SENT [composer: agent]" in output
+
+    def test_a_sent_template_written_message_names_the_template(self, capsys, tmp_path: Path) -> None:
+        _, output = _run(capsys, tmp_path, mm=30.0, probability=90)
+
+        assert "SENT [composer: template]" in output
+
+    def test_a_preview_names_the_template_regardless_of_configuration(self, capsys, tmp_path: Path) -> None:
+        """D24: the preview always reads `template`, because it is rendered
+        by calling the template directly on `message_request` — the composer
+        itself is never invoked, so a deduplicated cycle stays free."""
+        _, output = _run(capsys, tmp_path)
+
+        assert "PREVIEW (NOT SENT) [composer: template]" in output
+
+
+class TestComposerFlag:
+    """`--composer {template,agent}` (design.md D24, local-alert-cli spec
+    "CLI agent composer selection is opt-in and defaults off")."""
+
+    def test_absent_flag_uses_the_template_composer_and_never_touches_the_seam(self, capsys, tmp_path: Path) -> None:
+        _, output = _run(capsys, tmp_path)
+
+        assert "PREVIEW (NOT SENT) [composer: template]" in output
+
+    def test_composer_agent_selects_the_agent_backed_composer_for_this_run(
+        self, capsys, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A calm forecast never authorizes a send, so the agent-backed
+        composer built here is never asked to `compose` — this is also the
+        proof that wiring an agent composer costs nothing when nothing sends,
+        with no network call anywhere in the run."""
+        monkeypatch.setenv(
+            "RAIN_ALERT_AGENT_RUNTIME_ARN",
+            "arn:aws:bedrock-agentcore:us-east-1:example-account-id:runtime/example-runtime-abc123",
+        )
+
+        code, output = _run(capsys, tmp_path, "--composer", "agent")
+
+        assert code == 0
+        assert "PREVIEW (NOT SENT) [composer: template]" in output
+
+    def test_composer_agent_without_a_runtime_arn_fails_at_wiring_time(self, capsys, tmp_path: Path) -> None:
+        """An operator who asks for the agent composer without deploying one
+        needs to hear about it before a cycle runs, not on the first send."""
+        code = main(
+            [
+                "--now",
+                NOW,
+                "--state-file",
+                str(tmp_path / "state.json"),
+                "--offline-fixtures",
+                str(_fixtures(tmp_path)),
+                "--composer",
+                "agent",
+            ]
+        )
+
+        assert code != 0
+        assert "RAIN_ALERT_AGENT_RUNTIME_ARN" in capsys.readouterr().err
+
+    def test_an_unrecognised_composer_value_is_rejected_by_the_parser(self, capsys, tmp_path: Path) -> None:
+        with pytest.raises(SystemExit):
+            main(["--now", NOW, "--state-file", str(tmp_path / "state.json"), "--composer", "gpt"])
 
 
 class TestTheCliCannotSend:
