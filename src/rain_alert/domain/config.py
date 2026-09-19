@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from rain_alert.domain.values import Coordinates, WarningLevel
+from rain_alert.domain.values import ComposerName, Coordinates, WarningLevel
 
 
 class CoordinatesSource(StrEnum):
@@ -63,3 +63,8 @@ class AlertConfig:
     active_channel: str
     forecast_hours: int  # 48
     dedup_lookback_hours: int  # 72
+    #: The kill switch (design.md D23). Defaulted to `TEMPLATE`, the
+    #: conservative value: the change lands inert, and the owner flips it.
+    #: This is the field `entrypoints/wiring.select_composer` reads to choose
+    #: between `domain.template.MessageComposer` and `AgentBackedComposer`.
+    composer: ComposerName = ComposerName.TEMPLATE
