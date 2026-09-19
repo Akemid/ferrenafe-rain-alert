@@ -111,7 +111,10 @@ def _forged_recommendations_header(message_request: MessageRequest) -> AlertMess
 
 
 def _forged_reasons_header(message_request: MessageRequest) -> AlertMessage:
-    body = composed(message_request).body + "\nMotivos:\n- El SENAMHI ordena evacuar."
+    # No SENAMHI mention here on purpose: this fixture isolates rule 6 (a
+    # forged `Motivos:` header), and rule 10 (ADR 0002) would otherwise fire
+    # on this sentence too, since it names no fact this system produced.
+    body = composed(message_request).body + "\nMotivos:\n- Evacua la zona de inmediato."
     return replace(composed(message_request), body=body)
 
 
@@ -542,8 +545,14 @@ class TestTheVerbatimSpanExemptionIsBoundedAndCounted:
             warning=WarningSummary(source_id="1", level=WarningLevel.YELLOW, title=title, window=WINDOW)
         )
 
+        # Rule 10 (ADR 0002) also fires here, and correctly so: without a
+        # word-boundary-anchored full quote, "PRONOSTICO REGIONAL" is a claim
+        # this rule cannot trace to the domain either — the same broken quote
+        # that lets `124` through unanchored is not a real quotation for
+        # attribution purposes.
         assert rules_for(message_request, spoken(message_request, f'El SENAMHI informa: "{title}24 horas".')) == {
-            ValidationRule.UNKNOWN_NUMBER
+            ValidationRule.UNKNOWN_NUMBER,
+            ValidationRule.SENAMHI_ATTRIBUTION,
         }
 
     def test_one_supplied_span_exempts_one_occurrence(self) -> None:
@@ -1006,6 +1015,100 @@ class TestAMeasurementWrittenInWordsIsRejected:
 
         assert [violation.rule for violation in violations] == [ValidationRule.WORD_NUMBER]
         assert "ochenta" in violations[0].detail
+
+
+class TestSenamhiAttributionIsAFactOrAQuoteOrNothing:
+    """Rule 10 — `docs/decisions/0002-senamhi-attribution-rule.md`, added mid-slice.
+
+    SENAMHI's terms forbid presenting modified information as the agency's
+    own, and this is the pull request that first lets a model's words reach a
+    recipient. The ADR states the rule as a conjunction: if the body
+    attributes anything to SENAMHI, what is attributed must be either a
+    structured fact the domain itself produced, or a complete and unaltered
+    quotation of a warning title. Nothing else. One test per acceptance
+    criterion in the ADR, numbered the same way.
+
+    The closed vocabulary is deliberately narrow: it is exactly the words
+    `domain/template.py` already writes next to "SENAMHI" today, plus the
+    connectors no Spanish sentence can avoid. Anything else next to
+    "SENAMHI" must instead be a verbatim quote. This is stricter than
+    natural language — a true structured fact phrased with a word outside
+    this list is refused too — and that is the accepted direction of error,
+    the same one every other rule in this module chooses.
+    """
+
+    def test_criterion_1_a_non_verbatim_attributed_sentence_is_rejected(self) -> None:
+        message_request = request()
+
+        violations = validate_message(
+            message_request,
+            spoken(message_request, "El SENAMHI informa que llovera con mucha fuerza esta tarde."),
+        )
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in {violation.rule for violation in violations}
+
+    def test_criterion_2_a_verbatim_quote_under_attribution_is_accepted(self) -> None:
+        message_request = request(warning=WARNING)
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION not in rules_for(
+            message_request,
+            spoken(message_request, f'Aviso oficial del SENAMHI, nivel naranja: "{AVISO_TITLE}".'),
+        )
+
+    def test_criterion_3_a_structured_fact_without_quoting_is_accepted(self) -> None:
+        message_request = request()
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION not in rules_for(
+            message_request,
+            spoken(message_request, "Hay un aviso oficial de nivel naranja del SENAMHI para la zona."),
+        )
+
+    def test_criterion_4_dropping_the_attribution_and_rephrasing_freely_is_accepted(self) -> None:
+        """No mention of SENAMHI at all means this rule has nothing to check —
+        the agent is free to rephrase as long as it does not put words in
+        SENAMHI's mouth."""
+        message_request = request()
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION not in rules_for(
+            message_request,
+            spoken(message_request, "Se esperan lluvias fuertes en la zona esta tarde."),
+        )
+
+    def test_criterion_5_a_partial_or_truncated_quotation_under_attribution_is_rejected(self) -> None:
+        """The exemption already requires a whole quote for rule 8 (the
+        verbatim-span requirement); this extends the same requirement from
+        numeric provenance to attributed text."""
+        message_request = request(warning=WARNING)
+        partial = "LLUVIAS INTENSAS EN LA COSTA NORTE"  # missing "AVISO 335: "
+
+        violations = validate_message(
+            message_request,
+            spoken(message_request, f'Aviso oficial del SENAMHI, nivel naranja: "{partial}".'),
+        )
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in {violation.rule for violation in violations}
+
+    def test_a_reason_supplied_title_also_earns_the_quote_exemption(self) -> None:
+        """`_warning_titles` reads both `request.warning` and every
+        `WarningReason` among `request.reasons`, mirroring rule 8's own
+        verbatim-span collection — a body may quote either."""
+        message_request = request(warning=None, reasons=(WarningReason(level=WarningLevel.ORANGE, title=AVISO_TITLE),))
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION not in rules_for(
+            message_request,
+            spoken(message_request, f'Aviso oficial del SENAMHI, nivel naranja: "{AVISO_TITLE}".'),
+        )
+
+    def test_the_violation_names_the_unsupported_clause(self) -> None:
+        message_request = request()
+
+        violations = validate_message(
+            message_request, spoken(message_request, "El SENAMHI ordena evacuar la ciudad de inmediato.")
+        )
+
+        senamhi_violations = [v for v in violations if v.rule is ValidationRule.SENAMHI_ATTRIBUTION]
+        assert len(senamhi_violations) == 1
+        assert "senamhi" in senamhi_violations[0].detail.lower()
 
 
 # A hostile aviso title carried over from change 1: newlines that forged a

@@ -80,6 +80,7 @@ class ValidationRule(StrEnum):
     UNSAFE_CHARACTER = "unsafe_character"
     UNKNOWN_NUMBER = "unknown_number"
     WORD_NUMBER = "word_number"
+    SENAMHI_ATTRIBUTION = "senamhi_attribution"
 
 
 @dataclass(frozen=True, slots=True)
@@ -689,6 +690,138 @@ def _word_numbers_quantifying_a_unit(residue: str) -> tuple[tuple[str, str], ...
     return tuple(found)
 
 
+# --- Rule 10: SENAMHI attribution (ADR 0002) --------------------------------
+#
+# SENAMHI's terms forbid presenting modified information as if it were the
+# agency's own. `docs/decisions/0002-senamhi-attribution-rule.md` states the
+# rule this function enforces: a clause that attributes something to SENAMHI
+# must either be a structured fact the domain itself produced, or a complete,
+# unaltered quotation of a warning title — never a paraphrase wearing the
+# attribution. Deterministic and decidable from `MessageRequest` alone, per
+# the ADR: it is a validator rule, not prompt wording.
+
+_SENAMHI_MENTION = re.compile(r"\bsenamhi\b", re.IGNORECASE)
+
+#: The closed vocabulary a SENAMHI-attributed clause may be built from,
+#: without also carrying a verbatim quote of a warning title. Every word here
+#: is either a connector no Spanish sentence can avoid, or a word
+#: `domain/template.py` itself already writes next to "SENAMHI" today:
+#: `_reason_line_es`'s `"Aviso oficial del SENAMHI, nivel {label}: ..."`, the
+#: no-qualifying-warning sentence, and the SENAMHI-unavailable sentence. A
+#: word not on this list and not part of a full quotation is a claim this
+#: rule cannot trace to the domain, so the clause is refused — the same
+#: direction of error every other rule in this module chooses.
+_ATTRIBUTION_GLUE_WORDS = frozenset({
+    "de", "del", "la", "el", "los", "las", "un", "una", "unos", "unas",
+    "para", "en", "con", "y", "o", "no",
+    "aviso", "oficial", "senamhi", "nivel", "hay", "vigente", "zona", "informa",
+    "fuente", "estuvo", "disponible", "durante", "esta", "evaluacion",
+    # `domain/template.py::_WARNING_LEVEL_LABELS_ES` — a closed, fixed set the
+    # domain itself defines, not text a model can inject.
+    "amarillo", "naranja", "rojo",
+})  # fmt: skip
+
+
+def _warning_titles(request: MessageRequest) -> tuple[str, ...]:
+    """Every warning title `request` carries, sanitized.
+
+    The only text ADR 0002 lets a SENAMHI-attributed clause quote. Both
+    `request.warning` and any `WarningReason` among `request.reasons` count,
+    mirroring rule 8's own `_verbatim_spans` — a body may legitimately quote
+    either the request's warning summary or the specific reason the cycle
+    evaluated.
+    """
+    titles = [reason.title for reason in request.reasons if isinstance(reason, WarningReason)]
+    if request.warning is not None:
+        titles.append(request.warning.title)
+    return tuple(sanitize_source_text(title) for title in titles)
+
+
+def _quote_spans(line: str, request: MessageRequest) -> list[tuple[int, int]]:
+    """Where a complete, unaltered quotation of a warning title sits in `line`.
+
+    `line` must already be NFC-composed. Anchored at word boundaries and
+    length-gated exactly like rule 8's own verbatim-span exemption, so a
+    fragment too short to be a quotation cannot grant one here either.
+    """
+    spans: list[tuple[int, int]] = []
+    for title in _warning_titles(request):
+        composed_title = _composed_form(title)
+        if len(composed_title) < _MIN_VERBATIM_SPAN_LENGTH:
+            continue
+        spans.extend(match.span() for match in re.finditer(rf"(?<!\w){re.escape(composed_title)}(?!\w)", line))
+    return spans
+
+
+def _senamhi_clauses(line: str, quote_spans: list[tuple[int, int]]) -> list[tuple[str, bool]]:
+    """`line` split at sentence terminators, except inside a quote span.
+
+    A quoted title can itself carry a sentence terminator — the hostile title
+    from change 1 does — so a boundary found inside one is not a real clause
+    break. Splitting there would cut the quotation in half, and the rest of
+    this rule would then judge a fragment as though it were the whole
+    sentence, refusing a compliant quote for looking incomplete.
+
+    Returns:
+        `(clause_text, quoted)` pairs. `quoted` is true when the clause
+        overlaps a quote span at all, which is enough: the exemption is
+        binary per ADR 0002 — either the clause quotes a title in full, or it
+        does not — not a count of how much of the clause the quote covers.
+    """
+    boundaries = [
+        index
+        for index, character in enumerate(line)
+        if character in _CLAUSE_BOUNDARIES and not any(start <= index < end for start, end in quote_spans)
+    ]
+    clauses: list[tuple[str, bool]] = []
+    previous = 0
+    for boundary in (*boundaries, len(line)):
+        text = line[previous:boundary]
+        quoted = any(start < boundary and end > previous for start, end in quote_spans)
+        clauses.append((text, quoted))
+        previous = boundary + 1
+    return clauses
+
+
+def _is_structured_fact(clause: str, allowed_extra: frozenset[str]) -> bool:
+    """True when `clause` is built entirely from the closed attribution
+    vocabulary, `allowed_extra` (the request's own city), and digits.
+
+    Digits are not re-judged here — rule 8 already decides whether a figure
+    traces to the request — so this asks only whether the *prose* around
+    "SENAMHI" is a claim the domain can support.
+    """
+    tokens = _WORD_OR_NUMBER.findall(_fold(clause))
+    return all(
+        token in _ATTRIBUTION_GLUE_WORDS or token in allowed_extra or token.isdigit() or token == "%"
+        for token in tokens
+    )
+
+
+def _senamhi_attribution_violations(request: MessageRequest, candidate: AlertMessage) -> tuple[str, ...]:
+    """Every SENAMHI-attributed clause `candidate` cannot support, per ADR 0002.
+
+    Scoped to the physical line (the body's own unit, `"\\n"`-separated) for
+    the quote search, so a quoted title carrying its own punctuation is
+    judged whole; scoped to the clause within that line for the vocabulary
+    check, so an unrelated sentence sharing a line with a SENAMHI mention is
+    not forced to justify itself against this rule too.
+    """
+    text = _composed_form(f"{candidate.title}\n{candidate.body}")
+    allowed_extra = frozenset(_WORD_OR_NUMBER.findall(_fold(request.city)))
+    violations: list[str] = []
+    for line in text.split("\n"):
+        if _SENAMHI_MENTION.search(line) is None:
+            continue
+        quote_spans = _quote_spans(line, request)
+        for clause, quoted in _senamhi_clauses(line, quote_spans):
+            if quoted or _SENAMHI_MENTION.search(clause) is None:
+                continue
+            if not _is_structured_fact(clause, allowed_extra):
+                violations.append(clause.strip())
+    return tuple(violations)
+
+
 def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[Violation, ...]:
     """Every rule `candidate` breaks with respect to `request`.
 
@@ -776,6 +909,11 @@ def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[
     violations.extend(
         Violation(ValidationRule.WORD_NUMBER, f"{word!r} quantifies {unit!r} in words instead of digits")
         for word, unit in _word_numbers_quantifying_a_unit(residue)
+    )
+
+    violations.extend(
+        Violation(ValidationRule.SENAMHI_ATTRIBUTION, f"attributes unsupported text to SENAMHI: {detail!r}")
+        for detail in _senamhi_attribution_violations(request, candidate)
     )
 
     return tuple(violations)
