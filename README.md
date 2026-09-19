@@ -74,6 +74,14 @@ the [domain](./docs/architecture/domain.md), the
 [adapters](./docs/architecture/adapters.md), and the
 [entry points and tests](./docs/architecture/entrypoints-and-testing.md).
 
+[`docs/decisions/`](./docs/decisions/) records the choices that were not
+obvious, with the evidence they were made on:
+
+- [0001 — Keep scraping SENAMHI's HTML; treat the OGC service as a future
+  complement](./docs/decisions/0001-senamhi-source-strategy.md)
+- [0002 — Attribute the fact, quote the words, or say
+  nothing](./docs/decisions/0002-senamhi-attribution-rule.md)
+
 ## License
 
 Apache License 2.0 — see [`LICENSE`](./LICENSE).
