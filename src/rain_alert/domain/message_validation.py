@@ -80,6 +80,8 @@ class ValidationRule(StrEnum):
     UNSAFE_CHARACTER = "unsafe_character"
     UNKNOWN_NUMBER = "unknown_number"
     WORD_NUMBER = "word_number"
+    SENAMHI_ATTRIBUTION = "senamhi_attribution"
+    DISALLOWED_SCRIPT = "disallowed_script"
 
 
 @dataclass(frozen=True, slots=True)
@@ -689,6 +691,283 @@ def _word_numbers_quantifying_a_unit(residue: str) -> tuple[tuple[str, str], ...
     return tuple(found)
 
 
+# --- Rule 10: SENAMHI attribution (ADR 0002) --------------------------------
+#
+# SENAMHI's terms forbid presenting modified information as if it were the
+# agency's own. `docs/decisions/0002-senamhi-attribution-rule.md` states the
+# rule this function enforces: a clause that attributes something to SENAMHI
+# must either be a structured fact the domain itself produced, or a complete,
+# unaltered quotation of a warning title — never a paraphrase wearing the
+# attribution. Deterministic and decidable from `MessageRequest` alone, per
+# the ADR: it is a validator rule, not prompt wording.
+
+_SENAMHI_MENTION = re.compile(r"\bsenamhi\b", re.IGNORECASE)
+
+
+def _senamhi_matching_form(text: str) -> str:
+    """`text` folded to its Unicode compatibility form (NFKC), for rule 10's
+    own detection pipeline only — never for anything rendered or sent.
+
+    NFKC folds fullwidth Latin to its ASCII equivalent, which
+    `_SENAMHI_MENTION` (an ASCII pattern) and `_is_structured_fact`'s
+    ASCII-only tokenizer both need in order to see it at all: a body reading
+    "SENAMHI" spelled in fullwidth Latin, or a paraphrase written in it next
+    to a genuine mention, was invisible to both before this fold.
+
+    Deliberately **not** the same helper rules 8 and 9 share (`_fold`,
+    `_composed_form`): NFKC also rewrites ligatures and compatibility forms
+    like superscript digits, which those rules' numeric-provenance matching
+    must not see rewritten out from under it. A second, rule-10-only helper
+    keeps that rewrite scoped to the one rule that needs it.
+
+    NFKC does **not** fold a same-shaped letter from another script — a
+    Cyrillic "А" stays Cyrillic — which is why this alone cannot replace the
+    disallowed-script check below; the two defences are independent.
+    """
+    return unicodedata.normalize("NFKC", text)
+
+
+#: The closed vocabulary a SENAMHI-attributed clause may be built from,
+#: without also carrying a verbatim quote of a warning title. Every word here
+#: is either a connector no Spanish sentence can avoid, or a word
+#: `domain/template.py` itself already writes next to "SENAMHI" today:
+#: `_reason_line_es`'s `"Aviso oficial del SENAMHI, nivel {label}: ..."`, the
+#: no-qualifying-warning sentence, and the SENAMHI-unavailable sentence. A
+#: word not on this list and not part of a full quotation is a claim this
+#: rule cannot trace to the domain, so the clause is refused — the same
+#: direction of error every other rule in this module chooses.
+_ATTRIBUTION_GLUE_WORDS = frozenset({
+    "de", "del", "la", "el", "los", "las", "un", "una", "unos", "unas",
+    "para", "en", "con", "y", "o", "no",
+    "aviso", "oficial", "senamhi", "nivel", "hay", "vigente", "zona", "informa",
+    "fuente", "estuvo", "disponible", "durante", "esta", "evaluacion",
+    # `domain/template.py::_WARNING_LEVEL_LABELS_ES` — a closed, fixed set the
+    # domain itself defines, not text a model can inject.
+    "amarillo", "naranja", "rojo",
+})  # fmt: skip
+
+
+def _warning_titles(request: MessageRequest) -> tuple[str, ...]:
+    """Every warning title `request` carries, sanitized.
+
+    The only text ADR 0002 lets a SENAMHI-attributed clause quote. Both
+    `request.warning` and any `WarningReason` among `request.reasons` count,
+    mirroring rule 8's own `_verbatim_spans` — a body may legitimately quote
+    either the request's warning summary or the specific reason the cycle
+    evaluated.
+    """
+    titles = [reason.title for reason in request.reasons if isinstance(reason, WarningReason)]
+    if request.warning is not None:
+        titles.append(request.warning.title)
+    return tuple(sanitize_source_text(title) for title in titles)
+
+
+def _quote_spans(line: str, request: MessageRequest) -> list[tuple[int, int]]:
+    """Where a complete, unaltered quotation of a warning title sits in `line`.
+
+    `line` must already be NFC-composed. Anchored at word boundaries and
+    length-gated exactly like rule 8's own verbatim-span exemption, so a
+    fragment too short to be a quotation cannot grant one here either.
+    """
+    spans: list[tuple[int, int]] = []
+    for title in _warning_titles(request):
+        # `line` has already been through `_senamhi_matching_form`; the title
+        # must be folded the same way or a title reproduced verbatim in
+        # fullwidth Latin would compare unequal to its own ASCII form and
+        # lose the quotation exemption it earned.
+        composed_title = _senamhi_matching_form(title)
+        if len(composed_title) < _MIN_VERBATIM_SPAN_LENGTH:
+            continue
+        spans.extend(match.span() for match in re.finditer(rf"(?<!\w){re.escape(composed_title)}(?!\w)", line))
+    return spans
+
+
+def _senamhi_clauses(line: str, quote_spans: list[tuple[int, int]]) -> list[tuple[str, bool]]:
+    """`line` split at sentence terminators, except inside a quote span.
+
+    A quoted title can itself carry a sentence terminator — the hostile title
+    from change 1 does — so a boundary found inside one is not a real clause
+    break. Splitting there would cut the quotation in half, and the rest of
+    this rule would then judge a fragment as though it were the whole
+    sentence, refusing a compliant quote for looking incomplete.
+
+    Returns:
+        `(clause_text, quoted)` pairs. `quoted` is true when the clause
+        overlaps a quote span at all, which is enough: the exemption is
+        binary per ADR 0002 — either the clause quotes a title in full, or it
+        does not — not a count of how much of the clause the quote covers.
+    """
+    boundaries = [
+        index
+        for index, character in enumerate(line)
+        if character in _CLAUSE_BOUNDARIES and not any(start <= index < end for start, end in quote_spans)
+    ]
+    clauses: list[tuple[str, bool]] = []
+    previous = 0
+    for boundary in (*boundaries, len(line)):
+        text = line[previous:boundary]
+        quoted = any(start < boundary and end > previous for start, end in quote_spans)
+        clauses.append((text, quoted))
+        previous = boundary + 1
+    return clauses
+
+
+def _is_structured_fact(clause: str, allowed_extra: frozenset[str]) -> bool:
+    """True when `clause` is built entirely from the closed attribution
+    vocabulary, `allowed_extra` (the request's own city), and digits.
+
+    Digits are not re-judged here — rule 8 already decides whether a figure
+    traces to the request — so this asks only whether the *prose* around
+    "SENAMHI" is a claim the domain can support.
+
+    A clause that tokenises to **no** words or digits at all is refused, not
+    accepted: `all(...)` over an empty sequence is `True`, and a clause with
+    nothing this function can read is not a fact this rule can vouch for
+    either — vacuously passing it is the same wrong-lax mistake as vouching
+    for words it never actually inspected.
+    """
+    tokens = _WORD_OR_NUMBER.findall(_fold(clause))
+    if not tokens:
+        return False
+    return all(
+        token in _ATTRIBUTION_GLUE_WORDS or token in allowed_extra or token.isdigit() or token == "%"
+        for token in tokens
+    )
+
+
+#: Where an attribution scope (below) may end without help from a section
+#: header or a blank line: the same sentence-ending punctuation `_CLAUSE_BOUNDARIES`
+#: carries, minus the line-break characters. A scope's own forward search
+#: uses this set instead of `_CLAUSE_BOUNDARIES` directly, because "\n" is
+#: not a sentence boundary here — it is the very thing a split attribution
+#: hides behind — while a period, a question mark or the rest still are.
+_SENTENCE_TERMINATORS = ".;!?¡¿"
+
+
+def _attribution_scope(lines: list[str], start: int) -> tuple[str, int]:
+    """The text ADR 0002's "attributes" reaches, starting at `lines[start]`
+    (already known to mention SENAMHI), and the index of the last line it
+    consumed.
+
+    A line that ends without a sentence terminator has more of the same
+    statement on the line below it: `"Aviso del SENAMHI\\nEvacuen de
+    inmediato..."` reads as one sentence to a resident even though a bare
+    `"\\n"` sits between the mention and the claim, and splitting the two
+    across a line break the reader will not notice is exactly the shape this
+    scope exists to close.
+
+    The search only ever looks **forward**. A mention never reaches
+    backward into a line that came before it and never mentioned SENAMHI
+    itself — `"Ciudad: Ferreñafe"` ahead of a mention is never pulled in,
+    whatever it says.
+
+    It stops, without consuming the line that stopped it, at the body's own
+    line grammar: a blank line, a section header, or a bullet. Those are
+    always complete statements of their own already, exactly like a quoted
+    title is — merging past one would force an unrelated checklist item to
+    justify itself against this rule too.
+    """
+    parts = [lines[start]]
+    stripped = lines[start].strip()
+    end = start
+    while not (stripped and stripped[-1] in _SENTENCE_TERMINATORS):
+        candidate_index = end + 1
+        if candidate_index >= len(lines):
+            break
+        next_line = lines[candidate_index]
+        next_stripped = next_line.strip()
+        if not next_stripped or next_stripped in SECTION_HEADERS or next_stripped.startswith("- "):
+            break
+        parts.append(next_line)
+        end = candidate_index
+        stripped = next_stripped
+    return " ".join(parts), end
+
+
+def _senamhi_attribution_violations(request: MessageRequest, candidate: AlertMessage) -> tuple[str, ...]:
+    """Every SENAMHI-attributed clause `candidate` cannot support, per ADR 0002.
+
+    The title is judged as its own unit — it is a subject line, never merged
+    with the body. The body is judged one attribution scope at a time
+    (`_attribution_scope`), which is the physical line whenever that line is
+    itself a complete statement, and more than one line when it is not. Once
+    a scope has been judged, its lines are not visited again even if a later
+    line in it also mentions SENAMHI — `_senamhi_clauses` already reads every
+    clause the scope contains.
+    """
+    allowed_extra = frozenset(_WORD_OR_NUMBER.findall(_fold(request.city)))
+    violations: list[str] = []
+
+    def judge(unit: str) -> None:
+        # An attribution that never completes into a sentence is refused on
+        # its own, whatever it is built from. `_attribution_scope` stops at a
+        # blank line, a header and a bullet — correctly, because reaching past
+        # one would drag unrelated statements in — and at the end of the body.
+        # Each of those stops can leave a mention still promising the content
+        # that was going to justify it, with the invented order sitting just
+        # below, wearing an attribution the reader has already taken in.
+        # Refusing the dangle closes every one of those exits at once, and
+        # costs nothing a real message wants: `domain/template.py` always
+        # terminates its SENAMHI sentences.
+        stripped = unit.strip()
+        if not stripped or stripped[-1] not in _SENTENCE_TERMINATORS:
+            violations.append(stripped)
+            return
+        quote_spans = _quote_spans(unit, request)
+        for clause, quoted in _senamhi_clauses(unit, quote_spans):
+            if quoted or _SENAMHI_MENTION.search(clause) is None:
+                continue
+            if not _is_structured_fact(clause, allowed_extra):
+                violations.append(clause.strip())
+
+    title = _senamhi_matching_form(candidate.title)
+    if _SENAMHI_MENTION.search(title) is not None:
+        judge(title)
+
+    body_lines = _senamhi_matching_form(candidate.body).split("\n")
+    consumed_until = -1
+    for index, line in enumerate(body_lines):
+        if index <= consumed_until:
+            continue
+        if _SENAMHI_MENTION.search(line) is None:
+            continue
+        scope, consumed_until = _attribution_scope(body_lines, index)
+        judge(scope)
+
+    return tuple(violations)
+
+
+#: The letter names every Latin-script letter carries, including its
+#: accented Spanish forms (`LATIN SMALL LETTER N WITH TILDE`) and the
+#: fullwidth compatibility block (`FULLWIDTH LATIN CAPITAL LETTER S`).
+#: `unicodedata` exposes no script-property lookup in the stdlib, so this
+#: substring check is the rule; every non-Latin letter's Unicode name omits
+#: the word entirely.
+_LATIN_LETTER_NAME_MARKER = "LATIN"
+
+
+def _has_disallowed_script(text: str) -> bool:
+    """True when `text` carries a letter outside the Latin script this
+    system writes Spanish in.
+
+    A Spanish civil-protection message has no legitimate reason to carry a
+    Cyrillic or Greek letter, whose only use next to Latin text is to defeat
+    a literal match like `_SENAMHI_MENTION` while rendering identically to
+    the eye. Checked against the raw candidate, not any NFKC-normalized copy:
+    NFKC does not fold Cyrillic or Greek to Latin, so this check is
+    independent of `_senamhi_matching_form` and does not replace it. Nor does
+    the reverse hold — a fullwidth Latin letter stays Latin script and never
+    trips this check, so it is `_senamhi_matching_form`'s NFKC fold, not this
+    function, that has to see through it.
+
+    Only letters are judged. Digits, punctuation and symbols are shared
+    across scripts and carry no such risk on their own.
+    """
+    return any(
+        character.isalpha() and _LATIN_LETTER_NAME_MARKER not in unicodedata.name(character, "") for character in text
+    )
+
+
 def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[Violation, ...]:
     """Every rule `candidate` breaks with respect to `request`.
 
@@ -777,5 +1056,15 @@ def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[
         Violation(ValidationRule.WORD_NUMBER, f"{word!r} quantifies {unit!r} in words instead of digits")
         for word, unit in _word_numbers_quantifying_a_unit(residue)
     )
+
+    violations.extend(
+        Violation(ValidationRule.SENAMHI_ATTRIBUTION, f"attributes unsupported text to SENAMHI: {detail!r}")
+        for detail in _senamhi_attribution_violations(request, candidate)
+    )
+
+    if _has_disallowed_script(candidate.title) or _has_disallowed_script(candidate.body):
+        violations.append(
+            Violation(ValidationRule.DISALLOWED_SCRIPT, "title or body carries a letter outside the Latin script")
+        )
 
     return tuple(violations)

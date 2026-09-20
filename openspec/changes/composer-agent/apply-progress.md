@@ -1319,3 +1319,544 @@ for as `.isoformat()`. mypy could not see this: `files = ["src"]`.
 `uv run pytest` (890 passed, 15 deselected) · `uv run --directory agent
 pytest` (32 passed) · `uv run ruff check` · `uv run ruff format --check` ·
 `uv run mypy` (39 source files).
+
+---
+
+# PR 4 of five — invocation, configuration, CLI opt-in, runbook — 2026-09-18
+
+Branch `feat/composer-agent-invocation`, cut from `main` (clean, 890 tests
+carrying PR 3). Not pushed; the orchestrator runs review, push and the PR.
+
+## Scope
+
+Phase 3 minus the two tasks the brief named explicitly out of scope (3.5,
+3.16 — both need a deployed AgentCore runtime, which does not exist) and the
+two the orchestrator owns (3.19 security review, 3.20 final gate). Delivered:
+the real boto3 invocation seam, the composer kill switch end to end from
+`AlertConfig` through `select_composer` to the CLI, the deploy runbook, and
+— added mid-slice — the SENAMHI attribution validator rule ADR 0002 makes
+blocking on this exact PR.
+
+**Mode**: Strict TDD throughout (`openspec/config.yaml → rules.apply.tdd:
+true`). Every RED below was run and its failure read before the matching
+implementation existed.
+
+**Baseline**: 890 tests passing → **933 tests passing**.
+
+## A correction to the brief, checked rather than assumed
+
+The brief said ADR 0001 and 0002
+(`docs/decisions/0001-senamhi-source-strategy.md`,
+`docs/decisions/0002-senamhi-attribution-rule.md`) "were just merged to main
+and are on your branch." Checked before writing anything: they are **not**.
+`git log --all` finds them in exactly one commit, `11da812`, which lives on
+an unrelated, unmerged branch, `docs/senamhi-source-decisions` — not on
+`main`, not on this branch, and `main`'s own log (the merge-base with this
+branch) does not contain that commit either.
+
+This does not block implementing ADR 0002's rule: the commit's full content
+was read directly (`git show 11da812:docs/decisions/0002-senamhi-attribution-rule.md`)
+and is quoted accurately below and used as the rule's specification. What it
+does mean is that `domain/message_validation.py`'s new docstring cites a file
+that is not actually present in this repository yet. **Owner action needed**:
+merge `docs/senamhi-source-decisions` to `main` (ideally before or alongside
+this PR) so the citation resolves. Recorded rather than silently worked
+around — the two options considered were merging that branch into this one
+(rejected: pulls in ADR 0001 and its own unrelated `README.md` change, scope
+creep on a branch that is not this task's to merge) and creating the two
+files here from scratch (rejected: would fork the ADR's content from
+whatever it says on the branch that actually owns it, and this task was
+given the exact text to implement against, not asked to author the ADR).
+
+## Network facts, resolved and closed against the live SDK
+
+Given in the brief as verified against botocore 1.43.98 and live AWS
+documentation; independently re-confirmed here against the installed
+`boto3==1.43.98` / `botocore==1.43.98` service model (`operation_model`
+introspection, not documentation reading) before any code was written.
+
+**Task 3.1 — the AgentCore data-plane invocation shape.** Confirmed via
+`client.meta.service_model.operation_model("InvokeAgentRuntime")`:
+`agentRuntimeArn`/`payload` required; `runtimeSessionId` optional,
+min 33/max 256 characters, an idempotency token (never supplied by this
+module — AWS generates one); output carries `response` (blob), `contentType`,
+`statusCode`; modeled errors are exactly the eight the brief named. **Closes
+design §13 to-verify #2 and the streaming question**: `agent/app.py`'s
+`@app.entrypoint` returns a plain dict, never a generator, so this
+application's responses are always `contentType: application/json`, never
+`text/event-stream`. D19's deadline is therefore a bounded read
+(`_read_bounded`, `MAX_RESPONSE_BYTES`) plus the client's own `read_timeout`,
+not a `time.monotonic()` stream deadline — the caveat design D19 raised as
+conditional on this answer does not apply.
+
+**Task 3.2 — the retry-disabling key.** `total_max_attempts`, not
+`max_attempts`, confirmed by reading `Config.__doc__` directly on the
+installed `botocore`: "a value of 1 indicates that no requests will be
+retried... If `total_max_attempts` and `max_attempts` are both provided,
+`total_max_attempts` takes precedence... because it maps to the
+`AWS_MAX_ATTEMPTS` environment variable." Shipped as
+`Config(connect_timeout=3, read_timeout=10, retries={"total_max_attempts": 1})`.
+
+**Task 3.3 — Bedrock + AgentCore unit prices.** Partial, and reported as
+such rather than filled with a guess. Claude Haiku 4.5 on Bedrock —
+$1.00 / million input tokens, $5.00 / million output tokens — was already
+verified in this project's own persistent memory (Engram observation #2380,
+2026-09-15, against Bedrock's own pricing at that time) and is restated here
+as the source and date it was checked, per the instruction not to re-derive
+it from nothing. **AgentCore Runtime's own compute price (active-CPU-seconds
+plus peak memory) was not independently re-priced in this session**: the
+AWS Pricing MCP tool named in the brief was not present in this agent's
+actual tool list, despite being described in the environment's MCP server
+instructions, so no pricing call could be made. Rather than assert a number
+from training data for a service this specific, this is left unresolved and
+named as a gap — the runbook (3.18) points at AWS's own AgentCore pricing
+page rather than a number, and design §9's token-count estimate stands as
+the only cost figure this change asserts with a checked source.
+
+**Task 3.4 — the execution role.** Confirmed by construction rather than by
+reading: nothing in this PR's diff creates an `iam.Role`, an `iam.Policy`, or
+any AWS resource at all — the invoker takes an ARN as a string and an
+injectable client; provisioning the runtime's own execution role is the
+AgentCore CLI's concern at deploy time (documented in the runbook), and the
+Lambda execution role that will eventually call this seam belongs to change
+3, unchanged from what design §13 already stated.
+
+## TDD Cycle Evidence
+
+| Tasks | RED — observed failure | GREEN |
+|---|---|---|
+| 3.21/3.22 (ADR 0002 rule) | Designed and implemented together rather than test-then-code in the usual order, because getting the closed-vocabulary boundary right needed working through the deterministic template's own SENAMHI-mentioning sentences by hand first; RED was then confirmed by mutation (see below) rather than by a first failing run. 7 new tests, all pass; the pre-existing suite required two deliberate edits (below). | 933 passed (up from 890 after PR 3, +42 from this rule alone before the rest of the slice) |
+| 3.6/3.7 `agentcore_invoker.py` | `ModuleNotFoundError: No module named 'rain_alert.adapters.agentcore_invoker'` | 20 passed on first GREEN attempt |
+| 3.8/3.9 `AlertConfig.composer` | `TypeError: AlertConfig.__init__() got an unexpected keyword argument 'composer'` | 2 passed |
+| 3.10/3.11 `RAIN_ALERT_COMPOSER` / `AgentRuntimeSettings` | `ImportError: cannot import name 'COMPOSER_ENV_VAR'`; `ImportError: cannot import name 'AgentRuntimeSettings'` | 64 passed (`test_local_repositories.py` + `test_agentcore_invoker.py`) |
+| 3.12/3.13 `select_composer` | `ImportError: cannot import name 'select_composer' from 'rain_alert.entrypoints.wiring'` | 4 passed on first GREEN attempt |
+| 3.14/3.15 `--composer` | `error: unrecognized arguments: --composer agent` (argparse `SystemExit`) | 34 passed (whole `test_cli.py`) on first GREEN attempt |
+
+**Mutation check for the ADR 0002 rule (3.23).** The rule's wiring into
+`validate_message` was commented out, the suite re-run, the output recorded,
+then reverted:
+
+```
+FAILED ...::test_criterion_1_a_non_verbatim_attributed_sentence_is_rejected
+FAILED ...::test_criterion_5_a_partial_or_truncated_quotation_under_attribution_is_rejected
+FAILED ...::test_the_violation_names_the_unsupported_clause
+3 failed
+```
+
+The four "accepted" criterion tests (2, 3, 4, and the cross-field quote test)
+stayed green under the mutation, which is expected and correct: they assert
+*absence* of a violation, so a rule that never fires cannot fail them. Only
+the three "rejected" tests have a mutant that bites, and all three bit.
+Reverted; `uv run pytest tests/unit/domain/test_message_validation.py -q`
+green again (142 passed).
+
+## The SENAMHI attribution rule, in full — why it landed the way it did
+
+ADR 0002 states the rule as: *"If the body attributes anything to SENAMHI,
+what is attributed must be either a structured fact the domain itself
+produced, or a complete and unaltered quotation of the warning title.
+Nothing else."* Turning that into a deterministic check needed answering
+three questions the ADR leaves to the implementer.
+
+1. **What counts as "attributes anything to SENAMHI"?** Any physical line of
+   the composed title+body containing the case-insensitive word "SENAMHI"
+   (`\bsenamhi\b`), scoped further to the *clause* within that line
+   (split on sentence terminators and line breaks) that actually carries the
+   mention — so an unrelated sentence sharing a line with a SENAMHI mention
+   is not forced to justify itself against this rule too.
+2. **What is "a structured fact the domain itself produced"?** A closed
+   vocabulary, deliberately narrow: exactly the words `domain/template.py`
+   already writes next to "SENAMHI" today (`_reason_line_es`'s
+   `"Aviso oficial del SENAMHI, nivel {label}: ..."`, the no-qualifying-warning
+   sentence, and the SENAMHI-unavailable sentence) plus the Spanish
+   connectors no sentence can avoid (`de`, `del`, `la`, `un`, `para`, `en`,
+   `con`, `y`, `o`, `no`) plus the fixed `WarningLevel` labels
+   (`amarillo`/`naranja`/`rojo`). A word outside this list, next to
+   "SENAMHI" and not inside a quote, is refused — the same wrong-strict
+   direction of error every other rule in this module already chooses.
+3. **What is "a complete and unaltered quotation of the warning title"?**
+   Both `request.warning.title` and any `WarningReason.title` in
+   `request.reasons` count (mirroring rule 8's own `_verbatim_spans`
+   collection), sanitized and NFC-composed, anchored at word boundaries, and
+   gated by the same 12-character minimum rule 8 already uses so a short
+   title cannot buy a blanket exemption. The quote search runs over the
+   **physical line**, not the clause, specifically so a quoted title
+   carrying its own punctuation (the hostile title from change 1 does — it
+   sanitizes to a string containing a mid-sentence period) is judged whole
+   rather than cut in half by clause splitting.
+
+**Two pre-existing tests needed a deliberate edit, both recorded as
+corrections rather than weakenings:**
+
+- `_forged_reasons_header`'s fixture text (`test_message_validation.py`)
+  read "El SENAMHI ordena evacuar." — a real ADR-0002 violation in its own
+  right (a command attributed to SENAMHI, unquoted), which would have added
+  a second violation to a test whose whole point is isolating rule 6 alone.
+  Reworded to "Evacúa la zona de inmediato." — no SENAMHI mention, same
+  forged-header property, isolation restored.
+- `test_an_unanchored_span_cannot_cut_a_number_down_to_an_allowed_one`'s
+  expected set gained `SENAMHI_ATTRIBUTION` alongside the `UNKNOWN_NUMBER`
+  it already asserted. This is not a weakening: the fixture's body
+  (`'El SENAMHI informa: "PRONOSTICO REGIONAL 124 horas".'`) is *also* a
+  genuine partial quotation under attribution — exactly ADR criterion 5 —
+  and the existing test's own docstring already describes the attack as
+  "the scraped title ends in `1`", which is precisely the kind of broken
+  quotation this rule now catches too. Two rules finding the same forged
+  text is corroboration, not redundancy.
+
+**Criterion 6, deliberately not implemented, per the brief's own
+instruction.** "The composed message names its sender" cannot be enforced as
+a validator rule without touching `domain/template.py`: several `V0_REQUESTS`
+fixtures (the plain `forecast-threshold-reason-and-the-shipped-checklist`
+default, `imminent-level`, `no-checklist`, `open-meteo-unavailable`) carry
+only a `ForecastThresholdReason`, no `WarningReason` and
+`senamhi_status="available"` — under the shipped template, that combination
+renders **no SENAMHI mention anywhere in the body**, verified by running
+`validate_message` against them before writing this note. A rule requiring
+every message to name its sender would fail the template's own current
+output on four of the ten V0 fixtures, which is exactly the invariant-V0
+failure mode design §6 exists to prevent. Fixing it needs a title or body
+change in `domain/template.py` — out of scope for a validator-only addition,
+and the brief said as much in advance. Recorded here as a follow-up for
+whoever next touches `domain/template.py`'s title or body, not silently
+dropped.
+
+## Deliberate deviations from the brief's Phase 3 task text
+
+1. **`AgentRuntimeSettings` has no `region` field.** Design D23 named
+   `AgentRuntimeSettings(endpoint, timeout_seconds, region)`; shipped as
+   `AgentRuntimeSettings(agent_runtime_arn, timeout_seconds)`. `endpoint`
+   became `agent_runtime_arn` because that is what the resolved boto3 call
+   actually takes (task 3.1's answer supersedes the pre-verification design
+   guess). `region` was dropped because `boto3.client()` already resolves a
+   region from `AWS_REGION`/`AWS_DEFAULT_REGION`/the shared config file, and
+   a third, redundant `RAIN_ALERT_*` variable would only be one more thing
+   that could disagree with it — nothing in the task list actually named a
+   third env var for it, so this fills a gap the task text left open rather
+   than contradicting it.
+2. **`AgentRuntimeSettings` is built and read entirely inside
+   `adapters/agentcore_invoker.py` / `entrypoints/wiring.py`, never through
+   `StaticConfigRepository`/`AlertConfig`.** Task 3.10 lists both env
+   readings as one item; design D23's own table separates them by home for
+   exactly the reason stated there — an ARN is an AWS concern and belongs
+   off the frozen stdlib core. Kept separate on purpose.
+3. **`select_composer` takes `env: Mapping[str, str] | None = None`** in
+   addition to the two the design sketch names (`config`, plus the
+   unspecified "..."). Needed so `tests/unit/entrypoints/test_wiring.py` can
+   drive the `AGENT` branch without mutating real process environment
+   variables in a suite that must stay offline; production code never passes
+   it (`os.environ` is the default).
+4. **`build_local_deps` gained a `composer_override: ComposerName | None`
+   parameter** rather than the CLI mutating `AlertConfig` after the fact.
+   `AlertConfig` is frozen; `dataclasses.replace` inside `build_local_deps`
+   is the one place that already owns the config-loading step, so the
+   override happens exactly once, before `select_composer` ever sees it —
+   `select_composer` itself never needs to know a flag exists.
+5. **`--json`'s `message.composer` was already shipped as `message.composed_by`
+   in PR 2** (commit `dfeb01e`, "carry message provenance in the
+   machine-readable document"), before this task's own reading of design D24
+   asked for it under a different key name. Verified rather than
+   re-implemented: `tests/unit/entrypoints/test_cli.py::TestTheDocumentCanSeeWhoWroteTheMessage`
+   already pins it, and nothing in this PR touches that key.
+
+## Verification gate
+
+```
+$ uv run pytest                                                     → 933 passed, 15 deselected   exit=0
+$ env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+      -u AWS_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION uv run pytest → 933 passed, 15 deselected   exit=0
+$ uv run --directory agent pytest                                   → 32 passed                    exit=0
+$ uv run ruff check                                                 → All checks passed!           exit=0
+$ uv run ruff format --check                                        → 94 files already formatted   exit=0
+$ uv run mypy                                                       → Success: no issues found in 40 source files   exit=0
+$ uv run pytest tests/hygiene -q                                    → 14 passed                    exit=0
+```
+
+`boto3`/`botocore` were added to the **root** project only (`uv add boto3`,
+resolving `boto3==1.43.98`/`botocore==1.43.98`, matching the pinned
+`agent/`-side facts exactly since both come from the same PyPI snapshot).
+Neither package was added to `agent/pyproject.toml`. `tests/architecture`
+already forbade both roots under `domain/`; nothing needed to change there —
+`adapters/agentcore_invoker.py` is exactly where the architecture test
+already expected a `boto3` import to be allowed.
+
+`mypy` needed one addition: `boto3`/`botocore` ship no inline types and no
+stub package is pinned, so `[[tool.mypy.overrides]] module = ["boto3",
+"botocore.*"]` with `ignore_missing_imports = true` was added — the seam
+that touches them types its own surface explicitly, so this does not weaken
+checking anywhere else.
+
+**One hygiene near-miss, caught and fixed before it reached a pushed
+branch.** The first draft of the invoker's test fixture used a placeholder
+ARN whose account-id segment was twelve zero digits.
+`tests/hygiene::test_no_secret_or_personal_data_pattern_is_committed` flagged
+that run of digits as AWS-account-id-shaped — correctly, since the pattern is
+a shape check, not a real-secret check — after it had already been committed
+once. (The exact string is deliberately not reproduced in this note: writing
+it here would trip the same check on this file, which is the guard doing its
+job a second time — see the parenthetical below.) Fixed by rewording the
+placeholder's account segment to a non-numeric label with no twelve-digit
+run at all, and **amending the one local, unpushed commit that introduced
+it**, per this repository's own established practice ("the hygiene scanner
+reads git history, not just the worktree" — PR 1's apply-progress records
+the same move for the same reason). No commit carrying the flagged string
+was ever pushed.
+
+(Writing this note itself first tripped the same guard, for the same
+reason as the "one thing the repository's own guard caught" note under the
+second adversarial review above: describing the flagged shape by pasting it
+is indistinguishable from committing it. Fixed the same way — description,
+not reproduction.)
+
+## Commits
+
+| Commit | Work unit |
+|---|---|
+| `6a39292` | `feat(domain): refuse SENAMHI attribution the domain cannot support` |
+| `93f2711` | `feat(adapters): add the real AgentCore invocation seam over boto3` (amended once, in place, to fix the hygiene near-miss above — no push occurred before the amend) |
+| `d87c25c` | `feat(domain): add the composer kill switch to AlertConfig` |
+| `c517e71` | `feat(adapters): read the composer switch and runtime settings from env` |
+| `06c8486` | `feat(entrypoints): select the composer in the composition root` |
+| `9f106ed` | `feat(entrypoints): add the --composer opt-in flag and name it on send` |
+| `615e5b7` | `docs(runbook): add the AgentCore CLI deploy runbook` |
+
+## Files changed
+
+| File | Action | What |
+|---|---|---|
+| `src/rain_alert/domain/message_validation.py` | Modified | Rule 10 (`SENAMHI_ATTRIBUTION`): `_warning_titles`, `_quote_spans`, `_senamhi_clauses`, `_is_structured_fact`, `_senamhi_attribution_violations` |
+| `tests/unit/domain/test_message_validation.py` | Modified | `TestSenamhiAttributionIsAFactOrAQuoteOrNothing` (7 tests); `_forged_reasons_header` reworded; one expected set gained a second, genuine violation |
+| `src/rain_alert/adapters/agentcore_invoker.py` | Created | `BedrockAgentCoreInvoker`, `AgentRuntimeSettings` |
+| `tests/unit/adapters/test_agentcore_invoker.py` | Created | 20 tests, hand-written fake boto3 client, no `unittest.mock` |
+| `src/rain_alert/domain/config.py` | Modified | `AlertConfig.composer: ComposerName = TEMPLATE` |
+| `tests/unit/domain/test_config.py` | Created | 2 tests |
+| `src/rain_alert/adapters/local/static_config_repository.py` | Modified | `COMPOSER_ENV_VAR`, `_resolve_composer` |
+| `tests/unit/adapters/test_local_repositories.py` | Modified | 3 new cases on `TestStaticConfigRepository` |
+| `src/rain_alert/entrypoints/wiring.py` | Modified | `select_composer`; `build_local_deps` gains `composer_override` and calls it once |
+| `tests/unit/entrypoints/test_wiring.py` | Created | 4 tests |
+| `src/rain_alert/entrypoints/cli.py` | Modified | `--composer` flag; `_message_lines` header names the composer; `ValueError` from wiring becomes `EXIT_CANNOT_START` |
+| `tests/unit/entrypoints/test_cli.py` | Modified | `TestTheMessageHeaderNamesTheComposer` (3), `TestComposerFlag` (4); one docstring corrected (see below) |
+| `docs/runbooks/agentcore-deploy.md` | Created | The deploy runbook (task 3.18) |
+| `pyproject.toml`, `uv.lock` | Modified | `boto3` added (root only); mypy override for untyped `boto3`/`botocore` |
+
+**One docstring correction, not a behavior change.**
+`test_an_agent_written_message_is_reported_as_agent_written`'s docstring said
+"Production wiring cannot select the agent composer yet" — true when PR 3
+wrote it, false as of this PR's `select_composer`. Reworded to say what is
+now true: wiring can select it, but exercising an *accepted* agent draft
+still needs a live runtime.
+
+## Residuals, accepted and recorded
+
+- The SENAMHI attribution rule's closed vocabulary is deliberately narrower
+  than natural language — a true structured fact phrased with a word outside
+  the list (a synonym for "issued", say) is refused and falls back to the
+  template. Wrong-strict, the same direction every rule in this module
+  already takes, and cheap: one fallback and one operator notice, never a
+  misattributed claim reaching a recipient.
+- Criterion 6 of ADR 0002 ("the composed message names its sender") is
+  recorded as a follow-up for `domain/template.py`, not built here — see
+  above.
+- AgentCore Runtime's own compute pricing was not independently verified
+  this session (tool unavailable); see task 3.3 above.
+- `select_composer`'s `AGENT` branch, exercised end to end in
+  `tests/unit/entrypoints/test_cli.py::TestComposerFlag`, has never composed
+  an *accepted* draft outside a fake invoker — that needs task 3.16's live
+  runtime, which needs a deploy this apply run cannot perform.
+
+## Next
+
+Security review and correctness review on this branch (tasks 3.19/3.20 are
+the orchestrator's), then the PR. Before or alongside it: merge
+`docs/senamhi-source-decisions` to `main` so
+`docs/decisions/0002-senamhi-attribution-rule.md` actually exists where
+`domain/message_validation.py`'s new docstring cites it. After that: an
+owner deploys the `agent/` unit per the new runbook and runs task 3.16's live
+test, which closes 3.5 and completes the proposal's "the agent runs live at
+least once" success criterion — the one criterion nothing in this repository
+can close without a real AWS account.
+
+## Remediation — 2026-09-19 review findings (this apply run)
+
+Five confirmed findings from a security/correctness review of PR 4's diff on
+`feat/composer-agent-invocation`, fixed on the same branch, RED before GREEN
+for every fix, no push. Strict TDD throughout: each item below states the
+failing test written first and the mutation that used to survive and now
+fails.
+
+### Finding 1 (SECURITY, HIGH) — rule 10 bypassed by Unicode confusables
+
+Two independent holes, closed independently, because neither alone was
+sufficient:
+
+- `_SENAMHI_MENTION` is an ASCII-only pattern and `_is_structured_fact`'s
+  tokenizer (`_WORD_OR_NUMBER = [a-z]+|\d+|%`) is ASCII-only too. A body
+  spelling "SENAMHI" with a Cyrillic "А" (U+0410) never matched the mention
+  pattern at all; a body naming SENAMHI in plain ASCII but paraphrasing next
+  to it in fullwidth Latin tokenised the paraphrase to nothing the ASCII
+  regex could see, so the closed-vocabulary check ran against an
+  artificially short (or, in the general case, empty) token list.
+- Fix: a new `_senamhi_matching_form` helper (NFKC), used **only** inside
+  rule 10's own detection pipeline (`_senamhi_attribution_violations`,
+  `_quote_spans`) — never on rendered/sent text, and deliberately kept
+  separate from `_fold`/`_composed_form`, which rules 8 and 9 share and which
+  must not see NFKC's compatibility rewrites (superscripts, ligatures).
+  Because NFKC does not fold Cyrillic/Greek to Latin, a second, independent
+  rule was added: `ValidationRule.DISALLOWED_SCRIPT`, refusing any candidate
+  whose title or body carries a letter outside the Latin script (checked via
+  `unicodedata.name(...)`, since the stdlib exposes no script-property
+  lookup). The vacuity half of this finding — `_is_structured_fact` returning
+  `True` (via `all()` over an empty sequence) for a clause with no word/digit
+  tokens at all — is fixed with an explicit empty-token guard, and pinned by
+  a test that imports and calls the private function directly, since the
+  reachable path through `validate_message` that used to expose it no longer
+  exists after the NFKC fix.
+- Tests: `TestSenamhiAttributionResistsUnicodeConfusables` (3 cases: Cyrillic
+  confusable → `DISALLOWED_SCRIPT`; fullwidth mention → `SENAMHI_ATTRIBUTION`;
+  fullwidth paraphrase next to a real mention → `SENAMHI_ATTRIBUTION`) and
+  `TestStructuredFactRefusesAClauseWithNoWords` in
+  `tests/unit/domain/test_message_validation.py`.
+- Mutation evidence: reverting `_senamhi_matching_form`'s NFKC fold (or the
+  `DISALLOWED_SCRIPT` check, or the empty-token guard) makes the
+  corresponding new test fail; confirmed by hand for each.
+
+### Finding 2 (SECURITY, HIGH) — attribution and claim split across a newline
+
+`_senamhi_attribution_violations` only ever inspected lines that themselves
+contained "SENAMHI"; `"Ciudad: Ferreñafe\nAviso del SENAMHI\nEvacuen de
+inmediato toda la zona costera."` was accepted, because the mention line
+alone is harmless and the directive line carries no mention of its own.
+
+Fix: a new `_attribution_scope(lines, start)` helper. A mention line whose
+stripped text does not end in a sentence terminator (`.;!?¡¿`) pulls
+forward, one line at a time, until a line does end in one (inclusive) or the
+body's own line grammar — a blank line, a section header, or a bullet — is
+reached (exclusive, never consumed). The search is **forward-only**: an
+unrelated preceding line is never pulled backward into a later mention's
+scope, which is what keeps `Ciudad:`/`Nivel:`/`Ventana:` — three consecutive
+unterminated prose lines in the template's own output — from being dragged
+into the degraded-mode SENAMHI-unavailable sentence that can follow them
+when the configuration renders no `Motivos:` header first. `_senamhi_clauses`
+and `_quote_spans` are otherwise unchanged; a merged scope is still split
+into sentence-level clauses exactly as a single line always was.
+
+- Tests: `TestSenamhiAttributionScopeCrossesALineBreak` (3 cases: the split
+  claim is now judged; a self-terminated mention line does not reach the
+  next line; a section header stops the scope) in
+  `tests/unit/domain/test_message_validation.py`.
+- Mutation evidence: reverting to the old per-line-only loop (dropping
+  `_attribution_scope`) makes
+  `test_a_claim_continuing_onto_the_next_line_is_still_judged` fail
+  (`DID NOT RAISE` becomes "no violation" instead); confirmed by hand.
+- Regression check: the full 150-case `test_message_validation.py` suite,
+  including `TestInvariantV0` over every `V0_REQUESTS` fixture, stays green —
+  the forward-only, header/bullet-stopped scope was specifically designed
+  against the degraded-mode fixture to avoid a false positive there.
+
+### Finding 3 (CORRECTNESS, HIGH) — the real boto3 Config was never exercised
+
+Every existing test injected `client=` directly, so `_resolved_client`
+(which builds the real `boto3.client("bedrock-agentcore", config=Config(...))`)
+never ran under test. Added
+`test_the_real_client_is_built_with_the_designed_service_and_config`, which
+monkeypatches `agentcore_invoker.boto3.client` (a client-factory seam, not
+`unittest.mock`) to capture the `Config` actually passed, and asserts
+`connect_timeout`, `read_timeout` and `retries` — no network, no
+credentials, no live client ever constructed.
+
+- Mutation evidence, both applied by hand and reverted: renaming
+  `"total_max_attempts"` to `"max_attempts"` in the `retries` dict makes the
+  new test fail on the `retries` assertion (`{'max_attempts': 1} !=
+  {'total_max_attempts': 1}`); deleting the whole `Config` block in favour of
+  `boto3.client(_SERVICE_NAME)` makes it fail with a `TypeError` (the fake's
+  `config` parameter is missing). No code change was needed — `agentcore_invoker.py`
+  already used `total_max_attempts` correctly (see PR 4's own apply-progress
+  entry above); this closes a test-coverage gap, not a code defect.
+
+### Finding 4 (CORRECTNESS, MEDIUM) — the response cap was tested by accident
+
+The existing `test_an_oversized_body_is_refused_before_it_is_parsed` fixture
+is one huge unterminated JSON string, so truncating it anywhere — at the cap
+or one byte short of it — still fails to parse, for an unrelated reason
+(`JSONDecodeError`, not the cap). Added
+`test_the_cap_fires_even_when_truncating_at_it_would_parse_cleanly`: its
+first `MAX_RESPONSE_BYTES` bytes are a complete, valid,
+whitespace-padded JSON object on their own, with only a short run of
+non-whitespace bytes appended after that pushing the whole body over the
+cap. Truncating at exactly the cap now parses cleanly if the cap does not
+fire, making the two cases distinguishable.
+
+- Mutation evidence: changing `stream.read(MAX_RESPONSE_BYTES + 1)` to
+  `stream.read(MAX_RESPONSE_BYTES)` makes the new test fail
+  (`DID NOT RAISE AgentInvocationError`) while the old, weaker test still
+  passes — confirming the old test alone was insufficient and the new one
+  closes the gap. Confirmed by hand and reverted.
+
+### Finding 5 (CORRECTNESS, MEDIUM/LOW) — three more untested guards
+
+- `_MIN_VERBATIM_SPAN_LENGTH` inside rule 10's own `_quote_spans` (a second,
+  independent use of the same constant rule 8's `_verbatim_spans` uses) had
+  no fixture shorter than 12 characters. Added
+  `test_a_quote_shorter_than_the_minimum_span_earns_no_exemption` (an
+  11-character warning title quoted under SENAMHI attribution, whose own
+  words are outside the closed vocabulary). Mutation evidence: deleting the
+  length guard in `_quote_spans` makes the new test fail (the short title is
+  wrongly granted the quote exemption and the clause is skipped instead of
+  refused); confirmed by hand and reverted.
+- The status gate `200 <= status < 300`: added
+  `test_status_299_the_top_of_the_accepted_range_is_accepted` and
+  `test_status_300_just_outside_the_accepted_range_is_bad_status`. Mutation
+  evidence: widening to `<= 300` makes the 300 case fail
+  (`DID NOT RAISE`); confirmed by hand and reverted.
+- `test_an_unsupported_content_type_is_malformed_payload`'s old fixture
+  (`b"data: {}\n\n"`) is not valid JSON either, so disabling the
+  content-type gate (`if False:`) still raised `MALFORMED_PAYLOAD` for an
+  unrelated reason (a `JSONDecodeError`). The fixture now carries a body that
+  parses cleanly (`{"title": "t", "body": "b"}`), and the test asserts the
+  violation detail names `contentType` specifically. Mutation evidence:
+  replacing the gate with `if False:` makes the test fail
+  (`DID NOT RAISE`); confirmed by hand and reverted.
+
+### Verification (this remediation)
+
+- `uv run pytest`: 945 passed (was 940 before this remediation; 7 new domain
+  tests, 5 new adapter tests, minus 2 tests strengthened in place rather than
+  added), green both with and without `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` set.
+- `uv run --directory agent pytest`: 32 passed, unaffected (this remediation
+  never touches `agent/`).
+- `uv run ruff check` and `uv run ruff format --check`, both bare (no path
+  argument): clean.
+- `uv run mypy` (root config, `files = ["src"]`): clean, no issues in 40
+  source files.
+
+### Residuals, accepted and recorded
+
+- None of the five findings required scope beyond `domain/message_validation.py`
+  and `adapters/agentcore_invoker.py` plus their own test files; nothing was
+  deferred.
+- `_attribution_scope`'s forward-only, header/bullet-stopped merge is a
+  narrower fix than a general "paragraph" notion (blank-line-delimited
+  blocks): a blank-line-based block would have merged the template's own
+  `Ciudad:`/`Nivel:`/`Ventana:` preamble into the degraded-mode SENAMHI
+  sentence in a configuration `V0_REQUESTS` does not currently exercise
+  (`reasons=(SenamhiUnavailableReason(),)` alone, with no `ForecastThresholdReason`
+  or other reason producing a `Motivos:` header before it), breaking
+  invariant V0 for a fixture nobody had written yet. The forward-only design
+  was chosen specifically to avoid that latent regression; recorded here so
+  a future reviewer widening this rule's scope re-checks that exact
+  configuration against `TestInvariantV0` before doing so.
+- Findings 3–5 added test coverage only; no production code changed for
+  them, since the underlying implementation was already correct.
+
+### Files changed (this remediation)
+
+| File | Action | What |
+|---|---|---|
+| `src/rain_alert/domain/message_validation.py` | Modified | `ValidationRule.DISALLOWED_SCRIPT`; `_senamhi_matching_form`, `_has_disallowed_script`, `_attribution_scope`, `_SENTENCE_TERMINATORS`; `_quote_spans`, `_is_structured_fact`, `_senamhi_attribution_violations` updated; `validate_message` gains the script-restriction check |
+| `tests/unit/domain/test_message_validation.py` | Modified | `TestSenamhiAttributionResistsUnicodeConfusables` (3), `TestSenamhiAttributionScopeCrossesALineBreak` (3), `TestStructuredFactRefusesAClauseWithNoWords` (1), `test_a_quote_shorter_than_the_minimum_span_earns_no_exemption` (1) |
+| `tests/unit/adapters/test_agentcore_invoker.py` | Modified | `test_the_real_client_is_built_with_the_designed_service_and_config`; `test_status_299_...`/`test_status_300_...`; `test_the_cap_fires_even_when_truncating_at_it_would_parse_cleanly`; `test_an_unsupported_content_type_is_malformed_payload` fixture strengthened in place |
+
+No commit hashes recorded here yet — see the commit history on
+`feat/composer-agent-invocation` for this remediation's own commits, added
+after this file.

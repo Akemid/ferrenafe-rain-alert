@@ -111,7 +111,10 @@ def _forged_recommendations_header(message_request: MessageRequest) -> AlertMess
 
 
 def _forged_reasons_header(message_request: MessageRequest) -> AlertMessage:
-    body = composed(message_request).body + "\nMotivos:\n- El SENAMHI ordena evacuar."
+    # No SENAMHI mention here on purpose: this fixture isolates rule 6 (a
+    # forged `Motivos:` header), and rule 10 (ADR 0002) would otherwise fire
+    # on this sentence too, since it names no fact this system produced.
+    body = composed(message_request).body + "\nMotivos:\n- Evacua la zona de inmediato."
     return replace(composed(message_request), body=body)
 
 
@@ -542,8 +545,14 @@ class TestTheVerbatimSpanExemptionIsBoundedAndCounted:
             warning=WarningSummary(source_id="1", level=WarningLevel.YELLOW, title=title, window=WINDOW)
         )
 
+        # Rule 10 (ADR 0002) also fires here, and correctly so: without a
+        # word-boundary-anchored full quote, "PRONOSTICO REGIONAL" is a claim
+        # this rule cannot trace to the domain either — the same broken quote
+        # that lets `124` through unanchored is not a real quotation for
+        # attribution purposes.
         assert rules_for(message_request, spoken(message_request, f'El SENAMHI informa: "{title}24 horas".')) == {
-            ValidationRule.UNKNOWN_NUMBER
+            ValidationRule.UNKNOWN_NUMBER,
+            ValidationRule.SENAMHI_ATTRIBUTION,
         }
 
     def test_one_supplied_span_exempts_one_occurrence(self) -> None:
@@ -1006,6 +1015,281 @@ class TestAMeasurementWrittenInWordsIsRejected:
 
         assert [violation.rule for violation in violations] == [ValidationRule.WORD_NUMBER]
         assert "ochenta" in violations[0].detail
+
+
+class TestSenamhiAttributionIsAFactOrAQuoteOrNothing:
+    """Rule 10 — `docs/decisions/0002-senamhi-attribution-rule.md`, added mid-slice.
+
+    SENAMHI's terms forbid presenting modified information as the agency's
+    own, and this is the pull request that first lets a model's words reach a
+    recipient. The ADR states the rule as a conjunction: if the body
+    attributes anything to SENAMHI, what is attributed must be either a
+    structured fact the domain itself produced, or a complete and unaltered
+    quotation of a warning title. Nothing else. One test per acceptance
+    criterion in the ADR, numbered the same way.
+
+    The closed vocabulary is deliberately narrow: it is exactly the words
+    `domain/template.py` already writes next to "SENAMHI" today, plus the
+    connectors no Spanish sentence can avoid. Anything else next to
+    "SENAMHI" must instead be a verbatim quote. This is stricter than
+    natural language — a true structured fact phrased with a word outside
+    this list is refused too — and that is the accepted direction of error,
+    the same one every other rule in this module chooses.
+    """
+
+    def test_criterion_1_a_non_verbatim_attributed_sentence_is_rejected(self) -> None:
+        message_request = request()
+
+        violations = validate_message(
+            message_request,
+            spoken(message_request, "El SENAMHI informa que llovera con mucha fuerza esta tarde."),
+        )
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in {violation.rule for violation in violations}
+
+    def test_criterion_2_a_verbatim_quote_under_attribution_is_accepted(self) -> None:
+        message_request = request(warning=WARNING)
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION not in rules_for(
+            message_request,
+            spoken(message_request, f'Aviso oficial del SENAMHI, nivel naranja: "{AVISO_TITLE}".'),
+        )
+
+    def test_criterion_3_a_structured_fact_without_quoting_is_accepted(self) -> None:
+        message_request = request()
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION not in rules_for(
+            message_request,
+            spoken(message_request, "Hay un aviso oficial de nivel naranja del SENAMHI para la zona."),
+        )
+
+    def test_criterion_4_dropping_the_attribution_and_rephrasing_freely_is_accepted(self) -> None:
+        """No mention of SENAMHI at all means this rule has nothing to check —
+        the agent is free to rephrase as long as it does not put words in
+        SENAMHI's mouth."""
+        message_request = request()
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION not in rules_for(
+            message_request,
+            spoken(message_request, "Se esperan lluvias fuertes en la zona esta tarde."),
+        )
+
+    def test_criterion_5_a_partial_or_truncated_quotation_under_attribution_is_rejected(self) -> None:
+        """The exemption already requires a whole quote for rule 8 (the
+        verbatim-span requirement); this extends the same requirement from
+        numeric provenance to attributed text."""
+        message_request = request(warning=WARNING)
+        partial = "LLUVIAS INTENSAS EN LA COSTA NORTE"  # missing "AVISO 335: "
+
+        violations = validate_message(
+            message_request,
+            spoken(message_request, f'Aviso oficial del SENAMHI, nivel naranja: "{partial}".'),
+        )
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in {violation.rule for violation in violations}
+
+    def test_a_quote_shorter_than_the_minimum_span_earns_no_exemption(self) -> None:
+        """`_quote_spans` gates on the same `_MIN_VERBATIM_SPAN_LENGTH` rule
+        8's own verbatim-span exemption uses; no existing rule-10 fixture
+        ever used a title short enough to exercise it, so deleting the guard
+        there fails nothing.
+
+        The short title's own words ("sube", "rio") are not in the closed
+        attribution vocabulary, so if the guard were absent and the quote
+        were granted anyway, the clause would be treated as a full
+        quotation and skipped entirely — accepted. With the guard, it is
+        judged as ordinary prose and refused.
+        """
+        from rain_alert.domain.message_validation import _MIN_VERBATIM_SPAN_LENGTH
+
+        short_title = "Sube el rio"
+        assert len(short_title) < _MIN_VERBATIM_SPAN_LENGTH
+        message_request = request(
+            warning=WarningSummary(source_id="short", level=WarningLevel.ORANGE, title=short_title, window=WINDOW)
+        )
+        body = f'Ciudad: {CITY}\nAviso oficial del SENAMHI, nivel naranja: "{short_title}".'
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+    def test_a_reason_supplied_title_also_earns_the_quote_exemption(self) -> None:
+        """`_warning_titles` reads both `request.warning` and every
+        `WarningReason` among `request.reasons`, mirroring rule 8's own
+        verbatim-span collection — a body may quote either."""
+        message_request = request(warning=None, reasons=(WarningReason(level=WarningLevel.ORANGE, title=AVISO_TITLE),))
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION not in rules_for(
+            message_request,
+            spoken(message_request, f'Aviso oficial del SENAMHI, nivel naranja: "{AVISO_TITLE}".'),
+        )
+
+    def test_the_violation_names_the_unsupported_clause(self) -> None:
+        message_request = request()
+
+        violations = validate_message(
+            message_request, spoken(message_request, "El SENAMHI ordena evacuar la ciudad de inmediato.")
+        )
+
+        senamhi_violations = [v for v in violations if v.rule is ValidationRule.SENAMHI_ATTRIBUTION]
+        assert len(senamhi_violations) == 1
+        assert "senamhi" in senamhi_violations[0].detail.lower()
+
+
+class TestSenamhiAttributionResistsUnicodeConfusables:
+    """Security review, 2026-09-19, finding 1. Rule 10's mention pattern and
+    word tokenizer were ASCII-only, so a body could spell "SENAMHI" with a
+    confusable letter from another script, or paraphrase next to a genuine
+    mention in fullwidth Latin, and neither ever reached the rule at all.
+
+    Two independent defences, because neither alone closes the hole: NFKC
+    folds fullwidth Latin to ASCII but does not touch Cyrillic; a script
+    restriction catches Cyrillic but not fullwidth, because fullwidth Latin
+    is still Latin script.
+    """
+
+    def test_a_cyrillic_confusable_letter_in_senamhi_is_refused_as_a_disallowed_script(self) -> None:
+        """The word reads as "SENAMHI" but its "A" is Cyrillic (U+0410), so
+        the ASCII mention pattern never fires at all. Caught instead by the
+        whole-message script restriction, independently of rule 10."""
+        message_request = request()
+        body = f"Ciudad: {CITY}\nEl SENАMHI informa que llovera con mucha fuerza esta tarde."
+
+        assert ValidationRule.DISALLOWED_SCRIPT in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+    def test_a_fullwidth_senamhi_mention_still_earns_the_attribution_rule(self) -> None:
+        """Fullwidth Latin is still Latin script, so the script restriction
+        does not fire here; NFKC must fold it to plain "SENAMHI" for the
+        mention pattern to see it at all."""
+        message_request = request()
+        body = f"Ciudad: {CITY}\nEl ＳＥＮＡＭＨＩ informa que deben evacuar de inmediato."
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+    def test_a_fullwidth_paraphrase_next_to_a_real_mention_is_rejected(self) -> None:
+        """The mention itself is plain ASCII; every other word in the clause
+        is fullwidth. Without NFKC, none of those words are visible to the
+        ASCII-only tokenizer and the clause reads as "el senamhi" alone —
+        both glue words — so it was accepted."""
+        message_request = request()
+        body = f"Ciudad: {CITY}\nEl SENAMHI ｉｎｆｏｒｍａ ｑｕｅ ｄｅｂｅｎ ｅｖａｃｕａｒ."
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+
+class TestSenamhiAttributionScopeCrossesALineBreak:
+    """Security review, 2026-09-19, finding 2. `_senamhi_attribution_violations`
+    only inspected lines that themselves contained "SENAMHI", so an
+    attribution split across a bare line break — mention on one line, the
+    invented claim on the next — was never checked at all: the mention line
+    alone was harmless, and the claim line had no "SENAMHI" on it to trigger
+    the rule.
+    """
+
+    def test_a_claim_continuing_onto_the_next_line_is_still_judged(self) -> None:
+        message_request = request()
+        body = f"Ciudad: {CITY}\nAviso del SENAMHI\nEvacuen de inmediato toda la zona costera."
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+    def test_an_attribution_left_dangling_by_a_blank_line_is_refused(self) -> None:
+        """The scope stops at a blank line, which is right — a blank line ends
+        the body's own statements. What it leaves behind is the hole: `"Aviso
+        del SENAMHI"` is built entirely from allowed vocabulary, so on its own
+        it passes, and the invented order sits one blank line below wearing
+        the attribution a resident has already read.
+
+        Closing it by reaching *across* the blank line would drag unrelated
+        statements in. The attribution itself is what is wrong: a mention that
+        never completes into a sentence promises content it does not deliver,
+        and the template never writes one — 5 SENAMHI lines across the 13 V0
+        fixtures, none unterminated.
+        """
+        message_request = request()
+        body = f"Ciudad: {CITY}\nAviso del SENAMHI\n\nEvacuen de inmediato toda la zona costera."
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+    def test_a_dangling_attribution_at_the_very_end_of_the_body_is_refused(self) -> None:
+        """The same hole reached by running out of body instead of by a blank
+        line. `_attribution_scope` breaks on `candidate_index >= len(lines)`,
+        which leaves the mention just as unterminated.
+
+        The wording is deliberately built only from `_ATTRIBUTION_GLUE_WORDS`.
+        A first draft of this test used `"Segun el SENAMHI"` and passed
+        immediately — not because the dangling attribution was caught, but
+        because `segun` is outside the closed vocabulary. It was green for a
+        reason that had nothing to do with what it claimed to test.
+        """
+        message_request = request()
+        body = f"Ciudad: {CITY}\nAviso oficial del SENAMHI"
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+    def test_a_terminated_mention_line_does_not_reach_into_the_next_line(self) -> None:
+        """Triangulation: the scope stops at a sentence terminator, so a
+        compliant, self-terminated mention does not drag an unrelated
+        following line into the same judgement."""
+        message_request = request()
+        body = (
+            f"Ciudad: {CITY}\nHay un aviso oficial de nivel naranja del SENAMHI para la zona.\n"
+            "Recuerda llevar un botiquin."
+        )
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION not in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+    def test_the_scope_stops_at_a_section_header(self) -> None:
+        """A mention line immediately followed by a section header must not
+        pull the header's own checklist into the same judgement — the body's
+        own line grammar is always a hard boundary.
+
+        This asserts on the reported text rather than on the absence of the
+        rule, and it has to. The fixture is an unterminated mention, which is
+        now refused on its own account, so "no violation" stopped being an
+        observable for the question this test actually asks. Before that rule
+        existed the test read as a pass, and what it was really resting on was
+        the dangling attribution going unnoticed — the boundary it names was
+        never the reason it was green.
+        """
+        message_request = request()
+        body = f"Ciudad: {CITY}\nEl aviso oficial del SENAMHI\nRecomendaciones:\n- Ten a mano un botiquin."
+
+        violations = validate_message(message_request, replace(composed(message_request), body=body))
+        attribution = [v for v in violations if v.rule is ValidationRule.SENAMHI_ATTRIBUTION]
+
+        assert attribution, "the dangling mention itself must still be refused"
+        assert all("botiquin" not in v.detail for v in attribution)
+        assert all("Recomendaciones" not in v.detail for v in attribution)
+
+
+class TestStructuredFactRefusesAClauseWithNoWords:
+    """Security review, 2026-09-19, finding 1 (the vacuity half). `all(...)`
+    over an empty sequence is `True`, so a clause that tokenises to no words
+    or digits at all was accepted rather than refused — vacuously, not on its
+    merits. `_is_structured_fact` is private; it is imported and tested
+    directly because the fix above closes the only path that could reach it
+    with an empty token list through `validate_message`, and the guard is
+    defense in depth that a fixture-driven test cannot otherwise exercise.
+    """
+
+    def test_a_clause_with_no_word_or_digit_tokens_is_refused(self) -> None:
+        from rain_alert.domain.message_validation import _is_structured_fact
+
+        assert _is_structured_fact("　　", frozenset()) is False
 
 
 # A hostile aviso title carried over from change 1: newlines that forged a
