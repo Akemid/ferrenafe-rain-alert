@@ -1200,6 +1200,44 @@ class TestSenamhiAttributionScopeCrossesALineBreak:
             message_request, replace(composed(message_request), body=body)
         )
 
+    def test_an_attribution_left_dangling_by_a_blank_line_is_refused(self) -> None:
+        """The scope stops at a blank line, which is right — a blank line ends
+        the body's own statements. What it leaves behind is the hole: `"Aviso
+        del SENAMHI"` is built entirely from allowed vocabulary, so on its own
+        it passes, and the invented order sits one blank line below wearing
+        the attribution a resident has already read.
+
+        Closing it by reaching *across* the blank line would drag unrelated
+        statements in. The attribution itself is what is wrong: a mention that
+        never completes into a sentence promises content it does not deliver,
+        and the template never writes one — 5 SENAMHI lines across the 13 V0
+        fixtures, none unterminated.
+        """
+        message_request = request()
+        body = f"Ciudad: {CITY}\nAviso del SENAMHI\n\nEvacuen de inmediato toda la zona costera."
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+    def test_a_dangling_attribution_at_the_very_end_of_the_body_is_refused(self) -> None:
+        """The same hole reached by running out of body instead of by a blank
+        line. `_attribution_scope` breaks on `candidate_index >= len(lines)`,
+        which leaves the mention just as unterminated.
+
+        The wording is deliberately built only from `_ATTRIBUTION_GLUE_WORDS`.
+        A first draft of this test used `"Segun el SENAMHI"` and passed
+        immediately — not because the dangling attribution was caught, but
+        because `segun` is outside the closed vocabulary. It was green for a
+        reason that had nothing to do with what it claimed to test.
+        """
+        message_request = request()
+        body = f"Ciudad: {CITY}\nAviso oficial del SENAMHI"
+
+        assert ValidationRule.SENAMHI_ATTRIBUTION in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
     def test_a_terminated_mention_line_does_not_reach_into_the_next_line(self) -> None:
         """Triangulation: the scope stops at a sentence terminator, so a
         compliant, self-terminated mention does not drag an unrelated
@@ -1217,13 +1255,25 @@ class TestSenamhiAttributionScopeCrossesALineBreak:
     def test_the_scope_stops_at_a_section_header(self) -> None:
         """A mention line immediately followed by a section header must not
         pull the header's own checklist into the same judgement — the body's
-        own line grammar is always a hard boundary."""
+        own line grammar is always a hard boundary.
+
+        This asserts on the reported text rather than on the absence of the
+        rule, and it has to. The fixture is an unterminated mention, which is
+        now refused on its own account, so "no violation" stopped being an
+        observable for the question this test actually asks. Before that rule
+        existed the test read as a pass, and what it was really resting on was
+        the dangling attribution going unnoticed — the boundary it names was
+        never the reason it was green.
+        """
         message_request = request()
         body = f"Ciudad: {CITY}\nEl aviso oficial del SENAMHI\nRecomendaciones:\n- Ten a mano un botiquin."
 
-        assert ValidationRule.SENAMHI_ATTRIBUTION not in rules_for(
-            message_request, replace(composed(message_request), body=body)
-        )
+        violations = validate_message(message_request, replace(composed(message_request), body=body))
+        attribution = [v for v in violations if v.rule is ValidationRule.SENAMHI_ATTRIBUTION]
+
+        assert attribution, "the dangling mention itself must still be refused"
+        assert all("botiquin" not in v.detail for v in attribution)
+        assert all("Recomendaciones" not in v.detail for v in attribution)
 
 
 class TestStructuredFactRefusesAClauseWithNoWords:

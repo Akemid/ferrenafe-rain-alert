@@ -899,6 +899,20 @@ def _senamhi_attribution_violations(request: MessageRequest, candidate: AlertMes
     violations: list[str] = []
 
     def judge(unit: str) -> None:
+        # An attribution that never completes into a sentence is refused on
+        # its own, whatever it is built from. `_attribution_scope` stops at a
+        # blank line, a header and a bullet — correctly, because reaching past
+        # one would drag unrelated statements in — and at the end of the body.
+        # Each of those stops can leave a mention still promising the content
+        # that was going to justify it, with the invented order sitting just
+        # below, wearing an attribution the reader has already taken in.
+        # Refusing the dangle closes every one of those exits at once, and
+        # costs nothing a real message wants: `domain/template.py` always
+        # terminates its SENAMHI sentences.
+        stripped = unit.strip()
+        if not stripped or stripped[-1] not in _SENTENCE_TERMINATORS:
+            violations.append(stripped)
+            return
         quote_spans = _quote_spans(unit, request)
         for clause, quoted in _senamhi_clauses(unit, quote_spans):
             if quoted or _SENAMHI_MENTION.search(clause) is None:
