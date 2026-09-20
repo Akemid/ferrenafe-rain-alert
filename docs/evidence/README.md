@@ -33,3 +33,6 @@ happened.
 
 - [`2026-09-20-preflight.md`](2026-09-20-preflight.md) — environment, service
   and model availability checks before the first deploy.
+- [`2026-09-20-agent-toolkit-connection.md`](2026-09-20-agent-toolkit-connection.md)
+  — connecting the coding agent to AWS via the Agent Toolkit: CLI upgrade,
+  `aws login`, MCP server, skills, and the two environment corrections it took.
