@@ -140,14 +140,25 @@ def test_the_model_is_the_configured_haiku_with_the_configured_sampling() -> Non
     assert configured["top_p"] == pytest.approx(0.9)
 
 
-def test_the_model_id_is_a_bedrock_id_and_carries_no_date_suffix() -> None:
-    """Resolved against live AWS documentation on 2026-09-15, and pinned as a
-    shape because both plausible wrong guesses have one: a first-party id with
-    no `anthropic.` prefix, and a date-suffixed variant that does not exist for
-    this model. A regional inference-profile prefix (`us.`) may still be
-    required depending on the account's region; see the constant's comment."""
-    assert MODEL_ID.startswith("anthropic.")
-    assert re.search(r"-\d{6,8}$", MODEL_ID) is None
+def test_the_model_id_is_an_inference_profile_and_not_a_bare_model_id() -> None:
+    """Resolved against the live account on 2026-09-20, replacing a shape this
+    test previously asserted from documentation and got backwards twice.
+
+    `aws bedrock get-foundation-model` reports
+    `inferenceTypesSupported: ['INFERENCE_PROFILE']` for this model — there is
+    no `ON_DEMAND`. The bare foundation-model id is therefore not invocable at
+    all, in any region, so the `us.` prefix is mandatory rather than the
+    region-dependent maybe the constant's comment used to describe.
+
+    The date and version suffix is likewise real:
+    `anthropic.claude-haiku-4-5-20251001-v1:0`. The earlier version of this
+    test asserted its *absence*, which no offline test could have caught —
+    nothing in this repository knows what Bedrock accepts.
+
+    Evidence: `docs/evidence/2026-09-20-preflight.md`.
+    """
+    assert MODEL_ID.startswith("us.anthropic."), "an inference profile id, not a bare model id"
+    assert re.search(r"-\d{8}-v\d+:\d+$", MODEL_ID) is not None, "carries the date and version suffix"
 
 
 def test_the_entrypoint_is_the_function_the_runtime_calls() -> None:

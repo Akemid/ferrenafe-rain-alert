@@ -41,17 +41,30 @@ from models import CompositionOutput
 from strands import Agent
 from strands.models import BedrockModel
 
-#: Claude Haiku 4.5 on Bedrock, resolved against live AWS documentation
-#: 2026-09-15. A Bedrock id prefixes the first-party id with `anthropic.`, and
-#: the first-party id for this model carries **no** date suffix — a
-#: date-suffixed variant is a different model or no model at all.
+#: Claude Haiku 4.5 on Bedrock, **resolved against the live account**
+#: 2026-09-20. The previous value here was guessed from documentation and was
+#: wrong in both halves; `docs/evidence/2026-09-20-preflight.md` carries the
+#: commands and their output.
 #:
-#: Depending on the account's region this may need a cross-region inference
-#: profile prefix (`us.anthropic.claude-haiku-4-5`). That is an account fact,
-#: not a code fact, so it is **confirmed at deploy against the live account**
-#: rather than guessed here. A wrong id fails every live call at the first
-#: invocation, which the application survives by falling back to the template.
-MODEL_ID = "anthropic.claude-haiku-4-5"
+#: **The profile prefix is mandatory, not regional.**
+#: `aws bedrock get-foundation-model` reports
+#: `inferenceTypesSupported: ['INFERENCE_PROFILE']` — there is no `ON_DEMAND`
+#: for this model, so the bare foundation-model id cannot be invoked anywhere.
+#: The earlier comment treated the prefix as a maybe that depended on the
+#: account's region. It does not depend on anything.
+#:
+#: **The date and version suffix is real.** The earlier comment asserted that
+#: a date-suffixed variant "is a different model or no model at all", and a
+#: test pinned that absence. Both were backwards.
+#:
+#: `us.` over `global.`: at four invocations a day the ~10% saving `global.`
+#: offers is about one cent a month, and the 10 s read deadline has room to
+#: spare either way — so neither cost nor latency decides this. `us.` names
+#: every region it can route to (`us-east-1`, `us-east-2`, `us-west-2`);
+#: `global.` reports an unnamed destination, and a civil-protection system
+#: should be able to say where a town's alert is processed. Revisit after the
+#: first live run — this is one constant and one test.
+MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 #: Low but not zero: the message is one short paragraph assembled from
 #: pre-digested numbers, and the value of the agent over the template is
