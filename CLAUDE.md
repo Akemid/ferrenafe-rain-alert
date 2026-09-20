@@ -61,6 +61,30 @@ Deployment target is `us-east-1`. The AWS CLI profile for this project is
 `ferrenafe`, authenticated with `aws login` (short-lived credentials, not
 access keys).
 
+### Which AWS MCP server to use
+
+Two servers expose the same five documentation tools under identical names:
+`aws-mcp` (the Agent Toolkit's, authenticated as `ferrenafe`) and
+`awsknowledge` (bundled with the `aws-agents`, `codebase-documentor-for-aws`
+and `deploy-on-aws` plugins).
+
+**Prefer `mcp__aws-mcp__*`.** It is a strict superset — the same
+`search_documentation`, `read_documentation`, `retrieve_skill`,
+`list_regions` and `get_regional_availability`, plus `run_script` for real
+AWS API calls under this project's profile.
+
+`awsknowledge` is the `aws-knowledge-mcp-server` that AWS's own setup guide
+says to remove once the Agent Toolkit is installed. It stays only because it
+ships inside `aws-agents`, which also supplies seven AgentCore-specific
+skills (`agents-deploy`, `agents-debug`, `agents-harden`, …) that the
+Toolkit's catalogue does **not** replace — its AgentCore coverage is one
+section of the broad `amazon-bedrock` skill. Disabling the plugin to remove
+one duplicate server would cost those seven.
+
+`awsiac` (cfn-lint, cfn-guard, CDK guidance) is **not** a duplicate: static
+template validation has no equivalent in `aws-mcp`. Use it for CloudFormation
+and CDK work.
+
 <!-- BEGIN AWS Agent Toolkit rules -->
 
 # AWS Guidance
