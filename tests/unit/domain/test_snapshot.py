@@ -12,9 +12,11 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 
+from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
 from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.entities import Warning
+from rain_alert.domain.messages import AlertRecord
 from rain_alert.domain.snapshot import SNAPSHOT_SCHEMA_VERSION, build_snapshot
 from rain_alert.domain.sources import Available
 from rain_alert.domain.values import TimeWindow, WarningLevel
@@ -32,10 +34,10 @@ def quiet_cycle_result() -> CycleResult:
     return RunAlertCycle(build_fake_deps()).execute()
 
 
-def alerting_cycle_result() -> CycleResult:
-    """One official orange warning over the coast is, on its own, enough to
-    raise `Level.IMMINENT` (`RiskEvaluator._imminent_from_official`) and
-    authorize a send against an empty dedup history."""
+def _alerting_cycle_deps() -> CycleDependencies:
+    """The dependency graph behind `alerting_cycle_result()`, exposed so a
+    test can read back what `RunAlertCycle` actually wrote through it (e.g.
+    the `AlertRecord` its own `AlertRepository.record_alert` call stored)."""
     warning = Warning(
         source_id="335",
         title="PRECIPITACIONES EN LA COSTA",
@@ -44,8 +46,31 @@ def alerting_cycle_result() -> CycleResult:
         window=TimeWindow(start=DEFAULT_NOW, end=DEFAULT_NOW + timedelta(hours=48)),
         emitted_at=DEFAULT_NOW,
     )
-    deps = build_fake_deps(warnings=Available(data=(warning,), fetched_at=DEFAULT_NOW))
-    return RunAlertCycle(deps).execute()
+    return build_fake_deps(warnings=Available(data=(warning,), fetched_at=DEFAULT_NOW))
+
+
+def alerting_cycle_result() -> CycleResult:
+    """One official orange warning over the coast is, on its own, enough to
+    raise `Level.IMMINENT` (`RiskEvaluator._imminent_from_official`) and
+    authorize a send against an empty dedup history."""
+    return RunAlertCycle(_alerting_cycle_deps()).execute()
+
+
+def sent_alert_record() -> AlertRecord:
+    """A genuine `AlertRecord`, exactly as `RunAlertCycle` wrote it via
+    `AlertRepository.record_alert` — not a hand-built stand-in that could
+    drift from what the cycle actually records (design 2026-09-21, task 2
+    fix round 1). Read back through the port's own query method, not a
+    fake-only convenience attribute, so this fixture only relies on the
+    `AlertRepository` contract every adapter must satisfy.
+    """
+    deps = _alerting_cycle_deps()
+    RunAlertCycle(deps).execute()
+    records = deps.alerts.alerts_with_window_start_between(
+        DEFAULT_CONFIG.city_slug, DEFAULT_NOW - timedelta(days=365), DEFAULT_NOW + timedelta(days=365)
+    )
+    (record,) = records
+    return record
 
 
 class TestTheSnapshotSaysWhatThePageShows:
@@ -79,5 +104,78 @@ class TestTheSnapshotSaysWhatThePageShows:
 
     def test_the_document_is_json_serializable(self) -> None:
         document = build_snapshot(alerting_cycle_result(), config(), recent=())
+
+        assert json.loads(json.dumps(document)) == document
+
+
+class TestEveryPublishedInstantIsConvertedToTheConfiguredLocalTimezone:
+    """Fix round 1, finding 1. `snapshot.py` routes every timestamp through
+    `_local()`, which calls `.astimezone()` before `.isoformat()` — but no
+    prior test asserted on the *rendered value*, only on fields unaffected by
+    it. A regression that dropped `.astimezone()` and published `evaluated_at`
+    as raw UTC (`...+00:00` instead of `...-05:00`) would have passed all
+    five original tests: this task's own stated risk is a resident reading
+    the wrong hour for a flood warning, so the rendered offset itself has to
+    be asserted, not merely the field's presence.
+
+    `America/Lima` carries no DST (UTC-5 year-round), so the expected offset
+    below is not a seasonal accident of the fixed `DEFAULT_NOW`.
+    """
+
+    def test_evaluated_at_is_rendered_in_the_configured_local_offset(self) -> None:
+        document = build_snapshot(quiet_cycle_result(), config(), recent=())
+
+        assert document["evaluated_at"] == "2026-09-03T07:00:00-05:00"
+
+    def test_the_window_bounds_are_rendered_in_the_configured_local_offset(self) -> None:
+        document = build_snapshot(quiet_cycle_result(), config(), recent=())
+
+        assert document["window"]["start"] == "2026-09-03T07:00:00-05:00"
+        assert document["window"]["end"] == "2026-09-05T07:00:00-05:00"
+
+    def test_a_recent_alerts_sent_at_is_rendered_in_the_configured_local_offset(self) -> None:
+        record = sent_alert_record()
+
+        document = build_snapshot(quiet_cycle_result(), config(), recent=(record,))
+
+        assert document["recent_alerts"][0]["sent_at"] == "2026-09-03T07:00:00-05:00"
+
+
+class TestRecentAlertsArePublishedFromWhatWasActuallySent:
+    """Fix round 1, finding 2. All five original tests pass `recent=()`, so
+    the per-item transformation at the end of `build_snapshot` — level,
+    localized `sent_at`, title, `composed_by` — had no coverage at all: a
+    wrong attribute or a typo there failed nothing. `sent_alert_record()`
+    supplies a genuine `AlertRecord`, read back through the real
+    `AlertRepository` port after a real `RunAlertCycle.execute()` call, for
+    the same reason `alerting_cycle_result()` runs a real cycle instead of
+    hand-building a `CycleResult`.
+    """
+
+    def test_a_recent_alert_is_rendered_with_its_real_fields(self) -> None:
+        record = sent_alert_record()
+
+        document = build_snapshot(quiet_cycle_result(), config(), recent=(record,))
+
+        assert document["recent_alerts"] == [
+            {
+                "level": "imminent",
+                "sent_at": "2026-09-03T07:00:00-05:00",
+                "title": record.message.title,
+                "composed_by": "template",
+            }
+        ]
+
+    def test_multiple_recent_alerts_are_all_published_in_order(self) -> None:
+        record = sent_alert_record()
+
+        document = build_snapshot(quiet_cycle_result(), config(), recent=(record, record))
+
+        assert len(document["recent_alerts"]) == 2
+
+    def test_recent_alerts_are_json_serializable(self) -> None:
+        record = sent_alert_record()
+
+        document = build_snapshot(quiet_cycle_result(), config(), recent=(record,))
 
         assert json.loads(json.dumps(document)) == document

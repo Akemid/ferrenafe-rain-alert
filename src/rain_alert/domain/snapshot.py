@@ -82,7 +82,11 @@ def build_snapshot(result: _CycleResultLike, config: AlertConfig, recent: tuple[
                 "level": record.level.value,
                 "sent_at": _local(record.sent_at, zone),
                 "title": record.message.title,
-                "composed_by": record.message.composed_by.value,
+                # `AlertRecord.composer` already holds this value (D13,
+                # `messages.py`) — read directly rather than through
+                # `record.message.composed_by.value`, a second traversal to
+                # the same fact.
+                "composed_by": record.composer,
             }
             for record in recent
         ],
