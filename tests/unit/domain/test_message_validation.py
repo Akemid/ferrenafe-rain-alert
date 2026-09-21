@@ -1445,3 +1445,139 @@ class TestInvariantV0:
 
         assert len(composed(request()).body) == 511
         assert max(rendering_every_item) == 648
+
+
+class TestAProseDateIsADate:
+    """First live invocation, 2026-09-21. The agent composed a message whose
+    every number is correct, and this validator refused it:
+
+        UNKNOWN_NUMBER: '3' is stated in '%' and traces to no such value
+
+    The `3` is a day of the month. `_untraceable_numbers` recognises a date
+    only when it is punctuated — `3/9/2026` has a `/`, `16:00` has a `:` —
+    because those are the shapes `domain/template.py` writes. A model asked to
+    rephrase writes the date as prose instead, and prose falls through to the
+    bare-figure path, where the clause-scoped scan finds `%` in front of it.
+
+    **This is the failure mode that matters most and the only one that is
+    silent.** A wrong number shouts; a refused correct message does not. The
+    validator rejects, the composer falls back, the community still gets its
+    alert, and nothing reports that the agent has been working perfectly and
+    having its output discarded every cycle.
+
+    947 tests and eleven contained prompt-injection attacks missed it, because
+    every fixture was text written by the same people who wrote the rules. The
+    body below is the real thing, kept verbatim: it is the one input in this
+    suite that nobody here invented.
+    """
+
+    #: `peak_at` on the fixture is 2026-09-03T21:00Z, which is 16:00 in Lima —
+    #: so "el 3 de septiembre a las 16:00" is accurate, timezone conversion
+    #: included.
+    LIVE_BODY = (
+        "Ferreñafe está bajo alerta por precipitaciones de moderada a fuerte intensidad. "
+        "Se esperan 18.0 mm en 24 horas y 25.5 mm en 48 horas, con probabilidad del 75% "
+        "de lluvia intensa el 3 de septiembre a las 16:00.\n"
+        "\n"
+        "Motivos:\n"
+        "Aviso oficial de lluvias intensas en la costa norte. Acumulación de 29.8 mm "
+        "esperada en 24 horas con probabilidad del 70%.\n"
+        "\n"
+        "Recomendaciones:\n"
+        "Almacena agua potable para al menos dos días."
+    )
+
+    @staticmethod
+    def _live_request() -> MessageRequest:
+        """The fixture the live prompt was actually built from: the richest
+        `V0` case, with a warning and a forecast behind a `prepare` level."""
+        best: tuple[int, MessageRequest] | None = None
+        for parameters in V0_REQUESTS:
+            candidate = request(**_overrides(parameters))
+            score = len(candidate.reasons) + (2 if candidate.warning else 0) + (1 if candidate.forecast else 0)
+            if best is None or score > best[0]:
+                best = (score, candidate)
+        assert best is not None
+        return best[1]
+
+    def test_the_real_agent_output_is_accepted(self) -> None:
+        message_request = self._live_request()
+
+        assert rules_for(message_request, replace(composed(message_request), body=self.LIVE_BODY)) == set()
+
+    def test_a_prose_date_the_request_does_not_carry_is_still_refused(self) -> None:
+        """Triangulation, and the line this fix must not cross. Recognising
+        the prose spelling of a date is not the same as forgiving any figure
+        that sits near a month name."""
+        message_request = self._live_request()
+        body = self.LIVE_BODY.replace("el 3 de septiembre", "el 19 de diciembre")
+
+        assert ValidationRule.UNKNOWN_NUMBER in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+    def test_the_day_must_belong_to_the_month_the_request_carries(self) -> None:
+        """A day that is on the request and a month that is not must not pass
+        by borrowing each other: September's 3rd does not license March's."""
+        message_request = self._live_request()
+        body = self.LIVE_BODY.replace("el 3 de septiembre", "el 3 de marzo")
+
+        assert ValidationRule.UNKNOWN_NUMBER in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+
+class TestAnElidedMonthInADateRange:
+    """Four more live invocations, 2026-09-21, after the prose-date fix. Two
+    were accepted and two were not, and the two that failed share a phrasing
+    the first sample never used:
+
+        entre el 3 y 5 de septiembre
+
+    Spanish writes a date range with the month once, at the end, governing
+    both days. `3` is then followed by `y 5 de septiembre`, not by `de
+    septiembre`, so it falls back to the bare-figure path and is read as a
+    quantity — this time in `mm` rather than `%`, because the clause in front
+    of it is about millimetres.
+
+    The model alternates between this and the spelled-out form ("desde el 3 de
+    septiembre ... hasta el 5 de septiembre") from one call to the next, so
+    both have to work. One sample was not a distribution: it agreed with the
+    fix and hid the half of the problem that remained.
+    """
+
+    RANGE_BODY = (
+        "Ciudad: Ferreñafe\n"
+        "Ferreñafe está bajo alerta por precipitaciones de moderada a fuerte intensidad "
+        "entre el 3 y 5 de septiembre. Se esperan 18.0 mm en 24 horas."
+    )
+
+    @staticmethod
+    def _live_request() -> MessageRequest:
+        return TestAProseDateIsADate._live_request()
+
+    def test_a_day_whose_month_is_written_once_at_the_end_of_the_range(self) -> None:
+        message_request = self._live_request()
+
+        assert ValidationRule.UNKNOWN_NUMBER not in rules_for(
+            message_request, replace(composed(message_request), body=self.RANGE_BODY)
+        )
+
+    def test_the_al_form_of_the_same_range(self) -> None:
+        """`del 3 al 5 de septiembre` is the other spelling of one range."""
+        message_request = self._live_request()
+        body = self.RANGE_BODY.replace("entre el 3 y 5", "del 3 al 5")
+
+        assert ValidationRule.UNKNOWN_NUMBER not in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+    def test_a_day_not_on_the_request_is_still_refused_inside_a_range(self) -> None:
+        """The elided month must not become a way to license any first number:
+        only the day the request actually carries passes."""
+        message_request = self._live_request()
+        body = self.RANGE_BODY.replace("entre el 3 y 5", "entre el 19 y 5")
+
+        assert ValidationRule.UNKNOWN_NUMBER in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )

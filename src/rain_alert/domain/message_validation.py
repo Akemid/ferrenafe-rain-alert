@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -191,6 +192,46 @@ _CANDIDATE_NUMBER = re.compile(
 
 _LOCAL_DATE_FORMAT = "%d/%m/%Y"
 _LOCAL_TIME_FORMAT = "%H:%M"
+
+#: Spanish month names, accent-free because `residue` reaches this module
+#: folded and casefolded. None of the twelve carries an accent anyway, so the
+#: list is the plain spelling.
+#:
+#: **Why the domain needs these at all**, when `domain/template.py` writes
+#: `%d/%m/%Y` and never a month name: the *agent* writes prose. The first live
+#: invocation composed "el 3 de septiembre a las 16:00", which is accurate —
+#: `peak_at` is 21:00 UTC, and 16:00 in America/Lima on the 3rd — and this
+#: module refused it, because `3` unpunctuated falls through to the
+#: bare-figure path where the clause-scoped scan finds a `%` in front of it.
+_SPANISH_MONTHS: Mapping[str, int] = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,  # the spelling used across much of Latin America
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
+
+#: The month a written-out day belongs to, read forward from the day.
+#:
+#: Two shapes, and nothing looser. `3 de septiembre` states its own month.
+#: `3 y 5 de septiembre` — and `3 al 5 de septiembre` — is one range whose
+#: month is written once, at the end, governing both days; Spanish elides it
+#: and a model alternates between the two spellings from one call to the next.
+#: At most one intervening `<connector> <day>` is crossed, so the month has to
+#: be the one this date actually belongs to rather than any month later in the
+#: sentence.
+_PROSE_MONTH_AFTER = re.compile(
+    r"\A\s+(?:(?:y|e|al|a|hasta\s+el|hasta|[-–—])\s+\d{1,2}\s+)?"
+    rf"de\s+({'|'.join(_SPANISH_MONTHS)})\b"
+)
 
 
 #: Below this, a span is not a quotation — it is a coincidence, and treating
@@ -552,6 +593,35 @@ def _normalized_time(token: str) -> str:
     return f"{int(hour):02d}:{minute}"
 
 
+def _prose_date_day_and_month(residue: str, token: str, end: int) -> tuple[int, int] | None:
+    """`(day, month)` when `token` at `end` opens a written-out date, else `None`.
+
+    Only a bare one- or two-digit integer directly followed by `de <month>`
+    qualifies. `18.0 mm en 24 horas ... de septiembre` does not, because the
+    month has to sit immediately behind the figure.
+
+    A figure that also carries a unit is **not** a date, whatever follows it.
+    Without that, `Se esperan 3 de septiembre mm de lluvia` was accepted: the
+    `3` earned a date's exemption from the month behind it and then read as a
+    quantity to anyone looking at the `mm`. Found by probing this exemption
+    rather than by reasoning about it, which is the only way that case turns
+    up — it is not Spanish anyone would write on purpose.
+    """
+    if not token.isdigit() or len(token) > 2:
+        return None
+    if _unit_after(residue, end) is not None:
+        return None
+    match = _PROSE_MONTH_AFTER.match(residue[end:])
+    if match is None:
+        return None
+    # A unit on the far side of the month means the figure was never a date:
+    # `3 de septiembre mm` reads as a quantity to anyone looking at the `mm`,
+    # and must answer to the millimetre values rather than to the calendar.
+    if _unit_after(residue, end + match.end()) is not None:
+        return None
+    return int(token), _SPANISH_MONTHS[match.group(1)]
+
+
 def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ...]:
     """Every candidate number in `residue` the request cannot account for,
     already worded for an operator notice.
@@ -581,6 +651,15 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
         elif ":" in token:
             if _normalized_time(token) not in allowed_times:
                 unknown.append(f"{token!r} traces to no time on the request")
+        elif (prose := _prose_date_day_and_month(residue, token, match.end())) is not None:
+            # A date written out is still a date, and is held to the request's
+            # dates rather than to its quantities. Day and month are checked
+            # together: September's 3rd does not license March's. The year is
+            # not written in this form, so any request date with that day and
+            # month accounts for it.
+            day, month = prose
+            if not any(date.startswith(f"{day:02d}/{month:02d}/") for date in allowed_dates):
+                unknown.append(f"{token!r} traces to no date on the request")
         else:
             # Forwards first: a unit written after the figure is the figure's
             # own statement about itself, and it beats anything the clause
