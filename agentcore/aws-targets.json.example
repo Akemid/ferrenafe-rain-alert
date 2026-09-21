@@ -1,0 +1,8 @@
+[
+  {
+    "name": "default",
+    "description": "Ferrenafe rain alert composer agent",
+    "account": "<account>",
+    "region": "us-east-1"
+  }
+]

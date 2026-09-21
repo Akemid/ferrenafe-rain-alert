@@ -1,0 +1,35 @@
+# Secrets (local environment files are never committed)
+.env.local
+
+# Deployment targets carry a 12-digit AWS account id, which
+# `tests/hygiene/test_repo_hygiene.py` refuses in the working tree *and in all
+# git history*. The AgentCore CLI's own scaffold commits this file, which is
+# reasonable for a private team repository; this one is public. Copy
+# `aws-targets.json.example`, fill in the account, and keep it local — the
+# same pattern as `.env.example` at the repository root.
+aws-targets.json
+
+# CDK Build Artifacts
+cdk/cdk.out/
+cdk/node_modules/
+
+# npm's lock file carries third-party package metadata, and `glob`'s
+# deprecation notice embeds its maintainer's email address — which
+# `tests/hygiene/test_repo_hygiene.py` refuses, correctly, since it cannot tell
+# a stranger's address from one of ours. That check's allow-list is built
+# around a single known placeholder and extending it for a generated file we
+# do not author would widen a control that has already earned its keep.
+#
+# The reproducibility cost is small: the CLI rewrites `cdk/package.json` on
+# every deploy (it reported alpha.45 → alpha.53 on the first dry run), the
+# AgentCore dependency is an exact pin, and the rest are patch ranges.
+cdk/package-lock.json
+
+# CLI Internals
+.cli/*
+
+# Ephemeral Staging
+.cache/*
+
+# Exception: Commit the State
+!.cli/deployed-state.json
