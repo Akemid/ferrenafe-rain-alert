@@ -69,8 +69,18 @@ MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 #: Low but not zero: the message is one short paragraph assembled from
 #: pre-digested numbers, and the value of the agent over the template is
 #: phrasing, not invention.
+#:
+#: **Only one of temperature and `top_p` may be set.** Bedrock refuses both
+#: for this model — `ValidationException: temperature and top_p cannot both
+#: be specified for this model` — and refuses at `ConverseStream`, not at
+#: construction, so `BedrockModel` accepts the invalid pair without complaint
+#: and the first sign is a 500 from a deployed runtime. Found on the first
+#: live invocation, 2026-09-21; see `docs/evidence/`.
+#:
+#: Temperature is the one kept, because the paragraph above is an argument
+#: about how much the model may invent and temperature states that directly.
+#: `top_p` would say the same thing sideways, by truncating the sampling pool.
 TEMPERATURE = 0.2
-TOP_P = 0.9
 
 #: The one key the invocation payload must carry. The application's invoker
 #: writes it; `contracts/agent-composition.json` pins it for both sides.
@@ -92,7 +102,7 @@ class StructuredComposer(Protocol):
 
 def build_model() -> BedrockModel:
     """The model, configured. Builds no client and reaches no network."""
-    return BedrockModel(model_id=MODEL_ID, temperature=TEMPERATURE, top_p=TOP_P)
+    return BedrockModel(model_id=MODEL_ID, temperature=TEMPERATURE)
 
 
 def build_agent() -> Agent:
