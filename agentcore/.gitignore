@@ -31,5 +31,16 @@ cdk/package-lock.json
 # Ephemeral Staging
 .cache/*
 
-# Exception: Commit the State
-!.cli/deployed-state.json
+# The CLI's own scaffold makes an exception here and commits the deployed
+# state, which is right for a private team repository: it records which
+# runtime each target points at. Ours carries the runtime and role ARNs, and
+# an ARN embeds the 12-digit account id that
+# `tests/hygiene/test_repo_hygiene.py` refuses in the working tree and in all
+# git history. Same trade as `aws-targets.json` above.
+#
+# What the file records is not lost: `docs/evidence/` carries the deployment
+# with the account masked, and `agentcore status` reads the live truth from
+# AWS rather than from this cache.
+#
+# (No `!.cli/deployed-state.json` exception, deliberately — `.cli/*` above
+# already covers it.)
