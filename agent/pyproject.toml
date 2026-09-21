@@ -7,9 +7,28 @@
 name = "rain-alert-composer-agent"
 version = "0.1.0"
 description = "AgentCore Runtime deployment unit: composes one community alert message from pre-digested data."
-requires-python = ">=3.12,<3.13"
+# Python 3.14, not the root project's 3.12. This unit is deployed to AgentCore
+# Runtime rather than to the change-3 Lambda, so the two versions are
+# independent — coupling them would buy nothing and cost the longer support
+# window. AgentCore deprecates PYTHON_3_14 on 2030-06-30 and PYTHON_3_12 on
+# 2028-10-31, and 3.14 is what `agentcore create` scaffolds by default.
+# `agentcore.json → runtimeVersion` must stay in step with this line.
+requires-python = ">=3.14,<3.15"
 dependencies = [
+    # Observability. Not needed for the agent to run, and that is exactly the
+    # risk: without it the deployment is invisible. AgentCore's ADOT discovers
+    # this package at startup and instruments Strands and the Bedrock calls on
+    # its own, with no code change here — which is how tasks.md 3.5's
+    # cold-start measurement becomes possible at all, and how a silently
+    # degraded agent becomes visible rather than just fallen-back-from.
+    "aws-opentelemetry-distro",
     "bedrock-agentcore>=1.23.0",
+    # `[crt]` and `mcp` are both already present transitively; declared here to
+    # match what `agentcore create` scaffolds, so this project reads the way a
+    # generated one does. Versions are ours where ours are newer — following
+    # the standard does not mean going backwards.
+    "botocore[crt]>=1.35.0",
+    "mcp~=2.1.0",
     "pydantic>=2.13.5",
     "strands-agents>=1.55.1",
 ]

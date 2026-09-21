@@ -21,9 +21,10 @@ machine or from `uv run rain-alert-cycle --composer agent`, against
 ## Prerequisites
 
 - An AWS account with Bedrock model access enabled for
-  `anthropic.claude-haiku-4-5` in the target region (`agent/app.py::MODEL_ID`).
-  Model access is granted per-account, per-region, in the Bedrock console
-  under "Model access", and is not automatic.
+  `us.anthropic.claude-haiku-4-5-20251001-v1:0` in the target region
+  (`agent/app.py::MODEL_ID`). Model access is granted per-account,
+  per-region, in the Bedrock console under "Model access", and is not
+  automatic.
 - AWS credentials configured locally (`aws configure` or an SSO profile) with
   permission to create and invoke an AgentCore Runtime. AgentCore Runtime's
   own execution role is provisioned by the CLI at deploy time; this change
@@ -74,11 +75,27 @@ one value the rest of this runbook needs.
 
 ## Step 4 — Verify model access before the first real invocation
 
-A wrong or unconfigured `MODEL_ID` fails every call. Confirm access to
-`anthropic.claude-haiku-4-5` (or the cross-region inference-profile variant,
-`us.anthropic.claude-haiku-4-5`, if the account requires one — `agent/app.py`
-records this as an account fact, not a code fact) in the Bedrock console for
-the deployed region before wiring this application to the runtime.
+A wrong or unconfigured `MODEL_ID` fails every call.
+
+**An inference profile is required — it is not optional and not regional.**
+This model reports `inferenceTypesSupported: ['INFERENCE_PROFILE']`, with no
+`ON_DEMAND`, so the bare foundation-model id cannot be invoked anywhere.
+Confirm the profile rather than the model:
+
+```bash
+aws bedrock get-foundation-model --region <region> --output json \
+  --model-identifier anthropic.claude-haiku-4-5-20251001-v1:0
+# → inferenceTypesSupported: ["INFERENCE_PROFILE"]
+
+aws bedrock list-inference-profiles --region <region> --output json \
+  --query 'inferenceProfileSummaries[?contains(inferenceProfileId, `haiku-4-5`)].[inferenceProfileId,status]'
+# → us.anthropic.claude-haiku-4-5-20251001-v1:0   ACTIVE
+```
+
+`--output json` matters if the shell runs a token-compressing command proxy:
+without it the CLI may return the response *schema* instead of the values, and
+it survives both redirection and piping. See
+`docs/evidence/2026-09-20-preflight.md`.
 
 ## Step 5 — Wire this application to the deployed runtime
 

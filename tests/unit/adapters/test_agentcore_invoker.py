@@ -385,3 +385,44 @@ class TestAgentRuntimeSettings:
         invoker = BedrockAgentCoreInvoker.from_settings(settings)
 
         assert invoker._read_timeout == 3.0  # noqa: SLF001 — the property under test
+
+
+class TestTheDeadlineIsSizedFromMeasurement:
+    """D19 set 10 s and said so provisionally: design.md records measured
+    cold-start latency as "to verify at first live run", and as "the input
+    that would move D19's number". These are those measurements.
+
+    Ten cold starts against the deployed runtime on 2026-09-21, same payload,
+    `us-east-2`, one session. Every production invocation is cold — the
+    runtime's idle session timeout is 900 s and the cycle runs six-hourly —
+    so this is the normal case, not a tail.
+    """
+
+    #: Seconds, in the order they were taken.
+    MEASURED_COLD_STARTS = (9.71, 7.50, 8.52, 8.59, 8.82, 10.27, 9.72, 7.00, 9.44, 8.97)
+
+    #: Why three and not two: ten samples from one session, one region, one
+    #: payload size and one hour of one day do not describe a tail, and the
+    #: worst of them already crossed the old deadline. The asymmetry decides
+    #: the factor — overshooting costs nothing, because nobody waits on a
+    #: six-hourly scheduled job and the composer falls back to a message that
+    #: is already correct, while undershooting costs the whole capability
+    #: silently. Three is bounded enough that a genuinely stuck call still
+    #: fails rather than holding the cycle open.
+    REQUIRED_HEADROOM_FACTOR = 3.0
+
+    def test_the_old_ten_second_deadline_was_already_being_exceeded(self) -> None:
+        """The reason this changed, kept as a fact rather than a memory."""
+        assert max(self.MEASURED_COLD_STARTS) > 10.0
+
+    def test_the_default_clears_the_measured_worst_case_by_the_stated_factor(self) -> None:
+        required = self.REQUIRED_HEADROOM_FACTOR * max(self.MEASURED_COLD_STARTS)
+
+        assert required <= READ_TIMEOUT
+
+    def test_the_connect_timeout_stays_short(self) -> None:
+        """Only the read deadline moved. Failing to *reach* the endpoint is
+        not slow cold start, and giving it the same patience would turn a
+        dead network into a cycle that waits half a minute to find out."""
+        assert CONNECT_TIMEOUT <= 5.0
+        assert CONNECT_TIMEOUT < READ_TIMEOUT / 5

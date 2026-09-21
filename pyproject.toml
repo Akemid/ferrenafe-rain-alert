@@ -7,6 +7,23 @@ requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.15.0",
     "boto3>=1.43.98",
+    # The `[crt]` extra is not optional here, despite reading like a
+    # performance tweak. botocore's *login* credential provider refuses to
+    # load without it:
+    #
+    #   MissingDependencyException: Using the login credential provider
+    #   requires an additional dependency. You will need to pip install
+    #   "botocore[crt]" before proceeding.
+    #
+    # `aws login` is this project's documented authentication (see CLAUDE.md),
+    # so without this an operator running `rain-alert-cycle --composer agent`
+    # cannot reach the runtime at all. Found at the first live invocation, not
+    # by any test: every test injects its own client.
+    #
+    # The deployed Lambda (change 3) uses an IAM execution role and would not
+    # need it. Carried anyway, because the failure lands on the operator who
+    # followed this repository's own instructions.
+    "botocore[crt]>=1.35.0",
     "httpx>=0.28.1",
 ]
 
