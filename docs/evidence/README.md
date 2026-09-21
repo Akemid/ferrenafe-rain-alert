@@ -36,3 +36,7 @@ happened.
 - [`2026-09-20-agent-toolkit-connection.md`](2026-09-20-agent-toolkit-connection.md)
   — connecting the coding agent to AWS via the Agent Toolkit: CLI upgrade,
   `aws login`, MCP server, skills, and the two environment corrections it took.
+- [`2026-09-21-first-live-deploy-and-invocation.md`](2026-09-21-first-live-deploy-and-invocation.md)
+  — CDK bootstrap, the AgentCore deploy, and the first real invocation: three
+  stacked defects, a measured 9.71 s cold start, and a correct message the
+  validator refuses.
