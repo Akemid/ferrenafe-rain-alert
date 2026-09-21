@@ -14,6 +14,10 @@ def test_the_document_is_written_as_utf8_json(tmp_path: Path) -> None:
     JsonFileSnapshotPublisher(target).publish({"city": "Ferreñafe", "level": "none"})
 
     assert json.loads(target.read_text(encoding="utf-8")) == {"city": "Ferreñafe", "level": "none"}
+    # Verify ensure_ascii=False: the raw file contains the literal UTF-8 bytes, not escapes.
+    raw_text = target.read_text(encoding="utf-8")
+    assert "Ferreñafe" in raw_text
+    assert "\\u00f1" not in raw_text
 
 
 def test_a_missing_parent_directory_is_created(tmp_path: Path) -> None:

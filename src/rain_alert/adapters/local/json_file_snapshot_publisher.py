@@ -9,7 +9,14 @@ from typing import Any
 
 class JsonFileSnapshotPublisher:
     """`SnapshotPublisher` writing to a local path, for development and for
-    keeping the default suite offline. Mirrors `json_alert_repository.py`."""
+    keeping the default suite offline.
+
+    Mirrors `json_alert_repository.py` in its constructor and path shape, but
+    writes directly rather than atomically. Atomic writes are necessary there to
+    prevent corruption on dedup failure; here, the production path is S3 with
+    atomic `PutObject`, and a truncated local file surfaces as the page's
+    "could not load" error rather than as wrong data.
+    """
 
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
