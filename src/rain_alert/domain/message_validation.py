@@ -233,6 +233,29 @@ _PROSE_MONTH_AFTER = re.compile(
     rf"de\s+({'|'.join(_SPANISH_MONTHS)})\b"
 )
 
+#: How a written-out date is introduced, checked immediately in front of the
+#: day. Spanish does not drop this: `el 3 de septiembre`, `del 3 al 5`,
+#: `entre el 3 y 5`, `desde el 3`, `hasta el 5`.
+#:
+#: **Why the marker rather than the obvious check.** The prose-date branch
+#: displaces the one that consults `_unit_before_a_figure`, so a figure whose
+#: clause names a unit in front of it skipped that reader entirely — and its
+#: value only had to match a day the request carries, which it nearly always
+#: does, since those dates are today and the next few days. Both of these
+#: were accepted:
+#:
+#:     Lluvia acumulada en milimetros: 3 de septiembre.
+#:     Hay una probabilidad maxima de 3 de septiembre.
+#:
+#: Simply consulting the backward reader here is not the fix: it is what
+#: produced the original false positive, where the `3` in `probabilidad del
+#: 75% ... el 3 de septiembre` inherited that clause's `%`. What separates a
+#: date from a quantity wearing a month is how it is introduced, and a colon
+#: or a bare `de` is not how.
+_PROSE_DATE_MARKER_BEFORE = re.compile(
+    r"(?:\b(?:el|del|al|y|e|desde|hasta|entre)\s+)\Z",
+)
+
 
 #: Below this, a span is not a quotation — it is a coincidence, and treating
 #: it as one hands a body a blanket numeric exemption. Twelve characters is
@@ -593,7 +616,7 @@ def _normalized_time(token: str) -> str:
     return f"{int(hour):02d}:{minute}"
 
 
-def _prose_date_day_and_month(residue: str, token: str, end: int) -> tuple[int, int] | None:
+def _prose_date_day_and_month(residue: str, token: str, start: int, end: int) -> tuple[int, int] | None:
     """`(day, month)` when `token` at `end` opens a written-out date, else `None`.
 
     Only a bare one- or two-digit integer directly followed by `de <month>`
@@ -608,6 +631,8 @@ def _prose_date_day_and_month(residue: str, token: str, end: int) -> tuple[int, 
     up — it is not Spanish anyone would write on purpose.
     """
     if not token.isdigit() or len(token) > 2:
+        return None
+    if _PROSE_DATE_MARKER_BEFORE.search(residue[:start]) is None:
         return None
     if _unit_after(residue, end) is not None:
         return None
@@ -651,7 +676,7 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
         elif ":" in token:
             if _normalized_time(token) not in allowed_times:
                 unknown.append(f"{token!r} traces to no time on the request")
-        elif (prose := _prose_date_day_and_month(residue, token, match.end())) is not None:
+        elif (prose := _prose_date_day_and_month(residue, token, match.start(), match.end())) is not None:
             # A date written out is still a date, and is held to the request's
             # dates rather than to its quantities. Day and month are checked
             # together: September's 3rd does not license March's. The year is

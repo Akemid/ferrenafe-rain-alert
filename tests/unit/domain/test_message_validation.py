@@ -1581,3 +1581,58 @@ class TestAnElidedMonthInADateRange:
         assert ValidationRule.UNKNOWN_NUMBER in rules_for(
             message_request, replace(composed(message_request), body=body)
         )
+
+
+class TestAProseDateMustBeIntroducedLikeOne:
+    """Security review, 2026-09-21. The prose-date branch is an `elif`, and
+    the `else` it displaces is the only place the *backward* implied-unit
+    reader runs. So a figure whose clause says `milímetros` in front of it
+    skipped that check entirely, as long as its value happened to match a day
+    on the request — which it nearly always does, since the request's dates
+    are today and the next few days.
+
+        Lluvia acumulada en milimetros: 3 de septiembre.   accepted
+        Hay una probabilidad maxima de 3 de septiembre.    accepted
+
+    Consulting the backward reader here is not the fix: it is what produced
+    the original false positive, where `el 3 de septiembre` inherited the `%`
+    from `probabilidad del 75%` earlier in the clause.
+
+    What separates them is how the date is introduced. Spanish writes one
+    after an article or a range connector — `el 3`, `del 3 al 5`, `entre el 3
+    y 5` — and the bypasses have a colon or a bare `de` in front instead.
+
+    This is the same mistake as the `mm`-after-the-month leak, in the
+    direction I did not check, and the module's own docstring had already
+    recorded it once: `_unit_implied_before` "existed and was wired to the
+    word rule alone ... That sentence needs no adversary; it is how a person
+    writes it."
+    """
+
+    @staticmethod
+    def _live_request() -> MessageRequest:
+        return TestAProseDateIsADate._live_request()
+
+    def _refuses(self, sentence: str) -> bool:
+        message_request = self._live_request()
+        body = f"Ciudad: {CITY}\n{sentence}"
+        return ValidationRule.UNKNOWN_NUMBER in rules_for(
+            message_request, replace(composed(message_request), body=body)
+        )
+
+    def test_an_implied_millimetre_unit_in_front_defeats_the_date_reading(self) -> None:
+        assert self._refuses("Lluvia acumulada en milimetros: 3 de septiembre.")
+
+    def test_an_implied_percentage_in_front_defeats_the_date_reading(self) -> None:
+        assert self._refuses("Hay una probabilidad maxima de 3 de septiembre.")
+
+    def test_the_forms_the_model_actually_writes_still_pass(self) -> None:
+        """Every shape observed across nine live invocations. The fix has to
+        refuse the two above without costing any of these."""
+        for sentence in (
+            "Lluvia intensa el 3 de septiembre a las 16:00.",
+            "Alerta entre el 3 y 5 de septiembre.",
+            "Alerta del 3 al 5 de septiembre.",
+            "Lluvias desde el 3 de septiembre hasta el 5 de septiembre.",
+        ):
+            assert not self._refuses(sentence), sentence
