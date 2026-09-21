@@ -65,11 +65,36 @@ from rain_alert.domain.values import UnavailableReason
 AGENT_RUNTIME_ARN_ENV_VAR = "RAIN_ALERT_AGENT_RUNTIME_ARN"
 AGENT_TIMEOUT_ENV_VAR = "RAIN_ALERT_AGENT_TIMEOUT_S"
 
-#: 10 s wall clock, one attempt, no retry (D19). `read_timeout` bounds each
-#: socket read, not total wall clock; the two coincide here because this
-#: application's responses are never streamed (see the module docstring).
+#: One attempt, no retry (D19). `read_timeout` bounds each socket read, not
+#: total wall clock; the two coincide here because this application's
+#: responses are never streamed (see the module docstring).
+#:
+#: **35 s, sized from measurement rather than from the design's placeholder.**
+#: D19 chose 10 s and said so provisionally — design.md records cold-start
+#: latency as "to verify at first live run" and as "the input that would move
+#: D19's number". Ten cold starts on 2026-09-21 ran 7.00 s to 10.27 s, median
+#: 8.9: the worst was already over the deadline, and every production
+#: invocation is cold, because the runtime's idle session times out at 900 s
+#: and the cycle runs six-hourly.
+#:
+#: The factor of three over the measured worst case is not a statistic. Ten
+#: samples from one session, one region and one payload size do not describe
+#: a tail. It is the asymmetry: overshooting costs nothing, because nobody
+#: waits on a scheduled job and the fallback message is already correct,
+#: while undershooting discards a working agent's output silently. Three is
+#: still bounded enough that a genuinely stuck call fails instead of holding
+#: the cycle open. Three times 10.27 is 30.81, so the value is 35 rather than
+#: a rounder 30 — the test below caught that arithmetic, which is the reason
+#: it asserts the factor instead of the number.
+#:
+#: The bound matters more than it looks, because Strands retries
+#: *inside* the container (observed: `reached max retries: 4`) where
+#: `total_max_attempts: 1` on this client has no reach.
+#:
+#: `tests/unit/adapters/test_agentcore_invoker.py::TestTheDeadlineIsSizedFromMeasurement`
+#: carries the measurements and fails if this drops back under them.
 CONNECT_TIMEOUT = 3.0
-READ_TIMEOUT = 10.0
+READ_TIMEOUT = 35.0
 
 #: A multi-megabyte body is refused before it is parsed (design section 8,
 #: non-capability 8). 1 MiB is comfortably above anything
