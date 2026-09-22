@@ -26,7 +26,11 @@ def test_the_document_is_uploaded_as_utf8_json() -> None:
     call = client.calls[0]
     assert call["Bucket"] == "a-bucket"
     assert call["Key"] == "status.json"
-    assert json.loads(call["Body"].decode("utf-8")) == {"city": "Ferreñafe"}
+    body = call["Body"].decode("utf-8")
+    assert json.loads(body) == {"city": "Ferreñafe"}
+    # Ensure ensure_ascii=False: literal UTF-8, not escaped.
+    assert "Ferreñafe" in body
+    assert "\\u00f1" not in body
 
 
 def test_the_content_type_lets_a_browser_read_it() -> None:

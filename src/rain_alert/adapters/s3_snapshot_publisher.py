@@ -1,10 +1,3 @@
-"""`S3SnapshotPublisher` — the real `SnapshotPublisher` over `boto3`'s S3 client.
-
-The client is injected and built on first `publish`, exactly as
-`agentcore_invoker.py` does: constructing one eagerly raises without a
-region configured, which would break `uv run pytest` on a clean machine.
-"""
-
 from __future__ import annotations
 
 import json
@@ -38,7 +31,6 @@ class S3SnapshotPublisher:
         self._client = client
 
     def _resolved_client(self) -> Any:
-        """Lazily construct the S3 client on first use."""
         if self._client is None:
             self._client = boto3.client("s3")
         return self._client
