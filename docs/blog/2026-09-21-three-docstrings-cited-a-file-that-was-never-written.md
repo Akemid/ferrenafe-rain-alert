@@ -112,6 +112,24 @@ $
 Parked, not fixed here: writing a real `contracts/agent-composition.json`
 means deciding which fields it pins and where each side asserts it, and that
 belongs to the composer change rather than to a branch about a status page.
-The three docstrings are parked with it so the file and its claims land
-together. `contracts/public-snapshot.json`, the status page's own contract, is
-built on this branch — and unlike its cited precedent, a test reads it.
+`contracts/public-snapshot.json`, the status page's own contract, is built on
+this branch — and unlike its cited precedent, a test reads it.
+
+## What happened next, on this same branch
+
+The three docstrings were parked, and the branch then added **seven more
+phantom citations** before review caught them: six pointing at an uncommitted
+report file, one naming a `SnapshotBuilder.build()` that does not exist. Three
+occurrences of one defect on one branch is where a habit stops being enough.
+
+So the mechanical version proposed above is now written, as
+`tests/hygiene/test_docstring_citations.py`. It reads every docstring and
+comment in every tracked Python and TypeScript source, and fails on a
+backticked repository path that git does not have — either because it was
+never written, or because it exists only on the author's machine. That second
+shape is the one that got past review six times: the author can open it, so it
+reads as correct, and it is invisible to everyone who clones.
+
+The parked docstrings now say plainly that the guard is planned and that
+nothing catches the drift today. That is the only honest way to make the check
+green without writing a contract that belongs to another change.

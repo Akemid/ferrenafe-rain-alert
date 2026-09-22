@@ -83,7 +83,11 @@ MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 TEMPERATURE = 0.2
 
 #: The one key the invocation payload must carry. The application's invoker
-#: writes it; `contracts/agent-composition.json` pins it for both sides.
+#: writes it, as `PROMPT_PAYLOAD_KEY`.
+#:
+#: **Nothing pins the two together yet.** A contract file asserted from both
+#: suites is planned and belongs to the composer change; until it exists, a
+#: rename on either side is caught by nothing.
 PROMPT_KEY = "prompt"
 
 app = BedrockAgentCoreApp()
