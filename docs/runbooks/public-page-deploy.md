@@ -5,12 +5,13 @@ CDK app (task 7 of the `public-status-page` change): one S3 bucket holding
 one public object, `status.json`, produced by each rain-alert cycle and read
 by the public status page through Amplify's reverse-proxy rewrite.
 
-The bucket, its public-access-block configuration, and its bucket policy are
-defined in `infra/lib/public-snapshot-stack.ts`. That file's comments carry
-the security reasoning (Amplify's proxy fetches unsigned, so the object must
-be publicly readable; the policy is scoped to the single `status.json` key,
-never the bucket) — this runbook is the deploy procedure, not a restatement
-of that reasoning.
+The bucket, its public-access-block configuration, its versioning, its bucket
+policy and the managed policy that grants write access are all defined in
+`infra/lib/public-snapshot-stack.ts`. That file's comments carry the security
+reasoning (Amplify's proxy fetches unsigned, so the object must be publicly
+readable; both policies are scoped to the single `status.json` key, never the
+bucket; nothing in the stack may rewrite the bucket policy) — this runbook is
+the deploy procedure, not a restatement of that reasoning.
 
 ## Region: `us-east-2`, not this project's usual `us-east-1`
 
@@ -30,8 +31,8 @@ application code that writes to the bucket (`S3SnapshotPublisher`, wired in
 ## Prerequisites
 
 - AWS credentials for the `ferrenafe` profile (`aws login`, per `CLAUDE.md`),
-  with permission to create S3 buckets, bucket policies, and the
-  CDK-managed IAM role and Lambda function that back `autoDeleteObjects`.
+  with permission to create S3 buckets, bucket policies, and IAM managed
+  policies.
 - The CDK environment bootstrapped once for this account and region
   (`npx cdk bootstrap aws://<account>/us-east-2` from `infra/`), if not
   already done for another stack in this account.
@@ -44,9 +45,10 @@ cd infra
 npm install
 ```
 
-`infra/package-lock.json` is gitignored (it carries a third-party email
-address in a deprecation warning string, same reason as
-`agentcore/cdk/package-lock.json`) — `npm install` regenerates it locally.
+`infra/package-lock.json` is committed, so this installs the exact tree that
+was reviewed. Use `npm ci` rather than `npm install` if you want the install
+to fail on a lockfile that has drifted from `package.json` instead of quietly
+rewriting it.
 
 ## Step 2 — Synthesize and review before deploying
 
@@ -69,11 +71,28 @@ cd infra
 AWS_PROFILE=ferrenafe AWS_REGION=us-east-2 npx cdk deploy
 ```
 
-Confirm the changeset when prompted. On success, the CLI prints two outputs:
+The region is pinned in `infra/bin/infra.ts`, so `cdk deploy` cannot be
+aimed at another one by an ambient `AWS_REGION`; the `AWS_REGION` above is
+kept for the credential resolution and is now redundant with the stack's own
+`env`.
+
+Confirm the changeset when prompted. On success, the CLI prints three outputs:
 
 - `SnapshotBucketName` — the bucket name, for
   `RAIN_ALERT_SNAPSHOT_BUCKET` (see Step 5).
 - `SnapshotObjectUrl` — the full URL to `status.json`, used in Step 4.
+- `SnapshotWriterPolicyArn` — the managed policy that grants `s3:PutObject`
+  on `status.json` and nothing else. Attach it to whichever principal runs
+  the cycle. **Do not write a write policy by hand**: the reason this output
+  exists is that a policy invented at the console is broad, and this bucket
+  is world-readable by design, so a writer that can also rewrite the bucket
+  policy decides what every resident reads.
+
+  ```bash
+  aws iam attach-role-policy --profile ferrenafe \
+    --role-name <the role that runs the cycle> \
+    --policy-arn "<SnapshotWriterPolicyArn>"
+  ```
 
 ## Step 4 — Verify the object is readable and the bucket is not listable
 
@@ -119,14 +138,38 @@ Two levels, cheapest first:
    S3 (and, per the wiring precedence, falls back to the local-file adapter
    only if `RAIN_ALERT_SNAPSHOT_PATH` is also set — otherwise it publishes
    nowhere). No infrastructure change needed.
-2. **`cdk destroy`.** `removalPolicy: DESTROY` and `autoDeleteObjects: true`
-   on the bucket mean this also deletes `status.json` and the bucket itself,
-   with no manual emptying step first:
+2. **Empty the bucket by hand, then `cdk destroy`.** The bucket carries
+   `removalPolicy: DESTROY` but deliberately **not** `autoDeleteObjects`, so
+   CloudFormation will refuse to delete a bucket that still holds objects.
+   That refusal is the price of not provisioning a Lambda whose role holds
+   `s3:PutBucketPolicy` on a bucket whose Block Public Access is relaxed —
+   `infra/lib/public-snapshot-stack.ts` carries the reasoning.
+
+   Versioning is enabled, so deleting the current object is not enough: every
+   version and every delete marker has to go.
 
    ```bash
    cd infra
-   AWS_PROFILE=ferrenafe AWS_REGION=us-east-2 npx cdk destroy
+   export AWS_PROFILE=ferrenafe AWS_REGION=us-east-2
+
+   # Confirm what is about to be deleted. Expect status.json and its versions
+   # and nothing else — if anything else is listed, stop and find out why.
+   aws s3api list-object-versions --bucket "<SnapshotBucketName>"
+
+   # Delete every version and delete marker, then the bucket itself.
+   aws s3 rm "s3://<SnapshotBucketName>" --recursive
+   aws s3api list-object-versions --bucket "<SnapshotBucketName>" \
+     --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
+     --output json > /tmp/versions.json
+   aws s3api delete-objects --bucket "<SnapshotBucketName>" \
+     --delete file:///tmp/versions.json
+
+   npx cdk destroy
    ```
+
+   If `cdk destroy` reports `The bucket you tried to delete is not empty`,
+   a delete marker is left; repeat the `list-object-versions` /
+   `delete-objects` pair with `DeleteMarkers[]` in place of `Versions[]`.
 
 ## What this runbook does not cover
 
