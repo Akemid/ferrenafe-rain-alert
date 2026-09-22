@@ -7,6 +7,8 @@ node_modules
 .cdk.staging
 cdk.out
 
-# Carries a third-party email address (glob's deprecation warning string),
-# same reason agentcore/cdk/package-lock.json is gitignored.
-package-lock.json
+# package-lock.json is deliberately NOT ignored. It pins the tree that runs
+# with CloudFormation deploy credentials, and an unpinned tree is re-resolved
+# on every machine. It carries one third-party email address — npm's copy of
+# glob@10.5.0's published deprecation notice — which the secret scan forgives
+# by exact string in tests/hygiene/test_repo_hygiene.py.
