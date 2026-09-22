@@ -1,0 +1,12 @@
+*.js
+!jest.config.js
+*.d.ts
+node_modules
+
+# CDK asset staging directory
+.cdk.staging
+cdk.out
+
+# Carries a third-party email address (glob's deprecation warning string),
+# same reason agentcore/cdk/package-lock.json is gitignored.
+package-lock.json
