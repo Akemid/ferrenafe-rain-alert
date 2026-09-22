@@ -1,8 +1,19 @@
 /**
  * DOM rendering for `index.astro`, extracted from the page's inline
  * `<script>` so the three states are testable against real DOM elements
- * without a browser (fix round 1, task 8: the extraction itself is what
- * made the recent-alerts defect testable at all — see task-8-report.md).
+ * without a browser. The extraction is what made the recent-alerts defect
+ * (fix round 1, task 8) testable at all: while the rendering lived inside
+ * the `.astro` file, the only thing a test could reach was the decision
+ * object, which reported the right state while the DOM still said "no alert
+ * has been sent".
+ *
+ * There is ONE path that renders a snapshot (`renderStatus`), with a
+ * staleness banner layered over it. `renderStale` used to rebuild the
+ * section from scratch as a subset of `renderOk`, and every field it forgot
+ * — the degraded notice, the alert body and its Recomendaciones checklist,
+ * the reasons — vanished from the stale page without anything failing. A
+ * second path is a second place for a field to go missing, so there is not
+ * one.
  */
 
 import type { RecentAlert, Snapshot } from './snapshot';
@@ -15,29 +26,204 @@ export interface PageElements {
   recentError: HTMLElement;
 }
 
-function levelClass(level: string): string {
+/**
+ * `level-none` / `level-prepare` / `level-imminent`. `parseSnapshot` has
+ * already rejected anything outside that set, and `markup.test.ts` asserts
+ * `index.astro` defines a rule for each — the two halves of the only
+ * coupling on this page that a resident reads as colour.
+ */
+function levelClass(level: Snapshot['level']): string {
   return `level-${level}`;
 }
 
-// --- State 1: no alert is the ordinary case, not an empty state. ---
-export function renderOk(elements: PageElements, snapshot: Snapshot): void {
+// --- Timestamps -----------------------------------------------------------
+
+/**
+ * The publisher writes instants as
+ * `moment.astimezone(ZoneInfo(timezone)).isoformat()`
+ * (`domain/snapshot.py::_local`) — `2026-09-03T07:00:00-05:00`. The alert
+ * message the same resident receives by SMS writes the same instant as
+ * `03/09/2026 07:00` (`domain/template.py::_LOCAL_TIME_FORMAT`,
+ * `"%d/%m/%Y %H:%M"`). The page showed the ISO form, so the page and the
+ * message disagreed about how to show one instant to one person.
+ */
+const PUBLISHED_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/;
+
+/**
+ * `value` in the same format the alert message uses.
+ *
+ * Reads the string's OWN fields rather than going through `new Date(...)`
+ * and a locale formatter: the publisher has already converted the instant to
+ * the configured local timezone, and re-formatting it in the reader's
+ * timezone would move the time for anyone outside Peru.
+ *
+ * A value that does not match is returned untouched. `evaluated_at` is
+ * validated by `parseSnapshot`, but `recent_alerts[].sent_at` is not (it is
+ * display-only), and a bad value there must keep degrading visibly rather
+ * than becoming a plausible-looking date.
+ */
+function formatPublishedTimestamp(value: string): string {
+  const match = PUBLISHED_TIMESTAMP.exec(value);
+  if (match === null) return value;
+  const [, year, month, day, hour, minute] = match;
+  return `${day}/${month}/${year} ${hour}:${minute}`;
+}
+
+// --- Source availability --------------------------------------------------
+
+/**
+ * What `snapshot.sources` says. This is the only field that records WHICH
+ * source failed: `degraded` is an OR over the two statuses
+ * (`domain/risk.py`), so a notice worded from `degraded` alone cannot say
+ * whether one source was down or both, and the page's old wording ("una de
+ * las fuentes") asserted something it did not know.
+ */
+interface SourceAvailability {
+  senamhi: boolean;
+  forecast: boolean;
+  /** Neither source answered: the cycle read nothing at all. */
+  blind: boolean;
+  /** Something is missing, by `sources` or by `degraded`. */
+  incomplete: boolean;
+}
+
+function describeSources(snapshot: Snapshot): SourceAvailability {
+  const senamhi = snapshot.sources.senamhi === 'available';
+  const forecast = snapshot.sources.open_meteo === 'available';
+  return {
+    senamhi,
+    forecast,
+    blind: !senamhi && !forecast,
+    // `degraded` is included as well as the two statuses so that a document
+    // where they disagree still warns. Fail toward the warning.
+    incomplete: snapshot.degraded || !senamhi || !forecast,
+  };
+}
+
+/**
+ * Residents know "SENAMHI" — it is the national weather service and the
+ * alert message names it. They do not know "Open-Meteo", so the forecast
+ * source is named by what it is, the same way `render_reason_es` does in
+ * `domain/template.py` ("el pronóstico del tiempo").
+ */
+function degradedNoticeText(availability: SourceAvailability): string {
+  if (availability.blind) {
+    return (
+      'Ninguna fuente de información estuvo disponible en esta evaluación: no se pudo consultar ' +
+      'el aviso del SENAMHI ni el pronóstico del tiempo. Este resultado no confirma que no haya riesgo.'
+    );
+  }
+  if (!availability.senamhi) {
+    return (
+      'Esta evaluación se hizo con información parcial: no se pudo consultar el aviso del SENAMHI. ' +
+      'Solo se usó el pronóstico del tiempo.'
+    );
+  }
+  if (!availability.forecast) {
+    return (
+      'Esta evaluación se hizo con información parcial: no se pudo consultar el pronóstico del tiempo. ' +
+      'Solo se usó el aviso del SENAMHI.'
+    );
+  }
+  // `degraded` is set while both sources report available. The publisher
+  // should never emit this; if it does, warn in the terms the page can
+  // actually justify.
+  return 'Esta evaluación se hizo con información parcial: alguna fuente de información no estuvo disponible.';
+}
+
+/**
+ * The heading — the one line a resident reads before anything else.
+ *
+ * A `level: "none"` from a cycle that read nothing is not a finding: every
+ * risk branch in `domain/risk.py` requires at least one available source, so
+ * with both down the evaluator falls through to its default. Rendering that
+ * as a bold green "sin riesgo" is the failure the design doc names for the
+ * failed fetch — "A page that fails quietly and shows 'no risk' is worse
+ * than one that does not load" — arriving through a different door. The
+ * caveat therefore goes IN the heading, where the reassurance is, not under
+ * it.
+ *
+ * A blind cycle that somehow reports a level other than `none` keeps its
+ * label: suppressing an `imminent` would be the same defect pointing the
+ * other way.
+ */
+function headingText(snapshot: Snapshot, availability: SourceAvailability, stale: boolean): string {
+  if (availability.blind && snapshot.level === 'none') {
+    return 'No se pudo evaluar el riesgo';
+  }
+  const label = availability.incomplete
+    ? `${snapshot.level_label} (evaluación incompleta)`
+    : snapshot.level_label;
+  return stale ? `Último nivel conocido: ${label}` : label;
+}
+
+/**
+ * On a stale page the level colour is deliberately dropped: a two-day-old
+ * "sin riesgo" painted green reads as a current all-clear, and the age is
+ * what has to carry the page at that moment.
+ */
+function statusClass(snapshot: Snapshot, availability: SourceAvailability, stale: boolean): string {
+  const classes = stale ? ['status-stale'] : [levelClass(snapshot.level)];
+  if (availability.incomplete) classes.push('status-degraded');
+  return classes.join(' ');
+}
+
+function paragraph(text: string, className?: string): HTMLParagraphElement {
+  const element = document.createElement('p');
+  if (className !== undefined) element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+/**
+ * The single rendering path. `staleAgeHours` is `null` for a fresh reading
+ * and the age in hours for a stale one; everything else is rendered
+ * identically either way, so no field can exist in one state and not the
+ * other.
+ */
+function renderStatus(elements: PageElements, snapshot: Snapshot, staleAgeHours: number | null): void {
   const { status } = elements;
-  status.className = levelClass(snapshot.level);
+  const availability = describeSources(snapshot);
+  const stale = staleAgeHours !== null;
+
+  status.className = statusClass(snapshot, availability, stale);
   status.replaceChildren();
 
-  const heading = document.createElement('p');
-  heading.className = 'status-level';
-  heading.textContent = snapshot.level_label;
-  status.appendChild(heading);
+  // State 2: stale data — the age is the most important thing on the page at
+  // that moment, so it goes first, above the level, not buried under it.
+  if (staleAgeHours !== null) {
+    const ageDays = Math.floor(staleAgeHours / 24);
+    status.appendChild(
+      paragraph(
+        ageDays >= 1
+          ? `Última evaluación hace ${ageDays} día(s). Esta información podría estar desactualizada.`
+          : `Última evaluación hace ${Math.floor(staleAgeHours)} hora(s). Esta información podría estar desactualizada.`,
+        'stale-warning',
+      ),
+    );
+  }
 
-  const evaluated = document.createElement('p');
-  evaluated.textContent = `Última evaluación: ${snapshot.evaluated_at}`;
-  status.appendChild(evaluated);
+  status.appendChild(paragraph(headingText(snapshot, availability, stale), 'status-level'));
+
+  // Directly under the heading, before any reassurance: a resident must not
+  // be able to read the level without the caveat that qualifies it.
+  if (availability.incomplete) {
+    status.appendChild(paragraph(degradedNoticeText(availability), 'degraded-notice'));
+  }
+
+  status.appendChild(paragraph(`Última evaluación: ${formatPublishedTimestamp(snapshot.evaluated_at)}`));
 
   if (snapshot.alert === null) {
-    const none = document.createElement('p');
-    none.textContent = 'No hay ninguna alerta activa en este momento.';
-    status.appendChild(none);
+    // "No hay ninguna alerta activa" is a claim about the world, and an
+    // incomplete cycle is not entitled to make it. It can only report what
+    // it did.
+    status.appendChild(
+      paragraph(
+        availability.incomplete
+          ? 'No se envió ninguna alerta en esta evaluación.'
+          : 'No hay ninguna alerta activa en este momento.',
+      ),
+    );
   } else {
     const alertTitle = document.createElement('h3');
     alertTitle.textContent = snapshot.alert.title;
@@ -49,9 +235,7 @@ export function renderOk(elements: PageElements, snapshot: Snapshot): void {
   }
 
   if (snapshot.reasons.length > 0) {
-    const reasonsTitle = document.createElement('p');
-    reasonsTitle.textContent = 'Motivos:';
-    status.appendChild(reasonsTitle);
+    status.appendChild(paragraph('Motivos:'));
 
     const reasonsList = document.createElement('ul');
     for (const reason of snapshot.reasons) {
@@ -61,39 +245,17 @@ export function renderOk(elements: PageElements, snapshot: Snapshot): void {
     }
     status.appendChild(reasonsList);
   }
-
-  if (snapshot.degraded) {
-    const degraded = document.createElement('p');
-    degraded.className = 'degraded-notice';
-    degraded.textContent =
-      'Esta evaluación se generó con información parcial: una de las fuentes de datos no estuvo disponible.';
-    status.appendChild(degraded);
-  }
 }
 
-// --- State 2: stale data — the age is the most important thing on the
-// page at that moment, so it goes first, not buried under the level. ---
+// --- State 1: no alert is the ordinary case, not an empty state. ---
+export function renderOk(elements: PageElements, snapshot: Snapshot): void {
+  renderStatus(elements, snapshot, null);
+}
+
+// --- State 2: stale data, rendered through the same path with the age
+// banner layered on top. ---
 export function renderStale(elements: PageElements, snapshot: Snapshot, ageHours: number): void {
-  const { status } = elements;
-  status.className = 'status-stale';
-  status.replaceChildren();
-
-  const ageDays = Math.floor(ageHours / 24);
-  const warning = document.createElement('p');
-  warning.className = 'stale-warning';
-  warning.textContent =
-    ageDays >= 1
-      ? `Última evaluación hace ${ageDays} día(s). Esta información podría estar desactualizada.`
-      : `Última evaluación hace ${Math.floor(ageHours)} hora(s). Esta información podría estar desactualizada.`;
-  status.appendChild(warning);
-
-  const evaluated = document.createElement('p');
-  evaluated.textContent = `Última evaluación: ${snapshot.evaluated_at}`;
-  status.appendChild(evaluated);
-
-  const level = document.createElement('p');
-  level.textContent = `Último nivel conocido: ${snapshot.level_label}`;
-  status.appendChild(level);
+  renderStatus(elements, snapshot, ageHours);
 }
 
 // --- State 3: failed fetch — say so. A page that fails quietly and
@@ -103,10 +265,11 @@ export function renderError(elements: PageElements): void {
   status.className = 'status-error';
   status.replaceChildren();
 
-  const message = document.createElement('p');
-  message.textContent =
-    'No se pudo cargar el estado actual. Por favor, intente de nuevo más tarde o comuníquese con Defensa Civil.';
-  status.appendChild(message);
+  status.appendChild(
+    paragraph(
+      'No se pudo cargar el estado actual. Por favor, intente de nuevo más tarde o comuníquese con Defensa Civil.',
+    ),
+  );
 }
 
 function renderRecentAlertsList(elements: PageElements, alerts: readonly RecentAlert[]): void {
@@ -114,7 +277,7 @@ function renderRecentAlertsList(elements: PageElements, alerts: readonly RecentA
   recentList.replaceChildren();
   for (const alert of alerts) {
     const item = document.createElement('li');
-    item.textContent = `${alert.sent_at} — ${alert.title}`;
+    item.textContent = `${formatPublishedTimestamp(alert.sent_at)} — ${alert.title}`;
     recentList.appendChild(item);
   }
 }

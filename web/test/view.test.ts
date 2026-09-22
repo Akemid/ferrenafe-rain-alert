@@ -5,8 +5,9 @@
 // and a failed fetch that says so rather than rendering a blank.
 //
 // Each test below targets exactly one branch of `resolveViewState`, so that
-// removing that branch fails exactly this test and no other — see
-// task-8-report.md for the branch-removal evidence for the 'error' branch.
+// removing that branch fails exactly this test and no other. That was checked
+// by removal, not by inspection: deleting the `if (!outcome.ok)` branch fails
+// only the third test here.
 
 import { describe, expect, it } from 'vitest';
 import { STALE_AFTER_HOURS, resolveViewState } from '../src/lib/view';

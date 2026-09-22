@@ -31,6 +31,15 @@
 			.level-imminent .status-level {
 				color: #cf222e;
 			}
+			/* A "sin riesgo" from a cycle that could not read every source is
+			   not an all-clear, so it must not be painted with the green one.
+			   Two classes beat one on specificity, so this wins over
+			   `.level-none .status-level` above. `prepare` and `imminent` keep
+			   their own colours: an incomplete cycle that still found risk is
+			   telling the truth about the risk it found. */
+			.status-degraded.level-none .status-level {
+				color: #9a6700;
+			}
 			.status-stale {
 				border: 2px solid #9a6700;
 				padding: 1rem;
@@ -46,8 +55,12 @@
 				border-radius: 0.5rem;
 				color: #cf222e;
 			}
+			/* Not italic small print. This sentence qualifies the level above
+			   it, and a resident who skips it reads a reassurance the cycle
+			   did not earn. */
 			.degraded-notice {
-				font-style: italic;
+				font-weight: 700;
+				color: #9a6700;
 			}
 			#recent-alerts-error {
 				color: #cf222e;
@@ -60,6 +73,23 @@
 
 			<section id="status" aria-live="polite">
 				<p id="status-loading">Cargando el estado actual…</p>
+				<!-- Without this, a missing bundle or a browser with scripting
+				     off leaves "Cargando el estado actual…" on screen forever:
+				     it fails in the right direction but never resolves. The
+				     inline style hides the loading line so the two messages do
+				     not contradict each other. -->
+				<noscript>
+					<style>
+						#status-loading {
+							display: none;
+						}
+					</style>
+					<p>
+						Esta página necesita JavaScript para mostrar el estado actual. Actívelo en
+						su navegador y vuelva a cargar la página. Si no puede, comuníquese con
+						Defensa Civil.
+					</p>
+				</noscript>
 			</section>
 
 			<section id="recent-alerts">

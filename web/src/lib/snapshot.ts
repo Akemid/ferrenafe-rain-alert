@@ -7,11 +7,25 @@
  * Wire keys are preserved as-is (snake_case) rather than mapped to
  * camelCase. The contract exists to prevent the page and the publisher from
  * drifting apart; a translation layer here is one more thing that can drift
- * from it, for no benefit — see task-8-report.md for why this overrides the
- * brief's own (self-contradicting) example.
+ * from it, for no benefit. The original brief showed a camelCase example and
+ * then referred to the wire keys in its own later snippets; the contract
+ * file, which both sides assert against, is the tiebreaker.
  */
 
 export const SUPPORTED_SCHEMA_VERSION = 1;
+
+/**
+ * The closed set of risk levels, identical to
+ * `src/rain_alert/domain/values.py::Level`. Also the closed set the
+ * stylesheet colours (`.level-none` / `.level-prepare` / `.level-imminent`
+ * in `pages/index.astro`), because `page.ts` turns this value straight into
+ * a class name — so an unrecognised level does not degrade to "unstyled",
+ * it degrades to "rendered in default black", which for `imminent` is the
+ * page's loudest signal going silent.
+ */
+export const SUPPORTED_LEVELS = ['none', 'prepare', 'imminent'] as const;
+
+export type Level = (typeof SUPPORTED_LEVELS)[number];
 
 export interface AlertPayload {
   title: string;
@@ -38,7 +52,7 @@ export interface Snapshot {
   schema_version: number;
   city: string;
   evaluated_at: string;
-  level: string;
+  level: Level;
   level_label: string;
   // display-only by assumption: `start`/`end` are not rendered anywhere in
   // the current page and nothing computes with them.
@@ -147,6 +161,18 @@ function isValidPublishedTimestamp(value: unknown): value is string {
   );
 }
 
+/**
+ * True only when `value` is one of the three levels the domain emits.
+ *
+ * The `typeof` guard is load-bearing and cannot be folded into the
+ * membership test: `String(['imminent'])` is `'imminent'` — a single-element
+ * array's `toString()` collapses to its own element with no brackets — so a
+ * whitelist applied after `String()` would accept an array as a level.
+ */
+function isSupportedLevel(value: unknown): value is Level {
+  return typeof value === 'string' && (SUPPORTED_LEVELS as readonly string[]).includes(value);
+}
+
 function parseAlert(value: unknown): AlertPayload | null {
   if (value === null) return null;
   if (!isRecord(value)) {
@@ -182,7 +208,9 @@ function parseRecentAlert(value: unknown): RecentAlert {
  * - a missing or non-numeric `schema_version` (a document with no version
  *   is not a version-1 document, whatever else it contains);
  * - a `schema_version` this page does not know how to read;
- * - any top-level key the contract promises being absent.
+ * - any top-level key the contract promises being absent;
+ * - a `level` outside the closed set the domain emits and the stylesheet
+ *   colours.
  *
  * Rebuilds the object field-by-field (an explicit whitelist) instead of
  * returning `input` as-is, so the parsed object's key set matches the
@@ -228,6 +256,13 @@ export function parseSnapshot(input: unknown): Snapshot {
   }
   const evaluatedAt = input.evaluated_at;
 
+  if (!isSupportedLevel(input.level)) {
+    throw new SnapshotParseError(
+      `snapshot "level" must be one of ${SUPPORTED_LEVELS.join(', ')}, got ${JSON.stringify(input.level)}`,
+    );
+  }
+  const level = input.level;
+
   const window = input.window;
   if (!isRecord(window) || typeof window.start !== 'string' || typeof window.end !== 'string') {
     throw new SnapshotParseError('snapshot "window" must have string "start" and "end"');
@@ -249,7 +284,7 @@ export function parseSnapshot(input: unknown): Snapshot {
     schema_version: version,
     city: String(input.city),
     evaluated_at: evaluatedAt,
-    level: String(input.level),
+    level,
     level_label: String(input.level_label),
     window: { start: window.start, end: window.end },
     reasons: input.reasons.map((reason) => String(reason)),

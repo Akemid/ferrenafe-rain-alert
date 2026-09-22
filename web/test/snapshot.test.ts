@@ -1,14 +1,15 @@
 // Tests for `parseSnapshot` / `ageInHours` (web/src/lib/snapshot.ts).
 //
-// Adapted from the brief (task-8-brief.md) under three overriding rulings
-// recorded in task-8-report.md:
+// Three rulings shape these tests, and each one is here because the obvious
+// alternative would have passed while the parser was wrong:
 //
 // 1. `parseSnapshot` preserves the wire keys (snake_case) rather than
-//    mapping to camelCase, so the brief's second test reads `.level_label`,
-//    not `.levelLabel`.
-// 2. The contract check asserts the parsed key set equals the contract's
-//    key set exactly, in both directions — `toEqual(expect.arrayContaining(...))`
-//    would pass even if the parser silently dropped a contract key.
+//    mapping to camelCase, so the tests read `.level_label`, not
+//    `.levelLabel`. The contract file is what both the publisher and this
+//    page assert against; a translation layer is one more thing to drift.
+// 2. The contract check asserts the parsed key set EQUALS the contract's key
+//    set, in both directions. `toEqual(expect.arrayContaining(...))` would
+//    pass even if the parser silently dropped a key the contract promises.
 // 3. Both fixtures are checked against the contract, not only the alerting
 //    one, so a `sampleQuiet` missing a top-level key would fail here.
 
@@ -67,6 +68,32 @@ describe('reading a snapshot', () => {
 
   it('refuses a document whose schema_version is not a number', () => {
     expect(() => parseSnapshot({ ...sampleQuiet, schema_version: '1' })).toThrow();
+  });
+
+  describe('level validation', () => {
+    // `level` is the only field that reaches the page as a CSS class name
+    // (`level-${level}`), and the stylesheet only colours three values. Any
+    // other string produced an unstyled section that renders in default
+    // black — including, in the worst case, an "imminent"-like level the
+    // page does not recognise. The whitelist is the same closed set as
+    // `src/rain_alert/domain/values.py::Level`.
+    it.each(['none', 'prepare', 'imminent'])('accepts the published level %j', (level) => {
+      expect(parseSnapshot({ ...sampleQuiet, level }).level).toBe(level);
+    });
+
+    it.each([
+      ['a level the stylesheet does not colour', 'critical'],
+      ['a level in the wrong case', 'NONE'],
+      ['an empty string', ''],
+      ['a number', 1],
+      ['null', null],
+      // Without an explicit `typeof` guard, `String(['imminent'])` is
+      // `'imminent'` — a single-element array collapses to its own element,
+      // so a whitelist applied after `String()` would let this through.
+      ['an array whose toString() is a valid level', ['imminent']],
+    ])('refuses %s (%j) rather than rendering an uncoloured page', (_label, level) => {
+      expect(() => parseSnapshot({ ...sampleQuiet, level })).toThrow();
+    });
   });
 
   describe('evaluated_at validation', () => {
