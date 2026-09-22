@@ -16,6 +16,9 @@ export const SUPPORTED_SCHEMA_VERSION = 1;
 export interface AlertPayload {
   title: string;
   body: string;
+  // display-only by assumption: never parsed into a Date or compared
+  // against anything today (see parseSnapshot's evaluated_at validation
+  // for what a field DOES need once something computes with it).
   valid_until: string;
   composed_by: string;
   sent: boolean;
@@ -23,6 +26,9 @@ export interface AlertPayload {
 
 export interface RecentAlert {
   level: string;
+  // display-only by assumption, same as AlertPayload.valid_until — rendered
+  // as raw textContent (`${sent_at} — ${title}`); an invalid value degrades
+  // visibly ("null — <title>") rather than silently, but is not validated.
   sent_at: string;
   title: string;
   composed_by: string;
@@ -34,6 +40,8 @@ export interface Snapshot {
   evaluated_at: string;
   level: string;
   level_label: string;
+  // display-only by assumption: `start`/`end` are not rendered anywhere in
+  // the current page and nothing computes with them.
   window: { start: string; end: string };
   reasons: string[];
   sources: { senamhi: string; open_meteo: string };
@@ -73,6 +81,70 @@ function requireKeys(value: Record<string, unknown>, keys: readonly string[], wh
       throw new SnapshotParseError(`snapshot ${what} is missing required key "${key}"`);
     }
   }
+}
+
+/**
+ * Matches exactly what `src/rain_alert/domain/snapshot.py::_local` emits:
+ * `moment.astimezone(ZoneInfo(timezone)).isoformat()` — a numeric UTC
+ * offset (never `Z`; Python's `isoformat()` always writes one), optional
+ * fractional seconds when the moment carries microseconds, confirmed
+ * directly against Python (`datetime(2026, 9, 3, 12,
+ * tzinfo=UTC).astimezone(ZoneInfo("America/Lima")).isoformat()` ==
+ * `"2026-09-03T07:00:00-05:00"`). A trailing `Z` is accepted too, purely as
+ * extra tolerance — it is never narrower than what the publisher writes.
+ */
+const ISO_OFFSET_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * True only when `value` is a string in exactly the shape above **and**
+ * round-trips: a calendar date that does not exist (`"2026-02-30"`) matches
+ * the regex, and `Date.UTC` (like the `Date` constructor) silently rolls it
+ * forward to a real one (`2026-03-02`) instead of failing — so matching the
+ * shape is not enough. The instant is reconstructed from its own fields
+ * and compared, field by field, against what was written; a value that
+ * changes when read back is not the value the publisher wrote.
+ *
+ * This does not rely on `new Date(value)` at all, so it cannot inherit
+ * whatever leniency a given JS engine applies to non-standard strings — the
+ * calendar arithmetic is explicit here.
+ */
+function isValidPublishedTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+
+  const match = ISO_OFFSET_TIMESTAMP.exec(value);
+  if (!match) return false;
+
+  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr, offset] = match;
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  const hour = Number(hourStr);
+  const minute = Number(minuteStr);
+  const second = Number(secondStr);
+
+  let offsetMinutes = 0;
+  if (offset !== 'Z') {
+    const sign = offset.startsWith('-') ? -1 : 1;
+    const [offsetHourStr, offsetMinuteStr] = offset.slice(1).split(':');
+    offsetMinutes = sign * (Number(offsetHourStr) * 60 + Number(offsetMinuteStr));
+  }
+
+  const utcMillis = Date.UTC(year, month - 1, day, hour, minute, second) - offsetMinutes * 60000;
+
+  // Reinterpret that instant in the same offset and read its fields back.
+  // `Date.UTC` above already normalized an out-of-range day/month
+  // (Feb 30 -> Mar 2) rather than failing, so the only way to catch the
+  // rollover is to check whether reading it back still says Feb 30.
+  const roundTrip = new Date(utcMillis + offsetMinutes * 60000);
+  return (
+    roundTrip.getUTCFullYear() === year &&
+    roundTrip.getUTCMonth() + 1 === month &&
+    roundTrip.getUTCDate() === day &&
+    roundTrip.getUTCHours() === hour &&
+    roundTrip.getUTCMinutes() === minute &&
+    roundTrip.getUTCSeconds() === second
+  );
 }
 
 function parseAlert(value: unknown): AlertPayload | null {
@@ -137,16 +209,24 @@ export function parseSnapshot(input: unknown): Snapshot {
 
   requireKeys(input, TOP_LEVEL_KEYS, 'document');
 
-  const evaluatedAt = String(input.evaluated_at);
-  if (!Number.isFinite(new Date(evaluatedAt).getTime())) {
-    // `ageInHours` feeds this into `new Date(...).getTime()`; an
-    // unparseable value produces `NaN`, and `NaN > staleAfterHours` is
-    // `false` in JS — so a corrupt timestamp would silently be treated as
-    // fresh (never stale) instead of unknown. Rejected here, the same way
-    // an unsupported schema_version is, rather than rendering as if the
-    // reading were current.
-    throw new SnapshotParseError(`snapshot "evaluated_at" is not a valid timestamp: ${JSON.stringify(evaluatedAt)}`);
+  // Fix round 2, task 8: a bare `Number.isFinite(new
+  // Date(String(value)).getTime())` check (fix round 1) still let two
+  // false-freshness cases through — `ageInHours` feeds this into
+  // `new Date(...).getTime()`, and `NaN > staleAfterHours` is `false` in
+  // JS, so an accepted-but-wrong value renders as fresh, never stale:
+  // - a non-string coerces through `String()` before reaching `Date` at
+  //   all (`String(12345)` -> `"12345"`, which `Date` parses as a real,
+  //   finite year-12345 timestamp);
+  // - a calendar date that does not exist (`"2026-02-30"`) does not
+  //   produce `NaN`; JS silently rolls it forward to a real one.
+  // `isValidPublishedTimestamp` requires a string, in exactly the shape
+  // the publisher emits, that round-trips through its own calendar fields.
+  if (!isValidPublishedTimestamp(input.evaluated_at)) {
+    throw new SnapshotParseError(
+      `snapshot "evaluated_at" is not a valid timestamp: ${JSON.stringify(input.evaluated_at)}`,
+    );
   }
+  const evaluatedAt = input.evaluated_at;
 
   const window = input.window;
   if (!isRecord(window) || typeof window.start !== 'string' || typeof window.end !== 'string') {
