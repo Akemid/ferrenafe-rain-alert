@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from pathlib import Path
 
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
@@ -21,6 +22,14 @@ from rain_alert.domain.snapshot import SNAPSHOT_SCHEMA_VERSION, build_snapshot
 from rain_alert.domain.sources import Available
 from rain_alert.domain.values import TimeWindow, WarningLevel
 from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
+
+# tests/unit/domain/test_snapshot.py -> parents[3] is the repo root (same
+# convention as tests/hygiene/test_repo_hygiene.py and
+# tests/architecture/test_layer_boundaries.py). Resolving through
+# `__file__` rather than a bare relative path means the golden-contract test
+# below passes regardless of the working directory `uv run pytest` is
+# invoked from.
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def config() -> AlertConfig:
@@ -179,3 +188,24 @@ class TestRecentAlertsArePublishedFromWhatWasActuallySent:
         document = build_snapshot(quiet_cycle_result(), config(), recent=(record,))
 
         assert json.loads(json.dumps(document)) == document
+
+
+class TestThePublishedKeysMatchTheGoldenContract:
+    """`contracts/public-snapshot.json` is asserted from both sides. The web
+    suite asserts the page reads exactly these; this asserts the publisher
+    writes exactly these.
+
+    All three golden lists are exercised here, including `recent_alert` —
+    covered with a genuine `AlertRecord` rather than `recent=()`, which would
+    leave that third of the contract unchecked (design 2026-09-21, task 6
+    fix round 1)."""
+
+    def test_the_published_keys_match_the_golden_contract(self) -> None:
+        golden = json.loads((REPO_ROOT / "contracts" / "public-snapshot.json").read_text(encoding="utf-8"))
+        record = sent_alert_record()
+
+        document = build_snapshot(alerting_cycle_result(), config(), recent=(record,))
+
+        assert set(document) == set(golden["top_level"])
+        assert set(document["alert"]) == set(golden["alert"])
+        assert set(document["recent_alerts"][0]) == set(golden["recent_alert"])
