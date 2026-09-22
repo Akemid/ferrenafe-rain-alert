@@ -1,0 +1,214 @@
+---
+// Static page: no server, no build-time fetch. `contracts/public-snapshot.json`
+// is fetched from `/data/status.json` in the browser, once per visit, by the
+// module script below — a build-time fetch would make every publish cycle
+// require a redeploy (design 2026-09-21, "The site").
+---
+
+<html lang="es">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Alertas de lluvia — Ferreñafe</title>
+		<style>
+			body {
+				font-family: system-ui, sans-serif;
+				max-width: 40rem;
+				margin: 2rem auto;
+				padding: 0 1rem;
+				line-height: 1.5;
+			}
+			.status-level {
+				font-size: 1.5rem;
+				font-weight: 700;
+			}
+			.level-none .status-level {
+				color: #1a7f37;
+			}
+			.level-prepare .status-level {
+				color: #9a6700;
+			}
+			.level-imminent .status-level {
+				color: #cf222e;
+			}
+			.status-stale {
+				border: 2px solid #9a6700;
+				padding: 1rem;
+				border-radius: 0.5rem;
+			}
+			.stale-warning {
+				font-weight: 700;
+				color: #9a6700;
+			}
+			.status-error {
+				border: 2px solid #cf222e;
+				padding: 1rem;
+				border-radius: 0.5rem;
+				color: #cf222e;
+			}
+			.degraded-notice {
+				font-style: italic;
+			}
+		</style>
+	</head>
+	<body>
+		<main>
+			<h1>Alertas de lluvia — Ferreñafe</h1>
+
+			<section id="status" aria-live="polite">
+				<p id="status-loading">Cargando el estado actual…</p>
+			</section>
+
+			<section id="recent-alerts">
+				<h2>Alertas enviadas</h2>
+				<ul id="recent-alerts-list"></ul>
+				<p id="recent-alerts-empty" hidden>No se ha enviado ninguna alerta todavía.</p>
+			</section>
+		</main>
+
+		<script>
+			import { parseSnapshot, type Snapshot } from '../lib/snapshot';
+			import { resolveViewState, type FetchOutcome } from '../lib/view';
+
+			const STATUS_URL = '/data/status.json';
+
+			const statusSection = document.getElementById('status') as HTMLElement;
+			const recentList = document.getElementById('recent-alerts-list') as HTMLUListElement;
+			const recentEmpty = document.getElementById('recent-alerts-empty') as HTMLElement;
+
+			function levelClass(level: string): string {
+				return `level-${level}`;
+			}
+
+			// --- State 1: no alert is the ordinary case, not an empty state. ---
+			function renderOk(snapshot: Snapshot): void {
+				statusSection.className = levelClass(snapshot.level);
+				statusSection.replaceChildren();
+
+				const heading = document.createElement('p');
+				heading.className = 'status-level';
+				heading.textContent = snapshot.level_label;
+				statusSection.appendChild(heading);
+
+				const evaluated = document.createElement('p');
+				evaluated.textContent = `Última evaluación: ${snapshot.evaluated_at}`;
+				statusSection.appendChild(evaluated);
+
+				if (snapshot.alert === null) {
+					const none = document.createElement('p');
+					none.textContent = 'No hay ninguna alerta activa en este momento.';
+					statusSection.appendChild(none);
+				} else {
+					const alertTitle = document.createElement('h3');
+					alertTitle.textContent = snapshot.alert.title;
+					statusSection.appendChild(alertTitle);
+
+					const alertBody = document.createElement('pre');
+					alertBody.textContent = snapshot.alert.body;
+					statusSection.appendChild(alertBody);
+				}
+
+				if (snapshot.reasons.length > 0) {
+					const reasonsTitle = document.createElement('p');
+					reasonsTitle.textContent = 'Motivos:';
+					statusSection.appendChild(reasonsTitle);
+
+					const reasonsList = document.createElement('ul');
+					for (const reason of snapshot.reasons) {
+						const item = document.createElement('li');
+						item.textContent = reason;
+						reasonsList.appendChild(item);
+					}
+					statusSection.appendChild(reasonsList);
+				}
+
+				if (snapshot.degraded) {
+					const degraded = document.createElement('p');
+					degraded.className = 'degraded-notice';
+					degraded.textContent =
+						'Esta evaluación se generó con información parcial: una de las fuentes de datos no estuvo disponible.';
+					statusSection.appendChild(degraded);
+				}
+			}
+
+			// --- State 2: stale data — the age is the most important thing on the
+			// page at that moment, so it goes first, not buried under the level. ---
+			function renderStale(snapshot: Snapshot, ageHours: number): void {
+				statusSection.className = 'status-stale';
+				statusSection.replaceChildren();
+
+				const ageDays = Math.floor(ageHours / 24);
+				const warning = document.createElement('p');
+				warning.className = 'stale-warning';
+				warning.textContent =
+					ageDays >= 1
+						? `Última evaluación hace ${ageDays} día(s). Esta información podría estar desactualizada.`
+						: `Última evaluación hace ${Math.floor(ageHours)} hora(s). Esta información podría estar desactualizada.`;
+				statusSection.appendChild(warning);
+
+				const evaluated = document.createElement('p');
+				evaluated.textContent = `Última evaluación: ${snapshot.evaluated_at}`;
+				statusSection.appendChild(evaluated);
+
+				const level = document.createElement('p');
+				level.textContent = `Último nivel conocido: ${snapshot.level_label}`;
+				statusSection.appendChild(level);
+			}
+
+			// --- State 3: failed fetch — say so. A page that fails quietly and
+			// shows "sin riesgo" is worse than one that does not load. ---
+			function renderError(): void {
+				statusSection.className = 'status-error';
+				statusSection.replaceChildren();
+
+				const message = document.createElement('p');
+				message.textContent =
+					'No se pudo cargar el estado actual. Por favor, intente de nuevo más tarde o comuníquese con Defensa Civil.';
+				statusSection.appendChild(message);
+			}
+
+			function renderRecentAlerts(snapshot: Snapshot): void {
+				recentList.replaceChildren();
+				if (snapshot.recent_alerts.length === 0) {
+					recentEmpty.hidden = false;
+					return;
+				}
+				recentEmpty.hidden = true;
+				for (const alert of snapshot.recent_alerts) {
+					const item = document.createElement('li');
+					item.textContent = `${alert.sent_at} — ${alert.title}`;
+					recentList.appendChild(item);
+				}
+			}
+
+			async function load(): Promise<void> {
+				let outcome: FetchOutcome;
+				try {
+					const response = await fetch(STATUS_URL, { cache: 'no-store' });
+					if (!response.ok) {
+						throw new Error(`status endpoint responded with ${response.status}`);
+					}
+					const raw: unknown = await response.json();
+					outcome = { ok: true, snapshot: parseSnapshot(raw) };
+				} catch (error) {
+					console.error('failed to load /data/status.json', error);
+					outcome = { ok: false, error };
+				}
+
+				const state = resolveViewState(outcome, new Date());
+				if (state.kind === 'ok') {
+					renderOk(state.snapshot);
+					renderRecentAlerts(state.snapshot);
+				} else if (state.kind === 'stale') {
+					renderStale(state.snapshot, state.ageHours);
+					renderRecentAlerts(state.snapshot);
+				} else {
+					renderError();
+					recentEmpty.hidden = false;
+				}
+			}
+
+			load();
+		</script>
+	</body>
+</html>
