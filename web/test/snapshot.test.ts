@@ -88,13 +88,36 @@ describe('reading a snapshot', () => {
       // JS rolls this to 2026-03-02 rather than rejecting it — the actual
       // gap this round closes. `Number.isFinite(new
       // Date('2026-02-30').getTime())` is `true`.
+      //
+      // Fix round 3 note: this bare form has no `T` and no offset, so it is
+      // rejected by `ISO_OFFSET_TIMESTAMP`'s shape alone — it never reaches
+      // the round-trip arithmetic. It proves the regex rejects a bare date,
+      // not that the round-trip check works. The next case does exercise
+      // the round-trip: it has the full shape and is still rejected.
       ['a calendar date that does not exist', '2026-02-30'],
       // Same rollover, in the exact shape the publisher emits (date, time,
-      // and UTC offset together) — the round-trip check must catch it here
-      // too, not only on the bare-date form above.
+      // and UTC offset together) — this is the one case that genuinely
+      // exercises the round-trip arithmetic, not just the regex shape.
       ['a calendar date that does not exist, with time and offset', '2026-02-30T07:00:00-05:00'],
     ])('refuses evaluated_at when it is %s (%j)', (_label, badValue) => {
       expect(() => parseSnapshot({ ...sampleQuiet, evaluated_at: badValue })).toThrow();
+    });
+
+    it('refuses a value that is not a string even when its toString() matches the ISO shape', () => {
+      // Fix round 3: mutation testing found that removing the
+      // `typeof value !== 'string'` guard left the whole suite green — the
+      // "number" case above passes because `RegExp.exec` calls `ToString`
+      // internally and `String(12345)` ("12345") fails the shape regex
+      // regardless of the guard, so that test never actually exercised the
+      // guard. A single-element array's `toString()` collapses to its own
+      // element with no brackets or commas
+      // (`String(['2026-09-03T07:00:00-05:00'])` ===
+      // `'2026-09-03T07:00:00-05:00'`, verified in Node), which DOES match
+      // `ISO_OFFSET_TIMESTAMP` and round-trips cleanly — so only the
+      // explicit `typeof` guard rejects it. Without the guard this would
+      // parse as if `evaluated_at` were a string, when the value flowing
+      // through the rest of the system is actually an array.
+      expect(() => parseSnapshot({ ...sampleQuiet, evaluated_at: ['2026-09-03T07:00:00-05:00'] })).toThrow();
     });
 
     it('accepts evaluated_at in exactly the format the publisher emits', () => {
