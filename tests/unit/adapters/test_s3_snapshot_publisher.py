@@ -1,7 +1,15 @@
 import json
 from typing import Any
 
-from rain_alert.adapters.s3_snapshot_publisher import S3SnapshotPublisher
+import pytest
+
+from rain_alert.adapters import s3_snapshot_publisher
+from rain_alert.adapters.s3_snapshot_publisher import (
+    CONNECT_TIMEOUT,
+    READ_TIMEOUT,
+    TOTAL_MAX_ATTEMPTS,
+    S3SnapshotPublisher,
+)
 
 
 class FakeS3Client:
@@ -49,3 +57,51 @@ def test_no_client_is_built_when_one_is_injected() -> None:
     publisher = S3SnapshotPublisher("a-bucket", client=FakeS3Client())
 
     publisher.publish({})  # must not raise NoRegionError
+
+
+def test_the_real_client_is_built_with_an_explicit_bounded_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_resolved_client` is the one method every other test bypasses by
+    injecting `client=`, so nothing checked what it builds.
+
+    A bare `boto3.client("s3")` inherits botocore's defaults: connect and read
+    timeouts of 60 s each and legacy retries with `max_attempts: 5`, which is
+    about five minutes of silent waiting against a blackholed endpoint. The
+    publish call runs after the alert has already gone out, and change 3 moves
+    it into a Lambda with a hard wall-clock timeout, so the bound has to be
+    the module's own and not the SDK's.
+
+    Two mutations this reproduces: the whole `config=` argument deleted, and
+    `total_max_attempts` renamed to `max_attempts` — the opposite semantics
+    `agentcore_invoker.py`'s docstring warns about, where a value of 1 means
+    one *retry* rather than one attempt.
+
+    `boto3.client` is monkeypatched as the client-factory seam, not
+    `unittest.mock`, so no real S3 client is constructed offline.
+    """
+    captured: dict[str, Any] = {}
+
+    def fake_boto3_client(service_name: str, config: Any) -> FakeS3Client:
+        captured["service_name"] = service_name
+        captured["config"] = config
+        return FakeS3Client()
+
+    monkeypatch.setattr(s3_snapshot_publisher.boto3, "client", fake_boto3_client)
+
+    S3SnapshotPublisher("a-bucket").publish({})
+
+    assert captured["service_name"] == "s3"
+    config = captured["config"]
+    assert config.connect_timeout == CONNECT_TIMEOUT
+    assert config.read_timeout == READ_TIMEOUT
+    assert config.retries == {"total_max_attempts": TOTAL_MAX_ATTEMPTS}
+
+
+def test_the_bound_stays_small_enough_for_a_scheduled_lambda() -> None:
+    """The numbers themselves, not merely that some `Config` is passed.
+
+    A single small `PutObject` is not a cold-starting model call: this asserts
+    the worst case stays inside the ten-second budget the deploy design plans
+    for, so a later edit that copies `agentcore_invoker.py`'s 35 s read
+    timeout wholesale fails here instead of holding a Lambda open.
+    """
+    assert TOTAL_MAX_ATTEMPTS * (CONNECT_TIMEOUT + READ_TIMEOUT) <= 20.0
