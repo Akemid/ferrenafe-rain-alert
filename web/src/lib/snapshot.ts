@@ -15,13 +15,22 @@
 export const SUPPORTED_SCHEMA_VERSION = 1;
 
 /**
- * The closed set of risk levels, identical to
- * `src/rain_alert/domain/values.py::Level`. Also the closed set the
- * stylesheet colours (`.level-none` / `.level-prepare` / `.level-imminent`
- * in `pages/index.astro`), because `page.ts` turns this value straight into
- * a class name — so an unrecognised level does not degrade to "unstyled",
- * it degrades to "rendered in default black", which for `imminent` is the
- * page's loudest signal going silent.
+ * The closed set of risk levels.
+ *
+ * This list is NOT authoritative. `contracts/public-snapshot.json` is, under
+ * `values.level`; the Python publisher asserts that list against
+ * `src/rain_alert/domain/values.py::Level` (derived from the enum, so adding
+ * a level fails that test rather than passing silently), and
+ * `test/snapshot.test.ts` asserts this constant against the same list, so
+ * changing either one alone fails `npm test`. It is spelled out here rather
+ * than imported because the contract lives outside the Astro project root
+ * and nothing at runtime should depend on reading a file beside it.
+ *
+ * It is also the closed set the stylesheet colours (`.level-none` /
+ * `.level-prepare` / `.level-imminent` in `pages/index.astro`), because
+ * `page.ts` turns this value straight into a class name — so an unrecognised
+ * level does not degrade to "unstyled", it degrades to "rendered in default
+ * black", which for `imminent` is the page's loudest signal going silent.
  */
 export const SUPPORTED_LEVELS = ['none', 'prepare', 'imminent'] as const;
 
@@ -162,7 +171,7 @@ function isValidPublishedTimestamp(value: unknown): value is string {
 }
 
 /**
- * True only when `value` is one of the three levels the domain emits.
+ * True only when `value` is one of the levels the domain emits.
  *
  * The `typeof` guard is load-bearing and cannot be folded into the
  * membership test: `String(['imminent'])` is `'imminent'` — a single-element

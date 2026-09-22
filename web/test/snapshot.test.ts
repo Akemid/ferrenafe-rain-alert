@@ -12,10 +12,20 @@
 //    pass even if the parser silently dropped a key the contract promises.
 // 3. Both fixtures are checked against the contract, not only the alerting
 //    one, so a `sampleQuiet` missing a top-level key would fail here.
+// 4. The contract's VALUE domains are read the same way its key sets are.
+//    `SUPPORTED_LEVELS` in `snapshot.ts` used to be this page's own literal
+//    list of the three levels — a second list that happened to agree with
+//    `contracts/public-snapshot.json` and with
+//    `domain/values.py::Level`, with nothing failing when they stopped
+//    agreeing. That is the key-set problem again, one level down. The
+//    contract is now the single source for the level list in this file: the
+//    constant is asserted against it, and the accept/reject cases below are
+//    generated from it, so this file contains no hand-written level list to
+//    drift.
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { ageInHours, parseSnapshot } from '../src/lib/snapshot';
+import { SUPPORTED_LEVELS, ageInHours, parseSnapshot } from '../src/lib/snapshot';
 import { sampleAlerting, sampleQuiet } from './fixtures';
 
 const contract = JSON.parse(
@@ -24,6 +34,19 @@ const contract = JSON.parse(
   top_level: string[];
   alert: string[];
   recent_alert: string[];
+  values: {
+    level: string[];
+    // Declared, and deliberately not asserted against anything here:
+    // `parseSnapshot` constrains `sources.senamhi` / `sources.open_meteo` to
+    // `string` and no further, so this page has no list of status values for
+    // the contract to disagree with. `page.ts::describeSources` does compare
+    // against the literal `'available'`, treating everything else as
+    // unavailable — a drift there fails toward showing the degraded notice,
+    // which is the safe direction, unlike a drifting level (which fails
+    // toward an uncoloured page). Wiring this one up is a separate decision,
+    // not something to slip in here.
+    source_status: string[];
+  };
 };
 
 describe('reading a snapshot', () => {
@@ -72,12 +95,24 @@ describe('reading a snapshot', () => {
 
   describe('level validation', () => {
     // `level` is the only field that reaches the page as a CSS class name
-    // (`level-${level}`), and the stylesheet only colours three values. Any
-    // other string produced an unstyled section that renders in default
-    // black — including, in the worst case, an "imminent"-like level the
-    // page does not recognise. The whitelist is the same closed set as
-    // `src/rain_alert/domain/values.py::Level`.
-    it.each(['none', 'prepare', 'imminent'])('accepts the published level %j', (level) => {
+    // (`level-${level}`), and the stylesheet only colours the values the
+    // contract lists. Any other string produced an unstyled section that
+    // renders in default black.
+    //
+    // The contract's `values.level` is the authority on both sides: the
+    // Python publisher asserts it against `domain/values.py::Level` (derived
+    // from the enum, so adding a level fails that test rather than passing
+    // silently), and this page asserts its own whitelist against it here.
+    // Change either list alone and this fails.
+    it('reads exactly the levels the contract promises, no more and no fewer', () => {
+      expect(new Set(SUPPORTED_LEVELS)).toEqual(new Set(contract.values.level));
+    });
+
+    // Generated from the contract, not from a second hand-written list, so
+    // there is nothing in this file for the contract to drift away from. A
+    // level added to the contract alone arrives here as a new case and fails
+    // because the parser rejects it.
+    it.each(contract.values.level)('accepts the contract level %j', (level) => {
       expect(parseSnapshot({ ...sampleQuiet, level }).level).toBe(level);
     });
 
