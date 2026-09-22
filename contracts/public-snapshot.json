@@ -14,5 +14,9 @@
     "recent_alerts"
   ],
   "alert": ["title", "body", "valid_until", "composed_by", "sent"],
-  "recent_alert": ["level", "sent_at", "title", "composed_by"]
+  "recent_alert": ["level", "sent_at", "title", "composed_by"],
+  "values": {
+    "level": ["none", "prepare", "imminent"],
+    "source_status": ["available", "unavailable"]
+  }
 }

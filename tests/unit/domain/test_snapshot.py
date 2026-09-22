@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
@@ -19,8 +20,8 @@ from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.entities import Warning
 from rain_alert.domain.messages import AlertRecord
 from rain_alert.domain.snapshot import SNAPSHOT_SCHEMA_VERSION, build_snapshot
-from rain_alert.domain.sources import Available
-from rain_alert.domain.values import TimeWindow, WarningLevel
+from rain_alert.domain.sources import Available, Unavailable, status_of
+from rain_alert.domain.values import Level, SourceName, TimeWindow, UnavailableReason, WarningLevel
 from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
 
 # tests/unit/domain/test_snapshot.py -> parents[3] is the repo root (same
@@ -201,7 +202,7 @@ class TestThePublishedKeysMatchTheGoldenContract:
     fix round 1)."""
 
     def test_the_published_keys_match_the_golden_contract(self) -> None:
-        golden = json.loads((REPO_ROOT / "contracts" / "public-snapshot.json").read_text(encoding="utf-8"))
+        golden = _golden_contract()
         record = sent_alert_record()
 
         document = build_snapshot(alerting_cycle_result(), config(), recent=(record,))
@@ -209,3 +210,63 @@ class TestThePublishedKeysMatchTheGoldenContract:
         assert set(document) == set(golden["top_level"])
         assert set(document["alert"]) == set(golden["alert"])
         assert set(document["recent_alerts"][0]) == set(golden["recent_alert"])
+
+
+def _golden_contract() -> dict[str, Any]:
+    return json.loads((REPO_ROOT / "contracts" / "public-snapshot.json").read_text(encoding="utf-8"))
+
+
+class TestThePublishedValuesMatchTheGoldenContract:
+    """Pinning which *keys* appear says nothing about what may be in them.
+
+    The page branches on `level` to pick a colour and on `sources.*` to decide
+    whether to say a source was unreadable. A new `Level` member reaching the
+    page as an unknown string renders as neither, and the resident sees a
+    status page that has quietly stopped saying anything. Until this class the
+    page enforced its own idea of the level set unilaterally; that agreement
+    belongs in the contract, asserted from both sides, exactly as the key sets
+    already are.
+
+    **Derived from the enum, never hand-copied.** A literal list here would let
+    a fourth `Level` land with the contract still green and the page still
+    blind. Adding one has to fail this test, and the only way to make it pass
+    again is to widen the contract deliberately — which is the conversation
+    with the page's author that a new level requires.
+    """
+
+    def test_the_level_domain_is_exactly_the_level_enum(self) -> None:
+        golden = _golden_contract()
+
+        assert set(golden["values"]["level"]) == {level.value for level in Level}
+
+    def test_the_source_status_domain_is_exactly_what_status_of_can_return(self) -> None:
+        """`status_of` has no enum behind it — it returns one of two literal
+        strings — so the domain is derived by asking it, once per branch of
+        the `SourceResult` union it narrows."""
+        golden = _golden_contract()
+
+        produced = {
+            status_of(Available(data=(), fetched_at=DEFAULT_NOW)),
+            status_of(
+                Unavailable(
+                    source=SourceName.SENAMHI,
+                    reason=UnavailableReason.TRANSPORT_ERROR,
+                    detail="unreachable",
+                    observed_at=DEFAULT_NOW,
+                )
+            ),
+        }
+
+        assert set(golden["values"]["source_status"]) == produced
+
+    def test_a_published_document_only_carries_values_from_those_domains(self) -> None:
+        """The contract and the enum can agree while `build_snapshot` publishes
+        something else entirely — it writes `assessment.level.value` and the two
+        `assessment.*_status` strings, none of which this file otherwise reads
+        against the contract."""
+        golden = _golden_contract()
+
+        document = build_snapshot(alerting_cycle_result(), config(), recent=())
+
+        assert document["level"] in golden["values"]["level"]
+        assert set(document["sources"].values()) <= set(golden["values"]["source_status"])
