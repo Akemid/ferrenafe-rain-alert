@@ -221,7 +221,7 @@ Three modules, shared across the unit and application suites.
 
 **`fixtures.py`** holds the paths to the pinned fixture files, centralized so a rename breaks one line instead of every test, and so the CLI's offline tests and the adapter tests cannot drift onto different files.
 
-**`fakes.py`** holds hand-written recording spies for all seven ports.
+**`fakes.py`** holds hand-written recording spies for all eight ports.
 
 `unittest.mock` is deliberately avoided. A `Mock` satisfies any `Protocol`, and would hide exactly the drift these tests exist to catch. Every fake records its calls, so a test can assert order and arguments rather than only return values.
 

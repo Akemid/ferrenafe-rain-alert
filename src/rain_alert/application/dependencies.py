@@ -1,5 +1,8 @@
-"""CycleDependencies — bundles all seven ports plus the evaluator factory
-and clock into one frozen object (design.md D6, D7).
+"""CycleDependencies — bundles the seven ports `RunAlertCycle` needs, plus
+the evaluator factory and clock, into one frozen object (design.md D6, D7).
+
+`SnapshotPublisher`, the eighth port, is deliberately absent: it is called
+from the entry point, after the cycle has returned.
 
 Seven ports plus an evaluator, two policies and a clock would give
 `RunAlertCycle` ten constructor parameters; this bundle keeps constructor

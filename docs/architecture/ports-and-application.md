@@ -2,9 +2,9 @@
 
 This document covers `src/rain_alert/ports/__init__.py` and the three modules in `src/rain_alert/application/`. Together they are the contract between the rules and the outside world, and the orchestration that runs one cycle. Read it if you are adding a dependency to the use case, changing the order of the cycle, or checking the claim that the message composer holds no decision authority. Read [README.md](./README.md) first for the seven steps in outline.
 
-## The seven ports
+## The eight ports
 
-All seven live in one file, `src/rain_alert/ports/__init__.py`. They are `typing.Protocol` classes, which means structural typing: an implementation conforms by having the right methods, not by inheriting.
+All eight live in one file, `src/rain_alert/ports/__init__.py`. They are `typing.Protocol` classes, which means structural typing: an implementation conforms by having the right methods, not by inheriting.
 
 | Port | Method or methods | What it abstracts |
 |---|---|---|
@@ -15,6 +15,9 @@ All seven live in one file, `src/rain_alert/ports/__init__.py`. They are `typing
 | `ContactRepository` | `list_active(channel)` | Who receives community alerts. |
 | `Notifier` | `send_alert(...)` and `send_operator_notice(...)` | Delivery, of two different kinds. |
 | `AlertRepository` | five methods, listed below | Durable state for both dedup rules. |
+| `SnapshotPublisher` | `publish(document) -> None` | Where one cycle's public snapshot goes. |
+
+Seven of the eight are the use case's, and are the seven `CycleDependencies` bundles. `SnapshotPublisher` is the odd one out: it is called from the entry point, not from `RunAlertCycle`. `CycleResult` already carries everything the public page needs and is already returned, so the use case does not have to know that a web page exists. That is also why publishing cannot fail a cycle — the call sits after the alert has gone out, and the CLI reports a failure on the error stream without changing the exit code.
 
 ### Three decisions worth knowing
 
@@ -52,7 +55,7 @@ The query is deliberately dumb. It is a key-range read that returns records asce
 
 ## `application/dependencies.py`
 
-`CycleDependencies` is a frozen dataclass bundling all seven ports plus two more things.
+`CycleDependencies` is a frozen dataclass bundling the seven use-case ports plus two more things. `SnapshotPublisher` is deliberately not among them — see the note under the table above.
 
 | Field | Type |
 |---|---|
@@ -197,6 +200,6 @@ Re-deriving the branch conditions here would be a second copy of the evaluator's
 ## Where to go next
 
 - [domain.md](./domain.md) for the rules these ports feed and the types they move.
-- [adapters.md](./adapters.md) for the concrete implementations of all seven ports.
+- [adapters.md](./adapters.md) for the concrete implementations of all eight ports.
 - [entrypoints-and-testing.md](./entrypoints-and-testing.md) for `build_local_deps`, `build_fake_deps`, and the tests that assert call order.
 - [README.md](./README.md) for the cycle in outline.

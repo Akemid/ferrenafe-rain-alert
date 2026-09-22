@@ -1,4 +1,4 @@
-"""Hand-written recording spies for all seven ports (design.md section 10).
+"""Hand-written recording spies for all eight ports (design.md section 10).
 
 `unittest.mock` is deliberately avoided: `Mock` satisfies any `Protocol` and
 would hide exactly the drift these tests exist to catch.

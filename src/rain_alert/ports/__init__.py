@@ -1,4 +1,10 @@
-"""The seven ports `RunAlertCycle` depends on (design.md section 4, *contract*).
+"""The eight ports this application talks to the world through (design.md
+section 4, *contract*).
+
+Seven of them are `RunAlertCycle`'s and are bundled into `CycleDependencies`.
+The eighth, `SnapshotPublisher`, is the entry point's: `CycleResult` already
+carries everything the public page needs and is already returned, so the use
+case does not need to know a web page exists.
 
 `typing.Protocol`, structural typing — fakes in `tests/support/fakes.py` do
 not subclass these. `@runtime_checkable` is deliberately not used: it only
