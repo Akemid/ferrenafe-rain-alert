@@ -6,6 +6,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+#: Environment variable for the local snapshot path (development, and the
+#: default offline suite). Mirrors `s3_snapshot_publisher.py`'s pair.
+SNAPSHOT_PATH_ENV_VAR = "RAIN_ALERT_SNAPSHOT_PATH"
+
 
 class JsonFileSnapshotPublisher:
     """`SnapshotPublisher` writing to a local path, for development and for

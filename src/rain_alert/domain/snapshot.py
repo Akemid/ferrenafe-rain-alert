@@ -35,12 +35,27 @@ class _CycleResultLike(Protocol):
     `TYPE_CHECKING`-guarded import does not escape it). A structural protocol
     lets the real `CycleResult` satisfy this parameter — it already has every
     attribute below — without the domain package knowing how a cycle runs.
+
+    **Declared as read-only properties, not plain attributes.** `CycleResult`
+    is `@dataclass(frozen=True, slots=True)` (`application/run_alert_cycle.py`),
+    so its fields are read-only. A `Protocol` attribute written as a plain
+    annotation (`evaluated_at: datetime`) declares a *settable* member, which
+    a frozen dataclass cannot satisfy — mypy rejects it as a structural
+    mismatch. This went unnoticed because `files = ["src"]` in `pyproject.toml`
+    means mypy never checks `tests/`, and nothing in `src/` called
+    `build_snapshot` with a real `CycleResult` until `entrypoints/cli.py`
+    (public-status-page, task 5) did. A property getter with no setter is
+    exactly "readable", which is all this module ever does with these fields.
     """
 
-    evaluated_at: datetime
-    assessment: RiskAssessment
-    message: AlertMessage | None
-    sent: bool
+    @property
+    def evaluated_at(self) -> datetime: ...
+    @property
+    def assessment(self) -> RiskAssessment: ...
+    @property
+    def message(self) -> AlertMessage | None: ...
+    @property
+    def sent(self) -> bool: ...
 
 
 def _local(moment: datetime, timezone: str) -> str:

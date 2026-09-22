@@ -13,11 +13,13 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from rain_alert.adapters.console_notifier import ALERT_PREFIX, NOTICE_PREFIX
 from rain_alert.adapters.local.json_alert_repository import JsonFileAlertRepository
+from rain_alert.adapters.local.json_file_snapshot_publisher import SNAPSHOT_PATH_ENV_VAR
 from rain_alert.adapters.open_meteo import OpenMeteoForecastProvider
 from rain_alert.adapters.senamhi_scraper import SenamhiWarningScraper
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
@@ -25,6 +27,7 @@ from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.messages import OperatorNotice
 from rain_alert.domain.values import ComposerName, NoticeKind, SourceName
 from rain_alert.entrypoints.cli import (
+    EXIT_OK,
     OPEN_METEO_FIXTURE_NAME,
     SENAMHI_FIXTURE_NAME,
     as_json,
@@ -34,12 +37,14 @@ from rain_alert.entrypoints.cli import (
     render,
 )
 from rain_alert.entrypoints.wiring import build_local_deps
+from tests.support.fakes import RecordingPublisher
 from tests.support.fixtures import (
     SENAMHI_ACTIVE_WARNING,
     SENAMHI_BROKEN_STRUCTURE,
     SENAMHI_HISTORY_ONLY,
     SENAMHI_PRECIPITATION_COAST,
 )
+from tests.support.wiring import build_fake_deps
 
 NOW = "2026-09-04T12:00:00+00:00"
 NOW_DT = datetime(2026, 9, 4, 12, tzinfo=UTC)
@@ -629,3 +634,64 @@ class TestTheDefaultClock:
 
         assert code != 0
         assert "--now" in capsys.readouterr().err
+
+
+class RaisingPublisher:
+    """Every destination fails eventually. This one always does."""
+
+    def publish(self, document: dict[str, Any]) -> None:
+        raise OSError("bucket on fire")
+
+
+class TestSnapshotPublishing:
+    """public-status-page: publishing is reporting, not notifying. If the
+    destination is unreachable the alert still goes out — the same posture
+    as the operator-notice guard in `agent_composer.py::_fell_back`."""
+
+    def test_a_publisher_that_raises_does_not_fail_the_cycle(self) -> None:
+        """The alert reaches the community even when the page cannot be
+        updated. A failure in the reporting channel must not cost the
+        community its alert."""
+        exit_code = main(["--json"], publisher=RaisingPublisher(), deps=build_fake_deps())
+
+        assert exit_code == EXIT_OK
+
+    def test_the_published_document_describes_the_cycle_that_just_ran(self) -> None:
+        publisher = RecordingPublisher()
+
+        main([], publisher=publisher, deps=build_fake_deps())
+
+        assert publisher.documents[0]["city"] == "Ferreñafe"
+        assert publisher.documents[0]["schema_version"] == 1
+
+    def test_an_injected_deps_graph_with_no_publisher_publishes_nothing(self) -> None:
+        """`deps` is how a test exercises the cycle in isolation; a `None`
+        publisher there must mean exactly what it says, not "check the real
+        environment" — otherwise a test run could publish to whatever the
+        developer's shell happens to have configured."""
+        exit_code = main([], deps=build_fake_deps())
+
+        assert exit_code == EXIT_OK
+
+    def test_a_configured_local_path_receives_the_snapshot_after_a_real_cycle(
+        self, capsys, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real wiring path, end to end: no injected `deps`, no injected
+        `publisher` — only the environment variable an operator would set."""
+        snapshot_path = tmp_path / "public" / "status.json"
+        monkeypatch.setenv(SNAPSHOT_PATH_ENV_VAR, str(snapshot_path))
+
+        code, _ = _run(capsys, tmp_path)
+
+        assert code == 0
+        document = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        assert document["city"] == "Ferreñafe"
+        assert document["schema_version"] == 1
+
+    def test_no_destination_configured_writes_nothing(self, capsys, tmp_path: Path) -> None:
+        """The default: a developer running the cycle locally must not write
+        to a public destination by accident."""
+        code, _ = _run(capsys, tmp_path)
+
+        assert code == 0
+        assert not (tmp_path / "status.json").exists()

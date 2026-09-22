@@ -40,17 +40,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
 
 from rain_alert.adapters.local.json_alert_repository import DEFAULT_STATE_FILE
 from rain_alert.adapters.serialization import reason_to_dict
+from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
 from rain_alert.domain.config import AlertConfig
+from rain_alert.domain.messages import AlertRecord
 from rain_alert.domain.reasons import render_reasons_en
+from rain_alert.domain.snapshot import build_snapshot
 from rain_alert.domain.sources import Available, SourceResult
 from rain_alert.domain.template import MessageComposer
 from rain_alert.domain.values import ComposerName
@@ -58,7 +63,9 @@ from rain_alert.entrypoints.wiring import (
     OPEN_METEO_FIXTURE_NAME,
     SENAMHI_FIXTURE_NAME,
     build_local_deps,
+    select_snapshot_publisher,
 )
+from rain_alert.ports import SnapshotPublisher
 
 __all__ = ["OPEN_METEO_FIXTURE_NAME", "SENAMHI_FIXTURE_NAME", "default_now", "main", "parse_now"]
 
@@ -271,45 +278,95 @@ def as_json(result: CycleResult, config: AlertConfig) -> str:
     return json.dumps(document, indent=2, ensure_ascii=False, sort_keys=True)
 
 
-def main(argv: Sequence[str] | None = None, stdout: TextIO | None = None, stderr: TextIO | None = None) -> int:
-    """Run one cycle and print it. Returns the process exit code."""
+def _recent_alerts(deps: CycleDependencies, config: AlertConfig) -> tuple[AlertRecord, ...]:
+    """The alerts the public page shows alongside this cycle's verdict.
+
+    The window is the configured dedup lookback (`AlertConfig.dedup_lookback_hours`),
+    ending at the cycle clock — not "the last N records" (`AlertRepository`
+    exposes no such query). Bounding the window at `deps.now()` already makes
+    it the tail of the city's alert history: nothing in it can be newer than
+    the cycle that is asking.
+    """
+    now = deps.now()
+    earliest_start = now - timedelta(hours=config.dedup_lookback_hours)
+    return deps.alerts.alerts_with_window_start_between(config.city_slug, earliest_start, now)
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+    *,
+    publisher: SnapshotPublisher | None = None,
+    deps: CycleDependencies | None = None,
+) -> int:
+    """Run one cycle and print it. Returns the process exit code.
+
+    Args:
+        publisher: Where the public snapshot goes (public-status-page).
+            `None` (the default) is resolved from the environment via
+            `select_snapshot_publisher` — but only when `deps` is also not
+            given, i.e. on the real CLI path. A caller that injects `deps`
+            is exercising the cycle in isolation, and a `None` publisher
+            there means exactly what it says — do not publish — rather than
+            "go check the real environment", which would let a test publish
+            to whatever a developer's shell happens to have configured.
+        deps: The full dependency graph (design.md D6), for exercising the
+            cycle end to end without `--offline-fixtures`. `None` (the
+            default) builds the real graph via `build_local_deps`, following
+            `--now`, `--state-file` and `--offline-fixtures` as before.
+    """
     out = stdout if stdout is not None else sys.stdout
     err = stderr if stderr is not None else sys.stderr
     arguments = _parser().parse_args(argv)
 
-    fixtures: Path | None = arguments.offline_fixtures
-    if fixtures is not None and not fixtures.is_dir():
-        print(f"--offline-fixtures: {fixtures} is not a directory", file=err)
-        return EXIT_CANNOT_START
-    try:
-        now = default_now() if arguments.now is None else parse_now(arguments.now)
-    except ValueError as exc:
-        print(f"--now: {exc}", file=err)
-        return EXIT_CANNOT_START
+    if deps is None:
+        fixtures: Path | None = arguments.offline_fixtures
+        if fixtures is not None and not fixtures.is_dir():
+            print(f"--offline-fixtures: {fixtures} is not a directory", file=err)
+            return EXIT_CANNOT_START
+        try:
+            now = default_now() if arguments.now is None else parse_now(arguments.now)
+        except ValueError as exc:
+            print(f"--now: {exc}", file=err)
+            return EXIT_CANNOT_START
 
-    # `--json` promises one machine-readable document, so the document gets
-    # stdout to itself and the notifier's blocks go to stderr. Without this
-    # the blocks preceded the document and `json.loads` failed on every run
-    # that sent or emitted a notice — the runs a calibration log exists for.
-    # On the human-readable path the whole operator view belongs together, so
-    # the notifier writes to the same stream everything else does.
-    try:
-        deps = build_local_deps(
-            state_file=arguments.state_file,
-            now=lambda: now,
-            offline_fixtures=fixtures,
-            notifier_stream=err if arguments.json else out,
-            composer_override=None if arguments.composer is None else ComposerName(arguments.composer),
-        )
-    except ValueError as exc:
-        # `select_composer` raises when `--composer agent` (or
-        # `RAIN_ALERT_COMPOSER=agent`) names a runtime nothing configured —
-        # an operator asking for the agent composer needs to hear about a
-        # missing deploy before a cycle runs, not on the first send.
-        print(f"--composer: {exc}", file=err)
-        return EXIT_CANNOT_START
+        # `--json` promises one machine-readable document, so the document
+        # gets stdout to itself and the notifier's blocks go to stderr.
+        # Without this the blocks preceded the document and `json.loads`
+        # failed on every run that sent or emitted a notice — the runs a
+        # calibration log exists for. On the human-readable path the whole
+        # operator view belongs together, so the notifier writes to the same
+        # stream everything else does.
+        try:
+            deps = build_local_deps(
+                state_file=arguments.state_file,
+                now=lambda: now,
+                offline_fixtures=fixtures,
+                notifier_stream=err if arguments.json else out,
+                composer_override=None if arguments.composer is None else ComposerName(arguments.composer),
+            )
+        except ValueError as exc:
+            # `select_composer` raises when `--composer agent` (or
+            # `RAIN_ALERT_COMPOSER=agent`) names a runtime nothing configured —
+            # an operator asking for the agent composer needs to hear about a
+            # missing deploy before a cycle runs, not on the first send.
+            print(f"--composer: {exc}", file=err)
+            return EXIT_CANNOT_START
+        if publisher is None:
+            publisher = select_snapshot_publisher(os.environ)
+
     config = deps.config.load()
     result = RunAlertCycle(deps).execute()
+
+    if publisher is not None:
+        # Reporting, not notifying (public-status-page). If the destination
+        # is unreachable the alert still went out above this line — a page
+        # that cannot be updated is worth strictly less than an alert that
+        # does not. Same posture as the operator-notice guard in
+        # `agent_composer.py::_fell_back`.
+        with suppress(Exception):
+            publisher.publish(build_snapshot(result, config, _recent_alerts(deps, config)))
 
     print(as_json(result, config) if arguments.json else render(result, config), file=out)
     return EXIT_OK

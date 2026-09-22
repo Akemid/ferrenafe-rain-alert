@@ -296,3 +296,19 @@ class FakeAlertRepository:
         self._state.clear_active_outage(city_slug)
         self.clear_outage_calls.append(city_slug)
         self.log.record("alerts", "clear_active_outage", city_slug)
+
+
+@dataclass
+class RecordingPublisher:
+    """`SnapshotPublisher` that records every document it was given, in order.
+
+    Unlike the other fakes here it is not part of `build_fake_deps`'s object
+    graph: publishing is called from the entry point, after `RunAlertCycle`
+    has already returned (see `ports.SnapshotPublisher`), so tests wire it in
+    directly rather than through `CycleDependencies`.
+    """
+
+    documents: list[dict[str, Any]] = field(default_factory=list)
+
+    def publish(self, document: dict[str, Any]) -> None:
+        self.documents.append(document)
