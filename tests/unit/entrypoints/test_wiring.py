@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import rain_alert.adapters.s3_snapshot_publisher as s3_snapshot_publisher
 from rain_alert.adapters.agent_composer import AgentBackedComposer
 from rain_alert.adapters.agentcore_invoker import AGENT_RUNTIME_ARN_ENV_VAR, BedrockAgentCoreInvoker
 from rain_alert.adapters.local.json_file_snapshot_publisher import SNAPSHOT_PATH_ENV_VAR, JsonFileSnapshotPublisher
@@ -23,6 +25,17 @@ from tests.support.fakes import FakeNotifier
 
 NOW = datetime(2026, 9, 3, 12, tzinfo=UTC)
 FAKE_ARN = "arn:aws:bedrock-agentcore:us-east-1:example-account-id:runtime/example-runtime-abc123"
+
+
+class _SpyS3Client:
+    """Records what it was asked to put. No `unittest.mock`, per project rule."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def put_object(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        return {}
 
 
 def _config(composer: ComposerName) -> AlertConfig:
@@ -99,13 +112,24 @@ class TestSelectSnapshotPublisher:
 
         assert isinstance(publisher, S3SnapshotPublisher)
 
-    def test_the_key_env_var_is_honoured_when_the_bucket_is_set(self) -> None:
+    def test_the_key_env_var_is_honoured_when_the_bucket_is_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Asserted through observable behaviour — the `Key=` `publish()`
+        actually sends — rather than through `S3SnapshotPublisher`'s private
+        `_key` attribute, which could be renamed without this test noticing
+        a real regression. `boto3.client` is monkeypatched as the
+        client-factory seam (same pattern as
+        `test_agentcore_invoker.py::test_the_real_client_is_built_...`), so
+        no real client is ever built."""
+        spy = _SpyS3Client()
+        monkeypatch.setattr(s3_snapshot_publisher.boto3, "client", lambda *args, **kwargs: spy)
         publisher = select_snapshot_publisher(
             {SNAPSHOT_BUCKET_ENV_VAR: "ferrenafe-status", SNAPSHOT_KEY_ENV_VAR: "snapshots/latest.json"}
         )
-
         assert isinstance(publisher, S3SnapshotPublisher)
-        assert publisher._key == "snapshots/latest.json"  # noqa: SLF001 — the property under test
+
+        publisher.publish({})
+
+        assert spy.calls[0]["Key"] == "snapshots/latest.json"
 
     def test_a_path_selects_the_local_file_publisher(self, tmp_path: Path) -> None:
         publisher = select_snapshot_publisher({SNAPSHOT_PATH_ENV_VAR: str(tmp_path / "status.json")})

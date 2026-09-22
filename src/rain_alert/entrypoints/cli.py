@@ -75,6 +75,14 @@ _PREVIEW_LABEL = "PREVIEW (NOT SENT)"
 EXIT_OK = 0
 EXIT_CANNOT_START = 2
 
+#: How many past alerts the public page shows alongside this cycle's verdict.
+#: This is a status page, not an archive: enough for a reader to see a short
+#: recent history, not the full record — the state file and the `--json`
+#: calibration output remain the complete one. Chosen, not derived from
+#: `dedup_lookback_hours`, because that window is sized for dedup
+#: correctness and can hold far more entries than belong on a page.
+MAX_RECENT_ALERTS = 5
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -281,15 +289,27 @@ def as_json(result: CycleResult, config: AlertConfig) -> str:
 def _recent_alerts(deps: CycleDependencies, config: AlertConfig) -> tuple[AlertRecord, ...]:
     """The alerts the public page shows alongside this cycle's verdict.
 
-    The window is the configured dedup lookback (`AlertConfig.dedup_lookback_hours`),
-    ending at the cycle clock — not "the last N records" (`AlertRepository`
-    exposes no such query). Bounding the window at `deps.now()` already makes
-    it the tail of the city's alert history: nothing in it can be newer than
-    the cycle that is asking.
+    The query window is the configured dedup lookback
+    (`AlertConfig.dedup_lookback_hours`), ending at the cycle clock — not
+    "the last N records" (`AlertRepository` exposes no such query). Bounding
+    it at `deps.now()` guarantees nothing returned is newer than this cycle;
+    it says nothing about *display* order or count, and both are resolved
+    here explicitly rather than left as an accident of what the port
+    happens to return:
+
+    - **Newest first.** `AlertRepository.alerts_with_window_start_between`
+      is documented ascending by window start (`ports/__init__.py`). A
+      reader opening the page's "alertas enviadas" section expects the
+      latest alert at the top, the way any feed does, so the query result
+      is reversed here.
+    - **Bounded to `MAX_RECENT_ALERTS`**, applied after reordering, so the
+      kept entries are always the most recent ones — never the oldest
+      `MAX_RECENT_ALERTS` of a longer, unordered slice.
     """
     now = deps.now()
     earliest_start = now - timedelta(hours=config.dedup_lookback_hours)
-    return deps.alerts.alerts_with_window_start_between(config.city_slug, earliest_start, now)
+    ascending = deps.alerts.alerts_with_window_start_between(config.city_slug, earliest_start, now)
+    return tuple(reversed(ascending))[:MAX_RECENT_ALERTS]
 
 
 def main(

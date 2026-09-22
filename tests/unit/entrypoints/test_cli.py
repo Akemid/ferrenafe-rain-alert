@@ -24,10 +24,11 @@ from rain_alert.adapters.open_meteo import OpenMeteoForecastProvider
 from rain_alert.adapters.senamhi_scraper import SenamhiWarningScraper
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
 from rain_alert.domain.config import AlertConfig
-from rain_alert.domain.messages import OperatorNotice
-from rain_alert.domain.values import ComposerName, NoticeKind, SourceName
+from rain_alert.domain.messages import AlertMessage, AlertRecord, OperatorNotice
+from rain_alert.domain.values import ComposerName, Level, NoticeKind, SourceName, TimeWindow
 from rain_alert.entrypoints.cli import (
     EXIT_OK,
+    MAX_RECENT_ALERTS,
     OPEN_METEO_FIXTURE_NAME,
     SENAMHI_FIXTURE_NAME,
     as_json,
@@ -44,7 +45,7 @@ from tests.support.fixtures import (
     SENAMHI_HISTORY_ONLY,
     SENAMHI_PRECIPITATION_COAST,
 )
-from tests.support.wiring import build_fake_deps
+from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
 
 NOW = "2026-09-04T12:00:00+00:00"
 NOW_DT = datetime(2026, 9, 4, 12, tzinfo=UTC)
@@ -695,3 +696,68 @@ class TestSnapshotPublishing:
 
         assert code == 0
         assert not (tmp_path / "status.json").exists()
+
+
+def _alert_titled(title: str, *, hours_before_now: float) -> AlertRecord:
+    """A minimal, genuine `AlertRecord` for ordering/bounding assertions.
+
+    `title` is the probe: it is otherwise meaningless, chosen so a test can
+    read the published order and the kept set straight off the document
+    without decoding timestamps.
+    """
+    window_start = DEFAULT_NOW - timedelta(hours=hours_before_now)
+    window = TimeWindow(start=window_start, end=window_start + timedelta(hours=48))
+    message = AlertMessage(title=title, body="body", level=Level.IMMINENT, valid_until=window_start)
+    return AlertRecord(
+        city_slug=DEFAULT_CONFIG.city_slug,
+        level=Level.IMMINENT,
+        window=window,
+        sent_at=window_start,
+        message=message,
+        reasons=(),
+        senamhi_status="available",
+        open_meteo_status="available",
+        composer="template",
+    )
+
+
+class TestRecentAlertsOrderAndCount:
+    """Fix round 1, finding 1: `AlertRepository.alerts_with_window_start_between`
+    is documented ascending by window start (`ports/__init__.py`); nothing
+    about bounding the query window at `now` reorders that, and it says
+    nothing about how many belong on a page. Both have to be resolved
+    explicitly by `_recent_alerts`, not left as an accident of what the port
+    happens to return."""
+
+    def test_recent_alerts_are_published_newest_first(self) -> None:
+        """A reader opening "alertas enviadas" expects the latest alert at
+        the top, the way any feed does — the opposite of what the port
+        returns unreordered."""
+        oldest = _alert_titled("oldest", hours_before_now=30)
+        middle = _alert_titled("middle", hours_before_now=20)
+        newest = _alert_titled("newest", hours_before_now=10)
+        publisher = RecordingPublisher()
+
+        main([], publisher=publisher, deps=build_fake_deps(prior_alerts=[oldest, middle, newest]))
+
+        titles = [entry["title"] for entry in publisher.documents[0]["recent_alerts"]]
+        assert titles == ["newest", "middle", "oldest"]
+
+    def test_recent_alerts_are_bounded_to_max_recent_alerts(self) -> None:
+        """The dedup lookback window (72h by default) sizes a query for
+        dedup correctness, not a page section; without an explicit cap the
+        page would grow with however many alerts happened to land in it."""
+        spacing_hours = 4
+        records = [
+            _alert_titled(str(index), hours_before_now=(index + 1) * spacing_hours)
+            for index in range(MAX_RECENT_ALERTS + 3)
+        ]
+        publisher = RecordingPublisher()
+
+        main([], publisher=publisher, deps=build_fake_deps(prior_alerts=records))
+
+        published = publisher.documents[0]["recent_alerts"]
+        assert len(published) == MAX_RECENT_ALERTS
+        # The kept ones are the most recent: indices 0..MAX_RECENT_ALERTS-1,
+        # the smallest `hours_before_now`.
+        assert {entry["title"] for entry in published} == {str(i) for i in range(MAX_RECENT_ALERTS)}
