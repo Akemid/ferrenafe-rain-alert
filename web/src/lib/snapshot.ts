@@ -137,6 +137,17 @@ export function parseSnapshot(input: unknown): Snapshot {
 
   requireKeys(input, TOP_LEVEL_KEYS, 'document');
 
+  const evaluatedAt = String(input.evaluated_at);
+  if (!Number.isFinite(new Date(evaluatedAt).getTime())) {
+    // `ageInHours` feeds this into `new Date(...).getTime()`; an
+    // unparseable value produces `NaN`, and `NaN > staleAfterHours` is
+    // `false` in JS — so a corrupt timestamp would silently be treated as
+    // fresh (never stale) instead of unknown. Rejected here, the same way
+    // an unsupported schema_version is, rather than rendering as if the
+    // reading were current.
+    throw new SnapshotParseError(`snapshot "evaluated_at" is not a valid timestamp: ${JSON.stringify(evaluatedAt)}`);
+  }
+
   const window = input.window;
   if (!isRecord(window) || typeof window.start !== 'string' || typeof window.end !== 'string') {
     throw new SnapshotParseError('snapshot "window" must have string "start" and "end"');
@@ -157,7 +168,7 @@ export function parseSnapshot(input: unknown): Snapshot {
   return {
     schema_version: version,
     city: String(input.city),
-    evaluated_at: String(input.evaluated_at),
+    evaluated_at: evaluatedAt,
     level: String(input.level),
     level_label: String(input.level_label),
     window: { start: window.start, end: window.end },

@@ -68,4 +68,14 @@ describe('reading a snapshot', () => {
   it('refuses a document whose schema_version is not a number', () => {
     expect(() => parseSnapshot({ ...sampleQuiet, schema_version: '1' })).toThrow();
   });
+
+  it('refuses a document whose evaluated_at is not a valid timestamp', () => {
+    // Fix round 1, task 8 audit finding: `ageInHours` feeds `evaluated_at`
+    // into `new Date(...).getTime()`. An unparseable value produces `NaN`,
+    // and `NaN > staleAfterHours` is `false` in JS — so a corrupt timestamp
+    // would silently be treated as fresh (never stale), the same class of
+    // false-reassurance defect as the recent-alerts one. Rejected here, at
+    // parse time, the same way an unsupported schema_version already is.
+    expect(() => parseSnapshot({ ...sampleQuiet, evaluated_at: 'not-a-timestamp' })).toThrow();
+  });
 });
