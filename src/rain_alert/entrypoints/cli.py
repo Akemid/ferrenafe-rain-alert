@@ -43,7 +43,6 @@ import json
 import os
 import sys
 from collections.abc import Sequence
-from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
@@ -55,6 +54,7 @@ from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
 from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.messages import AlertRecord
 from rain_alert.domain.reasons import render_reasons_en
+from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.snapshot import build_snapshot
 from rain_alert.domain.sources import Available, SourceResult
 from rain_alert.domain.template import MessageComposer
@@ -82,6 +82,23 @@ EXIT_CANNOT_START = 2
 #: `dedup_lookback_hours`, because that window is sized for dedup
 #: correctness and can hold far more entries than belong on a page.
 MAX_RECENT_ALERTS = 5
+
+#: Prefix for the one line the cycle writes when the public snapshot could not
+#: be published.
+#:
+#: The guard around that call is deliberately forgiving — a page that cannot be
+#: updated is worth strictly less than an alert that went out — but it was also
+#: silent, and the two are separable. A frozen page and a page updating
+#: correctly looked identical from the operator's side: every cycle reported
+#: success, and the first person to learn otherwise would have been a resident
+#: reading a stale level. The guard also covers `_recent_alerts` and
+#: `build_snapshot`, so a repository read error or a domain bug read as
+#: "published fine" too.
+#:
+#: It goes to the error stream, never standard output: `--json` promises one
+#: machine-readable document there and nothing else. It does not change the
+#: exit code.
+SNAPSHOT_FAILURE_PREFIX = "[SNAPSHOT NOT PUBLISHED]"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -384,9 +401,12 @@ def main(
         # is unreachable the alert still went out above this line — a page
         # that cannot be updated is worth strictly less than an alert that
         # does not. Same posture as the operator-notice guard in
-        # `agent_composer.py::_fell_back`.
-        with suppress(Exception):
+        # `agent_composer.py::_fell_back`, including the second half of it:
+        # best-effort, but *say so*.
+        try:
             publisher.publish(build_snapshot(result, config, _recent_alerts(deps, config)))
+        except Exception as exc:  # noqa: BLE001 — a reporting fault must not cost the cycle
+            print(f"{SNAPSHOT_FAILURE_PREFIX} {sanitize_source_text(f'{type(exc).__name__}: {exc}')}", file=err)
 
     print(as_json(result, config) if arguments.json else render(result, config), file=out)
     return EXIT_OK

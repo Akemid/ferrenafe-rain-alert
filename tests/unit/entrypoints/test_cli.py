@@ -640,8 +640,11 @@ class TestTheDefaultClock:
 class RaisingPublisher:
     """Every destination fails eventually. This one always does."""
 
+    def __init__(self, error: Exception | None = None) -> None:
+        self._error = error if error is not None else OSError("bucket on fire")
+
     def publish(self, document: dict[str, Any]) -> None:
-        raise OSError("bucket on fire")
+        raise self._error
 
 
 class TestSnapshotPublishing:
@@ -656,6 +659,59 @@ class TestSnapshotPublishing:
         exit_code = main(["--json"], publisher=RaisingPublisher(), deps=build_fake_deps())
 
         assert exit_code == EXIT_OK
+
+    def test_a_publish_failure_is_announced_on_the_error_stream(self) -> None:
+        """Best-effort, but *say so* — the precedent is
+        `agent_composer.py::_fell_back`.
+
+        The guard swallowed the exception in silence, so a page frozen at an
+        old snapshot looked identical to a page updating correctly: every
+        cycle reported success and nobody learned otherwise until a resident
+        read a stale level. The guard also covers `_recent_alerts` and
+        `build_snapshot`, so a repository read error or a domain bug read as
+        "published fine" too.
+        """
+        out, err = io.StringIO(), io.StringIO()
+
+        main([], publisher=RaisingPublisher(), deps=build_fake_deps(), stdout=out, stderr=err)
+
+        notice = err.getvalue()
+        assert "OSError" in notice
+        assert len(notice.strip().splitlines()) == 1
+
+    def test_announcing_the_failure_does_not_turn_it_into_one(self) -> None:
+        """The other half, pinned separately: a page that cannot be updated is
+        worth strictly less than an alert that went out. Saying so must not
+        change the exit code a future cron or CI wrapper reads."""
+        out, err = io.StringIO(), io.StringIO()
+
+        exit_code = main([], publisher=RaisingPublisher(), deps=build_fake_deps(), stdout=out, stderr=err)
+
+        assert exit_code == EXIT_OK
+
+    def test_the_notice_survives_a_multi_line_exception_as_one_line(self) -> None:
+        """`str(exc)` on an S3 error quotes whatever the service sent back.
+        The operator reads this in a terminal, where a newline in the middle
+        of a notice is how a forged second line gets written — the defect
+        `domain/sanitize.py` exists for."""
+        out, err = io.StringIO(), io.StringIO()
+
+        main(
+            [],
+            publisher=RaisingPublisher(OSError("denied\nSources    all good")),
+            deps=build_fake_deps(),
+            stdout=out,
+            stderr=err,
+        )
+
+        assert len(err.getvalue().strip().splitlines()) == 1
+
+    def test_nothing_is_announced_when_the_publish_succeeds(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+
+        main([], publisher=RecordingPublisher(), deps=build_fake_deps(), stdout=out, stderr=err)
+
+        assert err.getvalue() == ""
 
     def test_the_published_document_describes_the_cycle_that_just_ran(self) -> None:
         publisher = RecordingPublisher()
