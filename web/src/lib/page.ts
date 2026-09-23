@@ -214,12 +214,21 @@ function renderStatus(elements: PageElements, snapshot: Snapshot, staleAgeHours:
   status.appendChild(paragraph(`Última evaluación: ${formatPublishedTimestamp(snapshot.evaluated_at)}`));
 
   if (snapshot.alert === null) {
-    // "No hay ninguna alerta activa" is a claim about the world, and an
-    // incomplete cycle is not entitled to make it. It can only report what
-    // it did.
+    // "No hay ninguna alerta activa EN ESTE MOMENTO" is a present-tense claim
+    // about the world. Two cycles are not entitled to make it: one that read
+    // nothing, and one whose reading is old enough to be stale — three weeks
+    // on, the page has no idea what is true right now. Both can only report
+    // what that cycle did.
+    //
+    // The stale half of this condition is not hypothetical bookkeeping: the
+    // sentence reached the stale path for the first time when `renderOk` and
+    // `renderStale` were merged into this function, because the old
+    // `renderStale` rendered no alert paragraph at all. Collapsing two paths
+    // fixes fields going missing from one of them and introduces the mirror
+    // risk — a field arriving in one that was never written for it.
     status.appendChild(
       paragraph(
-        availability.incomplete
+        availability.incomplete || stale
           ? 'No se envió ninguna alerta en esta evaluación.'
           : 'No hay ninguna alerta activa en este momento.',
       ),

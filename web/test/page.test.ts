@@ -235,6 +235,20 @@ describe('renderPage — the stale path renders the same fields as the fresh one
     expect(headingText(elements)).toBe('Último nivel conocido: sin riesgo');
   });
 
+  it('does not claim no alert is active "en este momento" from three-week-old data', () => {
+    // The merged rendering path introduced this sentence on the stale path,
+    // where the old `renderStale` rendered no alert paragraph at all — the
+    // exact risk of collapsing two paths into one. The rule is the one
+    // already written for an incomplete cycle: "No hay ninguna alerta activa
+    // en este momento" is a present-tense claim about the world, and a cycle
+    // that last ran 21 days ago is no more entitled to make it than one that
+    // read nothing.
+    const elements = render(sampleQuiet, STALE);
+
+    expect(elements.status.textContent).not.toContain('No hay ninguna alerta activa en este momento.');
+    expect(elements.status.textContent).toContain('No se envió ninguna alerta en esta evaluación.');
+  });
+
   it('does not paint a stale page with the level colour', () => {
     // A two-day-old "sin riesgo" in green reads as a current all-clear.
     const elements = render(sampleQuiet, STALE);

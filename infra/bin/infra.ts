@@ -3,7 +3,15 @@ import * as cdk from 'aws-cdk-lib/core';
 import { PublicSnapshotStack } from '../lib/public-snapshot-stack';
 
 const app = new cdk.App();
-new PublicSnapshotStack(app, 'PublicSnapshotStack', {
+
+/**
+ * Exported so `test/app.test.ts` can assert the deploy target THIS file
+ * configures. The stack tests build their own `PublicSnapshotStack` with no
+ * `env`, which is right for asserting the template but means every decision
+ * below — the region pin above all — was covered by nothing at all.
+ * Constructing an app is pure: no credentials, no network, no synth.
+ */
+export const stack = new PublicSnapshotStack(app, 'PublicSnapshotStack', {
   // Deliberate, explicit stack name so the deploy runbook can reference it
   // unambiguously in `cdk deploy <name>` and in the AWS console, instead of
   // relying on the CDK construct id's default CloudFormation stack naming.
