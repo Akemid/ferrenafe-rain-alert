@@ -22,3 +22,11 @@ pnpm-debug.log*
 
 # jetbrains setting folder
 .idea/
+
+# Local development snapshots. `npm run dev` and `astro build` copy anything
+# under `public/` verbatim into `dist/`, and the page fetches `/data/status.json`
+# at runtime — so a snapshot committed here would be served to residents as the
+# current state, with a timestamp that stops being true the moment it lands.
+# The real one comes from S3 through the Amplify rewrite. Regenerate locally with:
+#   RAIN_ALERT_SNAPSHOT_PATH=web/public/data/status.json uv run rain-alert-cycle --offline-fixtures <dir>
+public/data/
