@@ -1,0 +1,51 @@
+# Amplify Hosting build settings for the public status page.
+#
+# This file lives at the repository root on purpose: when Amplify finds an
+# `amplify.yml` in the repository, its settings OVERRIDE whatever is saved in
+# the console. The console then becomes a display of this file rather than a
+# second source of truth that can drift from it.
+#
+# Monorepo syntax, which differs from the single-app form: applications are a
+# list, and each one carries `appRoot`. That key MUST equal the
+# `AMPLIFY_MONOREPO_APP_ROOT` environment variable, which the console sets when
+# "Connecting a monorepo? Pick a folder" is checked during app creation. If the
+# two disagree the build fails, and the error does not say so plainly.
+#
+# `buildPath` is deliberately absent, so install and build run from `appRoot`
+# (`web/`) and `baseDirectory` resolves relative to it. Note that the web suite
+# reads `../contracts/public-snapshot.json` — the golden document that pins the
+# published snapshot's shape from both sides — so the build depends on the
+# whole repository being checked out, not only `web/`. Verified from a clean
+# `git archive HEAD`: 63 tests pass and `astro build` completes.
+version: 1
+applications:
+  - appRoot: web
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            # `ci`, not `install`: the lockfile is committed and must decide
+            # the tree. `web/.npmrc` sets `ignore-scripts=true`, which is safe
+            # here and verified rather than assumed — esbuild resolves its
+            # platform binary through optionalDependencies, not its postinstall.
+            - npm ci
+        build:
+          commands:
+            # The gate runs in the deploy because it is the last thing between
+            # a broken commit and a page residents read. This repository is
+            # private, so GitHub's branch protection needs a paid plan, which
+            # means a direct push to `main` reaches production without ever
+            # opening a pull request. Drop this line if branch protection is
+            # ever enabled — until then it is the only gate on that path.
+            #
+            # `npm test` is typecheck plus the suite: see `web/package.json`.
+            - npm test
+            - npm run build
+      artifacts:
+        # Relative to `appRoot`, so this is `web/dist`.
+        baseDirectory: dist
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - node_modules/**/*
