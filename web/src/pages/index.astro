@@ -10,7 +10,33 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>Alertas de lluvia — Ferreñafe</title>
-		<style>
+		<!-- `is:global`, and the whole block, deliberately.
+
+		     Astro's default is to scope a component's styles by rewriting every
+		     selector to require a generated attribute
+		     (`.status-level[data-astro-cid-lcdefpme]`) and adding that attribute
+		     at build time to the elements written in THIS template. Every
+		     element `src/lib/page.ts` builds with `document.createElement` —
+		     the level heading, the degraded notice, the staleness banner — has
+		     no such attribute, so those rules matched nothing and a live
+		     `riesgo inminente` was served in plain black body text. The full
+		     account is in
+		     `docs/blog/2026-09-28-two-tests-checked-both-ends-and-the-middle-was-missing.md`.
+
+		     Scoping is bought to stop one component's styles reaching another.
+		     This site is one page with one component, so it isolates nothing
+		     here, and it has already cost a mute alarm in production.
+
+		     The block is global as a whole rather than split into a scoped part
+		     and a global part. A split works, but it puts a standing question on
+		     every future rule — "is the element this paints written in the
+		     template or created by `page.ts`?" — answered correctly today and
+		     wrongly the day someone moves an element between them. One rule with
+		     no exceptions cannot be got wrong that way.
+
+		     `test/built-styles.test.ts` asserts this against the built output,
+		     because the transform in question exists nowhere else. -->
+		<style is:global>
 			body {
 				font-family: system-ui, sans-serif;
 				max-width: 40rem;

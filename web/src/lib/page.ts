@@ -29,8 +29,14 @@ export interface PageElements {
 /**
  * `level-none` / `level-prepare` / `level-imminent`. `parseSnapshot` has
  * already rejected anything outside that set, and `markup.test.ts` asserts
- * `index.astro` defines a rule for each — the two halves of the only
- * coupling on this page that a resident reads as colour.
+ * `index.astro` defines a rule for each — two ends of the only coupling on
+ * this page that a resident reads as colour.
+ *
+ * Two ends, and a third party between them: the build. Every element below is
+ * made with `document.createElement`, so it carries none of the attributes
+ * Astro adds to template-written markup, and a scoped stylesheet cannot reach
+ * any of it. `index.astro` keeps its styles global for that reason and
+ * `built-styles.test.ts` holds it to that, against the built output.
  */
 function levelClass(level: Snapshot['level']): string {
   return `level-${level}`;
