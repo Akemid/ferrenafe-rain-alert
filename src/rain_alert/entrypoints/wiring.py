@@ -30,17 +30,19 @@ from rain_alert.adapters.agentcore_invoker import AgentRuntimeSettings, BedrockA
 from rain_alert.adapters.console_notifier import ConsoleNotifier
 from rain_alert.adapters.http import HtmlFetcher, HttpxHtmlFetcher
 from rain_alert.adapters.local.json_alert_repository import JsonFileAlertRepository
+from rain_alert.adapters.local.json_file_snapshot_publisher import SNAPSHOT_PATH_ENV_VAR, JsonFileSnapshotPublisher
 from rain_alert.adapters.local.offline_sources import FileHtmlFetcher, OfflineOpenMeteoProvider
 from rain_alert.adapters.local.static_config_repository import StaticConfigRepository
 from rain_alert.adapters.local.static_contact_repository import StaticContactRepository
 from rain_alert.adapters.open_meteo import OpenMeteoForecastProvider
+from rain_alert.adapters.s3_snapshot_publisher import SNAPSHOT_BUCKET_ENV_VAR, SNAPSHOT_KEY_ENV_VAR, S3SnapshotPublisher
 from rain_alert.adapters.senamhi_scraper import SenamhiWarningScraper
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.risk import RiskEvaluator
 from rain_alert.domain.template import MessageComposer
 from rain_alert.domain.values import ComposerName
-from rain_alert.ports import ForecastProvider, Notifier
+from rain_alert.ports import ForecastProvider, Notifier, SnapshotPublisher
 from rain_alert.ports import MessageComposer as MessageComposerPort
 
 SENAMHI_FIXTURE_NAME = "senamhi.html"
@@ -83,6 +85,33 @@ def select_composer(
         notifier=notifier,
         now=now,
     )
+
+
+def select_snapshot_publisher(env: Mapping[str, str]) -> SnapshotPublisher | None:
+    """Where this cycle's public snapshot goes, or `None` for "do not publish".
+
+    Absent by default, on purpose: a developer running the cycle locally
+    must not write to a public bucket by accident. The bucket wins when both
+    are set, because S3 is the production destination and a leftover local
+    path in the environment must not silently take over.
+
+    The return type is deliberately `SnapshotPublisher | None` rather than
+    `Any`: it is the one call site in this codebase that assigns a concrete
+    adapter to a `Protocol`-typed slot, which is what makes mypy actually
+    check both `S3SnapshotPublisher` and `JsonFileSnapshotPublisher` against
+    the port they claim to satisfy (design.md D9 — `Protocol`, checked
+    statically, never `@runtime_checkable`).
+
+    Args:
+        env: Where the three snapshot environment variables are read from.
+            The caller passes `os.environ` in production and a plain `dict`
+            in tests.
+    """
+    bucket = env.get(SNAPSHOT_BUCKET_ENV_VAR)
+    if bucket:
+        return S3SnapshotPublisher(bucket, key=env.get(SNAPSHOT_KEY_ENV_VAR, "status.json"))
+    path = env.get(SNAPSHOT_PATH_ENV_VAR)
+    return JsonFileSnapshotPublisher(Path(path)) if path else None
 
 
 def build_local_deps(

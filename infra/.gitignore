@@ -1,0 +1,14 @@
+*.js
+!jest.config.js
+*.d.ts
+node_modules
+
+# CDK asset staging directory
+.cdk.staging
+cdk.out
+
+# package-lock.json is deliberately NOT ignored. It pins the tree that runs
+# with CloudFormation deploy credentials, and an unpinned tree is re-resolved
+# on every machine. It carries one third-party email address — npm's copy of
+# glob@10.5.0's published deprecation notice — which the secret scan forgives
+# by exact string in tests/hygiene/test_repo_hygiene.py.

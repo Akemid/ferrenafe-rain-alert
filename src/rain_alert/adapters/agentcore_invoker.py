@@ -107,9 +107,15 @@ MAX_RESPONSE_BYTES = 1_048_576
 _SERVICE_NAME = "bedrock-agentcore"
 _JSON_CONTENT_TYPE = "application/json"
 
-#: The one key `agent/app.py::PROMPT_KEY` reads. Pinned here as well so a
-#: change to either side cannot drift silently — `contracts/agent-composition.json`
-#: does the same job for the prompt payload and the output contract.
+#: The one key `agent/app.py::PROMPT_KEY` reads. Pinned here and there, in two
+#: Python projects with separate test suites and separate interpreters.
+#:
+#: **Nothing guards the two against each other today.** Rename this key on one
+#: side and both suites stay green. A contract file asserted from both sides is
+#: planned and belongs to the composer change; until it is written, this comment
+#: is the whole of the protection, which is to say there is none. Earlier
+#: versions of this comment said the drift was caught — see
+#: `docs/blog/2026-09-21-three-docstrings-cited-a-file-that-was-never-written.md`.
 PROMPT_PAYLOAD_KEY = "prompt"
 
 

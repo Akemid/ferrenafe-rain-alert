@@ -13,18 +13,22 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from rain_alert.adapters.console_notifier import ALERT_PREFIX, NOTICE_PREFIX
 from rain_alert.adapters.local.json_alert_repository import JsonFileAlertRepository
+from rain_alert.adapters.local.json_file_snapshot_publisher import SNAPSHOT_PATH_ENV_VAR
 from rain_alert.adapters.open_meteo import OpenMeteoForecastProvider
 from rain_alert.adapters.senamhi_scraper import SenamhiWarningScraper
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
 from rain_alert.domain.config import AlertConfig
-from rain_alert.domain.messages import OperatorNotice
-from rain_alert.domain.values import ComposerName, NoticeKind, SourceName
+from rain_alert.domain.messages import AlertMessage, AlertRecord, OperatorNotice
+from rain_alert.domain.values import ComposerName, Level, NoticeKind, SourceName, TimeWindow
 from rain_alert.entrypoints.cli import (
+    EXIT_OK,
+    MAX_RECENT_ALERTS,
     OPEN_METEO_FIXTURE_NAME,
     SENAMHI_FIXTURE_NAME,
     as_json,
@@ -34,12 +38,14 @@ from rain_alert.entrypoints.cli import (
     render,
 )
 from rain_alert.entrypoints.wiring import build_local_deps
+from tests.support.fakes import RecordingPublisher
 from tests.support.fixtures import (
     SENAMHI_ACTIVE_WARNING,
     SENAMHI_BROKEN_STRUCTURE,
     SENAMHI_HISTORY_ONLY,
     SENAMHI_PRECIPITATION_COAST,
 )
+from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
 
 NOW = "2026-09-04T12:00:00+00:00"
 NOW_DT = datetime(2026, 9, 4, 12, tzinfo=UTC)
@@ -629,3 +635,185 @@ class TestTheDefaultClock:
 
         assert code != 0
         assert "--now" in capsys.readouterr().err
+
+
+class RaisingPublisher:
+    """Every destination fails eventually. This one always does."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self._error = error if error is not None else OSError("bucket on fire")
+
+    def publish(self, document: dict[str, Any]) -> None:
+        raise self._error
+
+
+class TestSnapshotPublishing:
+    """public-status-page: publishing is reporting, not notifying. If the
+    destination is unreachable the alert still goes out — the same posture
+    as the operator-notice guard in `agent_composer.py::_fell_back`."""
+
+    def test_a_publisher_that_raises_does_not_fail_the_cycle(self) -> None:
+        """The alert reaches the community even when the page cannot be
+        updated. A failure in the reporting channel must not cost the
+        community its alert."""
+        exit_code = main(["--json"], publisher=RaisingPublisher(), deps=build_fake_deps())
+
+        assert exit_code == EXIT_OK
+
+    def test_a_publish_failure_is_announced_on_the_error_stream(self) -> None:
+        """Best-effort, but *say so* — the precedent is
+        `agent_composer.py::_fell_back`.
+
+        The guard swallowed the exception in silence, so a page frozen at an
+        old snapshot looked identical to a page updating correctly: every
+        cycle reported success and nobody learned otherwise until a resident
+        read a stale level. The guard also covers `_recent_alerts` and
+        `build_snapshot`, so a repository read error or a domain bug read as
+        "published fine" too.
+        """
+        out, err = io.StringIO(), io.StringIO()
+
+        main([], publisher=RaisingPublisher(), deps=build_fake_deps(), stdout=out, stderr=err)
+
+        notice = err.getvalue()
+        assert "OSError" in notice
+        assert len(notice.strip().splitlines()) == 1
+
+    def test_announcing_the_failure_does_not_turn_it_into_one(self) -> None:
+        """The other half, pinned separately: a page that cannot be updated is
+        worth strictly less than an alert that went out. Saying so must not
+        change the exit code a future cron or CI wrapper reads."""
+        out, err = io.StringIO(), io.StringIO()
+
+        exit_code = main([], publisher=RaisingPublisher(), deps=build_fake_deps(), stdout=out, stderr=err)
+
+        assert exit_code == EXIT_OK
+
+    def test_the_notice_survives_a_multi_line_exception_as_one_line(self) -> None:
+        """`str(exc)` on an S3 error quotes whatever the service sent back.
+        The operator reads this in a terminal, where a newline in the middle
+        of a notice is how a forged second line gets written — the defect
+        `domain/sanitize.py` exists for."""
+        out, err = io.StringIO(), io.StringIO()
+
+        main(
+            [],
+            publisher=RaisingPublisher(OSError("denied\nSources    all good")),
+            deps=build_fake_deps(),
+            stdout=out,
+            stderr=err,
+        )
+
+        assert len(err.getvalue().strip().splitlines()) == 1
+
+    def test_nothing_is_announced_when_the_publish_succeeds(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+
+        main([], publisher=RecordingPublisher(), deps=build_fake_deps(), stdout=out, stderr=err)
+
+        assert err.getvalue() == ""
+
+    def test_the_published_document_describes_the_cycle_that_just_ran(self) -> None:
+        publisher = RecordingPublisher()
+
+        main([], publisher=publisher, deps=build_fake_deps())
+
+        assert publisher.documents[0]["city"] == "Ferreñafe"
+        assert publisher.documents[0]["schema_version"] == 1
+
+    def test_an_injected_deps_graph_with_no_publisher_publishes_nothing(self) -> None:
+        """`deps` is how a test exercises the cycle in isolation; a `None`
+        publisher there must mean exactly what it says, not "check the real
+        environment" — otherwise a test run could publish to whatever the
+        developer's shell happens to have configured."""
+        exit_code = main([], deps=build_fake_deps())
+
+        assert exit_code == EXIT_OK
+
+    def test_a_configured_local_path_receives_the_snapshot_after_a_real_cycle(
+        self, capsys, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real wiring path, end to end: no injected `deps`, no injected
+        `publisher` — only the environment variable an operator would set."""
+        snapshot_path = tmp_path / "public" / "status.json"
+        monkeypatch.setenv(SNAPSHOT_PATH_ENV_VAR, str(snapshot_path))
+
+        code, _ = _run(capsys, tmp_path)
+
+        assert code == 0
+        document = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        assert document["city"] == "Ferreñafe"
+        assert document["schema_version"] == 1
+
+    def test_no_destination_configured_writes_nothing(self, capsys, tmp_path: Path) -> None:
+        """The default: a developer running the cycle locally must not write
+        to a public destination by accident."""
+        code, _ = _run(capsys, tmp_path)
+
+        assert code == 0
+        assert not (tmp_path / "status.json").exists()
+
+
+def _alert_titled(title: str, *, hours_before_now: float) -> AlertRecord:
+    """A minimal, genuine `AlertRecord` for ordering/bounding assertions.
+
+    `title` is the probe: it is otherwise meaningless, chosen so a test can
+    read the published order and the kept set straight off the document
+    without decoding timestamps.
+    """
+    window_start = DEFAULT_NOW - timedelta(hours=hours_before_now)
+    window = TimeWindow(start=window_start, end=window_start + timedelta(hours=48))
+    message = AlertMessage(title=title, body="body", level=Level.IMMINENT, valid_until=window_start)
+    return AlertRecord(
+        city_slug=DEFAULT_CONFIG.city_slug,
+        level=Level.IMMINENT,
+        window=window,
+        sent_at=window_start,
+        message=message,
+        reasons=(),
+        senamhi_status="available",
+        open_meteo_status="available",
+        composer="template",
+    )
+
+
+class TestRecentAlertsOrderAndCount:
+    """Fix round 1, finding 1: `AlertRepository.alerts_with_window_start_between`
+    is documented ascending by window start (`ports/__init__.py`); nothing
+    about bounding the query window at `now` reorders that, and it says
+    nothing about how many belong on a page. Both have to be resolved
+    explicitly by `_recent_alerts`, not left as an accident of what the port
+    happens to return."""
+
+    def test_recent_alerts_are_published_newest_first(self) -> None:
+        """A reader opening "alertas enviadas" expects the latest alert at
+        the top, the way any feed does — the opposite of what the port
+        returns unreordered."""
+        oldest = _alert_titled("oldest", hours_before_now=30)
+        middle = _alert_titled("middle", hours_before_now=20)
+        newest = _alert_titled("newest", hours_before_now=10)
+        publisher = RecordingPublisher()
+
+        main([], publisher=publisher, deps=build_fake_deps(prior_alerts=[oldest, middle, newest]))
+
+        titles = [entry["title"] for entry in publisher.documents[0]["recent_alerts"]]
+        assert titles == ["newest", "middle", "oldest"]
+
+    def test_recent_alerts_are_bounded_to_max_recent_alerts(self) -> None:
+        """The dedup lookback window (72h by default) sizes a query for
+        dedup correctness, not a page section; without an explicit cap the
+        page would grow with however many alerts happened to land in it."""
+        spacing_hours = 4
+        records = [
+            _alert_titled(str(index), hours_before_now=(index + 1) * spacing_hours)
+            for index in range(MAX_RECENT_ALERTS + 3)
+        ]
+        publisher = RecordingPublisher()
+
+        main([], publisher=publisher, deps=build_fake_deps(prior_alerts=records))
+
+        published = publisher.documents[0]["recent_alerts"]
+        assert len(published) == MAX_RECENT_ALERTS
+        # The kept ones are the most recent: indices 0..MAX_RECENT_ALERTS-1,
+        # the smallest `hours_before_now`.
+        assert {entry["title"] for entry in published} == {str(i) for i in range(MAX_RECENT_ALERTS)}

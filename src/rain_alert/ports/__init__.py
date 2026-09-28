@@ -1,4 +1,10 @@
-"""The seven ports `RunAlertCycle` depends on (design.md section 4, *contract*).
+"""The eight ports this application talks to the world through (design.md
+section 4, *contract*).
+
+Seven of them are `RunAlertCycle`'s and are bundled into `CycleDependencies`.
+The eighth, `SnapshotPublisher`, is the entry point's: `CycleResult` already
+carries everything the public page needs and is already returned, so the use
+case does not need to know a web page exists.
 
 `typing.Protocol`, structural typing — fakes in `tests/support/fakes.py` do
 not subclass these. `@runtime_checkable` is deliberately not used: it only
@@ -7,7 +13,7 @@ statically by `mypy --strict` (D9).
 """
 
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.entities import Contact, Forecast, Warning
@@ -81,3 +87,14 @@ class AlertRepository(Protocol):
     def get_active_outage(self, city_slug: str) -> OutageRecord | None: ...
     def save_active_outage(self, record: OutageRecord) -> None: ...  # upsert
     def clear_active_outage(self, city_slug: str) -> None: ...
+
+
+class SnapshotPublisher(Protocol):
+    """Where one cycle's public snapshot goes.
+
+    Called from the entry point, not from `RunAlertCycle`: `CycleResult`
+    already carries everything and is already returned, so the use case does
+    not need to know a web page exists.
+    """
+
+    def publish(self, document: dict[str, Any]) -> None: ...

@@ -22,7 +22,7 @@ from rain_alert.domain.reasons import (
     SenamhiUnavailableReason,
     WarningReason,
 )
-from rain_alert.domain.template import CHECKLIST_TRUNCATED_ES, MessageComposer
+from rain_alert.domain.template import CHECKLIST_TRUNCATED_ES, LEVEL_LABELS_ES, MessageComposer, render_reason_es
 from rain_alert.domain.values import Level, TimeWindow, WarningLevel
 
 NOW = datetime(2026, 9, 3, 12, tzinfo=UTC)
@@ -430,3 +430,18 @@ class TestDegradedDisclosure:
 
         assert "no hay un aviso oficial" in message.body.lower()
         assert "no estuvo disponible" not in message.body
+
+
+class TestTheSpanishRendererIsPublic:
+    """The snapshot published for the public page needs these, and the page
+    must not carry a second Spanish table that drifts from this one. Promoting
+    them is a rename: the domain already owned what this system says in
+    Spanish."""
+
+    def test_every_level_has_a_label(self) -> None:
+        assert set(LEVEL_LABELS_ES) == set(Level)
+
+    def test_a_warning_reason_renders_the_line_the_body_uses(self) -> None:
+        reason = WarningReason(level=WarningLevel.ORANGE, title="PRECIPITACIONES EN LA COSTA")
+
+        assert render_reason_es(reason) == ("Aviso oficial del SENAMHI, nivel naranja: PRECIPITACIONES EN LA COSTA.")

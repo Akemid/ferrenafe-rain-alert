@@ -6,8 +6,13 @@ contract exists on the application side as a frozen dataclass read by
 `agent/` is deployed to AgentCore Runtime, where the `rain_alert` package does
 not exist, and an import across that line works on a developer's machine and
 fails only after deploy — the most expensive place in this project to discover
-one. The drift guard is `contracts/agent-composition.json`, asserted from both
-suites, plus the architecture test that refuses the import in both directions.
+one. What guards the duplication today is the architecture test that refuses
+the import in both directions — and nothing else. A contract file asserted
+from both suites is planned, and writing it means deciding which fields it
+pins and where each side asserts it, which belongs to the composer change
+rather than here. Until then the two copies can drift silently, and this
+paragraph used to claim otherwise:
+`docs/blog/2026-09-21-three-docstrings-cited-a-file-that-was-never-written.md`.
 
 **What this model deliberately does not do.** It carries no length cap, no
 city rule, no header rule and no rule about numbers. Every one of those lives

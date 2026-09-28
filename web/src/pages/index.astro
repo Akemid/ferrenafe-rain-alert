@@ -1,0 +1,137 @@
+---
+// Static page: no server, no build-time fetch. `contracts/public-snapshot.json`
+// is fetched from `/data/status.json` in the browser, once per visit, by the
+// module script below — a build-time fetch would make every publish cycle
+// require a redeploy (design 2026-09-21, "The site").
+---
+
+<html lang="es">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Alertas de lluvia — Ferreñafe</title>
+		<style>
+			body {
+				font-family: system-ui, sans-serif;
+				max-width: 40rem;
+				margin: 2rem auto;
+				padding: 0 1rem;
+				line-height: 1.5;
+			}
+			.status-level {
+				font-size: 1.5rem;
+				font-weight: 700;
+			}
+			.level-none .status-level {
+				color: #1a7f37;
+			}
+			.level-prepare .status-level {
+				color: #9a6700;
+			}
+			.level-imminent .status-level {
+				color: #cf222e;
+			}
+			/* A "sin riesgo" from a cycle that could not read every source is
+			   not an all-clear, so it must not be painted with the green one.
+			   Two classes beat one on specificity, so this wins over
+			   `.level-none .status-level` above. `prepare` and `imminent` keep
+			   their own colours: an incomplete cycle that still found risk is
+			   telling the truth about the risk it found. */
+			.status-degraded.level-none .status-level {
+				color: #9a6700;
+			}
+			.status-stale {
+				border: 2px solid #9a6700;
+				padding: 1rem;
+				border-radius: 0.5rem;
+			}
+			.stale-warning {
+				font-weight: 700;
+				color: #9a6700;
+			}
+			.status-error {
+				border: 2px solid #cf222e;
+				padding: 1rem;
+				border-radius: 0.5rem;
+				color: #cf222e;
+			}
+			/* Not italic small print. This sentence qualifies the level above
+			   it, and a resident who skips it reads a reassurance the cycle
+			   did not earn. */
+			.degraded-notice {
+				font-weight: 700;
+				color: #9a6700;
+			}
+			#recent-alerts-error {
+				color: #cf222e;
+			}
+		</style>
+	</head>
+	<body>
+		<main>
+			<h1>Alertas de lluvia — Ferreñafe</h1>
+
+			<section id="status" aria-live="polite">
+				<p id="status-loading">Cargando el estado actual…</p>
+				<!-- Without this, a missing bundle or a browser with scripting
+				     off leaves "Cargando el estado actual…" on screen forever:
+				     it fails in the right direction but never resolves. The
+				     inline style hides the loading line so the two messages do
+				     not contradict each other. -->
+				<noscript>
+					<style>
+						#status-loading {
+							display: none;
+						}
+					</style>
+					<p>
+						Esta página necesita JavaScript para mostrar el estado actual. Actívelo en
+						su navegador y vuelva a cargar la página. Si no puede, comuníquese con
+						Defensa Civil.
+					</p>
+				</noscript>
+			</section>
+
+			<section id="recent-alerts">
+				<h2>Alertas enviadas</h2>
+				<ul id="recent-alerts-list"></ul>
+				<p id="recent-alerts-empty" hidden>No se ha enviado ninguna alerta todavía.</p>
+				<p id="recent-alerts-error" hidden>No se pudo cargar el historial de alertas enviadas.</p>
+			</section>
+		</main>
+
+		<script>
+			import { parseSnapshot } from '../lib/snapshot';
+			import { resolveViewState, type FetchOutcome } from '../lib/view';
+			import { renderPage, type PageElements } from '../lib/page';
+
+			const STATUS_URL = '/data/status.json';
+
+			const elements: PageElements = {
+				status: document.getElementById('status') as HTMLElement,
+				recentList: document.getElementById('recent-alerts-list') as HTMLUListElement,
+				recentEmpty: document.getElementById('recent-alerts-empty') as HTMLElement,
+				recentError: document.getElementById('recent-alerts-error') as HTMLElement,
+			};
+
+			async function load(): Promise<void> {
+				let outcome: FetchOutcome;
+				try {
+					const response = await fetch(STATUS_URL, { cache: 'no-store' });
+					if (!response.ok) {
+						throw new Error(`status endpoint responded with ${response.status}`);
+					}
+					const raw: unknown = await response.json();
+					outcome = { ok: true, snapshot: parseSnapshot(raw) };
+				} catch (error) {
+					console.error('failed to load /data/status.json', error);
+					outcome = { ok: false, error };
+				}
+
+				renderPage(elements, resolveViewState(outcome, new Date()));
+			}
+
+			load();
+		</script>
+	</body>
+</html>

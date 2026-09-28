@@ -65,7 +65,7 @@ entrypoints  ->  application  ->  ports  ->  domain
 | Layer | Package | Contains | May import |
 |---|---|---|---|
 | Domain | `src/rain_alert/domain/` | Types, rules, the evaluator, the template | Standard library and other domain modules only |
-| Ports | `src/rain_alert/ports/` | Seven `Protocol` classes describing what the use case needs | `typing`, `collections.abc`, `datetime`, `rain_alert.domain` |
+| Ports | `src/rain_alert/ports/` | Eight `Protocol` classes: seven describing what the use case needs, plus `SnapshotPublisher` for the entry point | `typing`, `collections.abc`, `datetime`, `rain_alert.domain` |
 | Application | `src/rain_alert/application/` | The use case, the dependency bundle, the policy shell | Ports and domain |
 | Adapters | `src/rain_alert/adapters/` | HTTP, HTML scraping, JSON persistence, console output | Anything |
 | Entrypoints | `src/rain_alert/entrypoints/` | The CLI and the object graph it builds | Anything |
@@ -115,14 +115,14 @@ These are the decisions that are not visible from the code shape alone. Each one
 
 | File | What it is for |
 |---|---|
-| `__init__.py` | The seven `Protocol` classes the use case depends on, and nothing else. |
+| `__init__.py` | The eight `Protocol` classes this application talks to the world through, and nothing else. Seven are the use case's; `SnapshotPublisher` is the entry point's. |
 
 ### Application, `src/rain_alert/application/`
 
 | File | What it is for |
 |---|---|
 | `__init__.py` | Package marker. |
-| `dependencies.py` | `CycleDependencies`, the frozen bundle of all seven ports plus the evaluator factory and the clock. |
+| `dependencies.py` | `CycleDependencies`, the frozen bundle of the seven ports `RunAlertCycle` needs, plus the evaluator factory and the clock. |
 | `policies.py` | `AlertPolicy`, the port-bound shell that queries the repository and delegates to `should_send`. |
 | `run_alert_cycle.py` | `RunAlertCycle`, the use case that runs the seven steps, plus the `CycleResult` it returns. |
 
@@ -243,7 +243,7 @@ The **message is printed even when nothing is sent**, labelled `PREVIEW (NOT SEN
 | Document | Covers |
 |---|---|
 | [domain.md](./domain.md) | Every module in `src/rain_alert/domain/`: the types, the risk branches, the hazard filter, the dedup and outage rules, the Spanish template. |
-| [ports-and-application.md](./ports-and-application.md) | The seven `Protocol` classes, `CycleDependencies`, `AlertPolicy` and `RunAlertCycle`. |
+| [ports-and-application.md](./ports-and-application.md) | The eight `Protocol` classes, `CycleDependencies`, `AlertPolicy` and `RunAlertCycle`. |
 | [adapters.md](./adapters.md) | The HTTP seam, the Open-Meteo client, the SENAMHI scraper and classifier, the console notifier, serialization, and everything under `local/`. |
 | [entrypoints-and-testing.md](./entrypoints-and-testing.md) | The CLI, the object graph, and the test architecture including the architecture boundary test and the live canaries. |
 

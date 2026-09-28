@@ -74,7 +74,10 @@ from rain_alert.domain.reasons import (
 from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.values import Level, WarningLevel
 
-_LEVEL_LABELS_ES: Mapping[Level, str] = {
+#: Public because `domain/snapshot.py` renders the same reasons for the public
+#: page. The domain decides what this system says in Spanish; a second
+#: translation table in the web layer would drift on the first edit.
+LEVEL_LABELS_ES: Mapping[Level, str] = {
     Level.NONE: "sin riesgo",
     Level.PREPARE: "prepárate",
     Level.IMMINENT: "riesgo inminente",
@@ -99,7 +102,7 @@ def _local_time(moment: datetime, timezone: str) -> str:
     return moment.astimezone(ZoneInfo(timezone)).strftime(_LOCAL_TIME_FORMAT)
 
 
-def _reason_line_es(reason: Reason) -> str | None:
+def render_reason_es(reason: Reason) -> str | None:
     """One reason as neutral Spanish prose, or `None` when the body already
     states the same fact in its own dedicated sentence."""
     match reason:
@@ -189,7 +192,7 @@ class MessageComposer:
     decision (the LLM composer invariant, preserved here structurally)."""
 
     def compose(self, request: MessageRequest) -> AlertMessage:
-        level_label = _LEVEL_LABELS_ES[request.level]
+        level_label = LEVEL_LABELS_ES[request.level]
         title = f"Alerta de lluvias — {request.city} — {level_label}"
 
         window_start = _local_time(request.window.start, request.timezone)
@@ -200,7 +203,7 @@ class MessageComposer:
             f"Ventana: del {window_start} al {window_end} (hora local, {request.timezone})",
         ]
 
-        reason_lines = [line for line in (_reason_line_es(reason) for reason in request.reasons) if line is not None]
+        reason_lines = [line for line in (render_reason_es(reason) for reason in request.reasons) if line is not None]
         if reason_lines:
             lines.append("Motivos:")
             lines.extend(f"- {line}" for line in reason_lines)

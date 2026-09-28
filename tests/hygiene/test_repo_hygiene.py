@@ -148,6 +148,50 @@ def _allow_list_entry(path: str) -> str | None:
     return HISTORICAL_ALLOW_LIST.get(path)
 
 
+#: The second forgiven string, and it is not this project's to remove.
+#:
+#: `infra/package-lock.json` pins the 411-package tree that runs with
+#: CloudFormation deploy credentials. It was gitignored because npm records
+#: `glob@10.5.0`'s published `deprecated` notice verbatim in the lockfile, and
+#: that notice ends with its maintainer's public contact address. That is
+#: registry metadata printed by `npm install` on every machine that has ever
+#: installed the package — not a credential, not this project's personal data,
+#: and not something deleting the lockfile protects anyone from.
+#:
+#: What the gitignore did buy was a deploy-time dependency tree re-resolved on
+#: every machine, unreviewable in a diff, for infrastructure that creates a
+#: deliberately world-readable bucket. `web/package-lock.json` is committed and
+#: carries no such string, so the precedent for committing one already exists.
+#: Pinning the tree and narrowing this rule to the exact string is the trade
+#: that keeps both properties.
+NPM_DEPRECATION_CONTACT = "i@" + "izs.me"
+
+#: Where that address may appear. One file, spelled out; a lockfile elsewhere
+#: gets its own entry and its own argument.
+NPM_LOCKFILE_ALLOW_LIST: dict[str, str] = {
+    "infra/package-lock.json": "npm's own record of glob@10.5.0's published deprecation notice",
+}
+
+NPM_LOCKFILE_MATCHERS: tuple[tuple[re.Pattern[str], str, str], ...] = tuple(
+    (_pattern_to_regex(pattern), pattern, reason) for pattern, reason in NPM_LOCKFILE_ALLOW_LIST.items()
+)
+
+
+def _npm_lockfile_entry(path: str) -> str | None:
+    """Why `path` may carry the npm deprecation contact, or `None`.
+
+    A second, separate grant rather than another entry on the allow-list
+    above: the two arguments are different — one is a deliberate attack
+    payload, the other is upstream metadata this project does not author —
+    and merging them would let the hostile-title fixtures carry an email
+    address, which nothing has asked for.
+    """
+    for matcher, _, reason in NPM_LOCKFILE_MATCHERS:
+        if matcher.match(path):
+            return reason
+    return None
+
+
 #: What must never be committed to a public repository (`repo-hygiene` →
 #: "No secrets or personal data ever committed"). Shapes rather than values:
 #: the point is to fail before a real one is ever written down.
@@ -177,6 +221,15 @@ SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
 #: phone-shaped — has an empty entry here and is forgiven nowhere.
 FORGIVEN_MATCHES: dict[str, frozenset[str]] = {
     label: frozenset(match.group() for match in re.finditer(pattern, HOSTILE_TITLE_PLACEHOLDER))
+    for label, pattern in SECRET_PATTERNS
+}
+
+#: The same construction for the second grant. `NPM_DEPRECATION_CONTACT` is
+#: email-shaped and nothing else, so every other label's entry is empty and the
+#: lockfile is forgiven for nothing else — an AWS key pasted into it still
+#: fails, under its own label.
+NPM_FORGIVEN_MATCHES: dict[str, frozenset[str]] = {
+    label: frozenset(match.group() for match in re.finditer(pattern, NPM_DEPRECATION_CONTACT))
     for label, pattern in SECRET_PATTERNS
 }
 
@@ -225,10 +278,12 @@ def _grep(repo_root: Path = REPO_ROOT) -> list[Hit]:
 def _offending_labels(path: str, text: str) -> list[str]:
     """The pattern labels `text` offends, given that it was found at `path`.
 
-    Forgiveness is per match and per pattern. An allow-listed file is excused
-    only for a pattern the placeholder itself triggers, and only when *every*
-    match that pattern makes on the line is one the placeholder produces.
-    Anything else sharing the line still offends, under its own label.
+    Forgiveness is per match, per pattern and per grant. A file is excused
+    only for a pattern its own grant's literal string itself triggers, and
+    only when *every* match that pattern makes on the line is one that string
+    produces. Anything else sharing the line still offends, under its own
+    label. The two grants are consulted independently, so neither widens what
+    the other's files may carry.
     """
     offended = []
     for label, pattern in SECRET_PATTERNS:
@@ -236,6 +291,8 @@ def _offending_labels(path: str, text: str) -> list[str]:
         if not matches:
             continue
         if _allow_list_entry(path) is not None and matches <= FORGIVEN_MATCHES[label]:
+            continue
+        if _npm_lockfile_entry(path) is not None and matches <= NPM_FORGIVEN_MATCHES[label]:
             continue
         offended.append(label)
     return offended
@@ -397,6 +454,50 @@ class TestTheScanReachesHistoryNotOnlyTheWorkingTree:
     def test_the_failure_message_asks_for_rotation_not_deletion(self) -> None:
         assert "rotate" in SCAN_FAILURE_ADVICE.lower()
         assert "deleting" in SCAN_FAILURE_ADVICE.lower()
+
+
+class TestTheLockfileGrantIsNarrowerThanTheFileItCovers:
+    """`infra/package-lock.json` is committed so the tree that runs with
+    CloudFormation deploy credentials is pinned and reviewable. The one string
+    that kept it out — npm's copy of `glob@10.5.0`'s published deprecation
+    notice — is forgiven exactly, and nothing else is.
+    """
+
+    LOCKFILE = "infra/package-lock.json"
+    DEPRECATION_LINE = f'"deprecated": "Old versions of glob are not supported... contacting {NPM_DEPRECATION_CONTACT}"'
+
+    def test_the_deprecation_notice_is_forgiven_in_the_lockfile(self) -> None:
+        assert _offending_labels(self.LOCKFILE, self.DEPRECATION_LINE) == []
+
+    def test_the_same_line_in_any_other_file_still_offends(self) -> None:
+        assert _offending_labels("docs/runbooks/public-page-deploy.md", self.DEPRECATION_LINE) == ["email address"]
+
+    def test_another_address_in_the_lockfile_is_not_forgiven(self) -> None:
+        line = f'"deprecated": "contact {_sample("someone@", "example.com")}"'
+
+        assert _offending_labels(self.LOCKFILE, line) == ["email address"]
+
+    def test_a_credential_pasted_into_the_lockfile_is_not_forgiven(self) -> None:
+        """The grant is for one email shape. A lockfile is still a file
+        somebody can paste a key into."""
+        line = f'"resolved": "https://registry.example/?key={SAMPLE_AWS_ACCESS_KEY_ID}"'
+
+        assert _offending_labels(self.LOCKFILE, line) == ["AWS access key id"]
+
+    def test_the_lockfile_grant_forgives_nothing_but_an_email_shape(self) -> None:
+        granted = {label for label, matches in NPM_FORGIVEN_MATCHES.items() if matches}
+
+        assert granted == {"email address"}
+
+    def test_the_lockfile_is_committed(self) -> None:
+        """The whole point of the narrowing. If this is ever gitignored again,
+        the deploy-time dependency tree is unpinned and this grant is dead
+        weight."""
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", self.LOCKFILE], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+        )
+
+        assert tracked.stdout.split() == [self.LOCKFILE]
 
 
 def test_forgiveness_is_granted_only_for_the_shapes_the_placeholder_has() -> None:
