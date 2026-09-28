@@ -8,6 +8,16 @@
 // loudest signal on the page ("riesgo inminente" in red) silently falls back
 // to default black while every suite stays green.
 //
+// Both halves held, and it fell back to default black anyway. What these
+// assertions cannot see is the build that sits between them: Astro rewrote
+// every selector here to require an attribute it puts only on elements written
+// in the template, and the level heading is not one — it is created by
+// `page.ts`. This file compares names in the SOURCE, so it is blind to any
+// transform applied after it. `built-styles.test.ts` is the one that asks
+// whether these rules can reach the elements they name, against `dist/` after
+// a real build; these assertions remain because that one only proves a rule
+// can match, not that the rule exists at all.
+//
 // The path is resolved through `fileURLToPath`, NOT through
 // `readFileSync(new URL('../src/pages/index.astro', import.meta.url))`, which
 // `snapshot.test.ts` uses for the contract JSON. Vite rewrites the

@@ -30,8 +30,29 @@ looked like working pages.
 | `src/lib/snapshot.ts` | Parses and validates the published document against `contracts/public-snapshot.json`. Wire keys stay snake_case on purpose. |
 | `src/lib/view.ts` | Decides which of the three states to show. No DOM, so the decision is testable on its own. |
 | `src/lib/page.ts` | Applies a state to real DOM elements. Extracted from the page's inline `<script>` precisely so a test can reach the rendered markup and not only the decision object. |
-| `src/pages/index.astro` | The markup, the styles, and the script that wires the three modules together. |
-| `test/` | Vitest over jsdom: the parser, the decision, the DOM, and the contract. |
+| `src/pages/index.astro` | The markup, the styles, and the script that wires the three modules together. Its `<style>` block is `is:global` deliberately — see below. |
+| `test/` | Vitest over jsdom: the parser, the decision, the DOM, the contract, and the built output. |
+
+## Why the styles are global
+
+Astro scopes a component's styles by rewriting every selector to require a
+generated attribute, which it adds at build time to the elements written in the
+template. `page.ts` builds the level heading, the degraded notice and the
+staleness banner with `document.createElement`, so none of them carry it, and
+for a while none of those rules matched: a live `riesgo inminente` was served in
+plain black body text, visually identical to `sin riesgo`. Scoping isolates one
+component from another, and this site is one page with one component, so it was
+buying nothing.
+
+`test/built-styles.test.ts` is what holds that in place. It runs a real
+`astro build`, loads `dist/index.html` into jsdom, renders every view state with
+the real `renderPage`, and asserts that each emitted rule can actually match the
+element it names. It is the only test here that looks at the artifact a resident
+loads rather than at the source — `markup.test.ts` and `page.test.ts` each
+verified one end of that coupling correctly while the middle was missing.
+
+Consequence for the gate: `npm test` now runs a production build, so it is a few
+seconds slower and it writes `dist/`.
 
 The contract, `contracts/public-snapshot.json`, is asserted from both sides:
 `test/snapshot.test.ts` reads it here, and `tests/unit/domain/test_snapshot.py`
