@@ -98,6 +98,14 @@ UPPER_BOUND_SENTINEL = "￿"
 #: above the 72-hour dedup lookback.
 ALERT_RETENTION_DAYS = 30
 
+#: The one table this adapter reads and writes (design.md D26), explicit
+#: rather than environment-supplied: the CDK stack (Phase 3) creates it with
+#: the identical literal `tableName`, so both sides of the Python/TypeScript
+#: boundary name the same physical table by matching this string, the same
+#: pattern `ssm_config_repository.py`'s `SSM_PATH_PREFIX` already uses for
+#: the SSM side.
+TABLE_NAME = "ferrenafe-alerts-sent"
+
 _OUTAGE_SORT_KEY = "CURRENT"
 
 #: Fix round 1, SHOULD item 4. Mirrors `s3_snapshot_publisher.py`'s own
