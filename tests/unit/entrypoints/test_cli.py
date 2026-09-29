@@ -28,7 +28,6 @@ from rain_alert.domain.messages import AlertMessage, AlertRecord, OperatorNotice
 from rain_alert.domain.values import ComposerName, Level, NoticeKind, SourceName, TimeWindow
 from rain_alert.entrypoints.cli import (
     EXIT_OK,
-    MAX_RECENT_ALERTS,
     OPEN_METEO_FIXTURE_NAME,
     SENAMHI_FIXTURE_NAME,
     as_json,
@@ -37,6 +36,7 @@ from rain_alert.entrypoints.cli import (
     parse_now,
     render,
 )
+from rain_alert.entrypoints.run_once import MAX_RECENT_ALERTS
 from rain_alert.entrypoints.wiring import build_local_deps
 from tests.support.fakes import RecordingPublisher
 from tests.support.fixtures import (
@@ -775,6 +775,70 @@ def _alert_titled(title: str, *, hours_before_now: float) -> AlertRecord:
         open_meteo_status="available",
         composer="template",
     )
+
+
+_GOLDEN_ROOT = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "golden"
+
+#: The exact `--now` the golden fixtures were captured at (tasks.md 2.1's
+#: report, `apply-progress.md`).
+_GOLDEN_PINNED_NOW = "2026-09-28T12:00:00+00:00"
+
+
+def _golden_offline_fixtures(tmp_path: Path) -> Path:
+    """The same two source fixtures the golden capture used, renamed to the
+    filenames `--offline-fixtures` requires — independent of `_fixtures`
+    above so a change to that helper's defaults cannot silently invalidate
+    the golden comparison."""
+    directory = tmp_path / "golden-fixtures"
+    directory.mkdir()
+    (directory / SENAMHI_FIXTURE_NAME).write_text(
+        Path("tests/fixtures/senamhi/warnings_table.html").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (directory / OPEN_METEO_FIXTURE_NAME).write_text(
+        Path("tests/fixtures/open_meteo/forecast_72h.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    return directory
+
+
+def _run_golden(tmp_path: Path, *extra: str) -> tuple[int, str, str]:
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        [
+            "--now",
+            _GOLDEN_PINNED_NOW,
+            "--state-file",
+            str(tmp_path / "state.json"),
+            "--offline-fixtures",
+            str(_golden_offline_fixtures(tmp_path)),
+            *extra,
+        ],
+        stdout=out,
+        stderr=err,
+    )
+    return code, out.getvalue(), err.getvalue()
+
+
+class TestCliOutputIsByteIdenticalAfterExtraction:
+    """`local-alert-cli` spec: "CLI behavior is unchanged after extracting
+    the shared runner". The golden fixtures under `tests/fixtures/golden/`
+    were captured from `cli.py:main` **before** the `run_once` extraction
+    (tasks.md 2.1), against this same pinned `--now` and offline-fixtures
+    pair. Any drift in stdout, stderr or exit code after the extraction
+    fails this test."""
+
+    def test_cli_output_is_byte_identical_after_extraction(self, tmp_path: Path) -> None:
+        code, out, err = _run_golden(tmp_path)
+
+        assert code == int((_GOLDEN_ROOT / "plain.exit_code.txt").read_text(encoding="utf-8"))
+        assert out == (_GOLDEN_ROOT / "plain.stdout.txt").read_text(encoding="utf-8")
+        assert err == (_GOLDEN_ROOT / "plain.stderr.txt").read_text(encoding="utf-8")
+
+    def test_cli_json_output_is_byte_identical_after_extraction(self, tmp_path: Path) -> None:
+        code, out, err = _run_golden(tmp_path, "--json")
+
+        assert code == int((_GOLDEN_ROOT / "json.exit_code.txt").read_text(encoding="utf-8"))
+        assert out == (_GOLDEN_ROOT / "json.stdout.txt").read_text(encoding="utf-8")
+        assert err == (_GOLDEN_ROOT / "json.stderr.txt").read_text(encoding="utf-8")
 
 
 class TestRecentAlertsOrderAndCount:
