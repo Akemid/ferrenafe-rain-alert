@@ -10,9 +10,13 @@ fixtures cannot drift from what the cycle actually produces.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
@@ -210,6 +214,56 @@ class TestThePublishedKeysMatchTheGoldenContract:
         assert set(document) == set(golden["top_level"])
         assert set(document["alert"]) == set(golden["alert"])
         assert set(document["recent_alerts"][0]) == set(golden["recent_alert"])
+
+
+class TestPublishedTextIsGuardedAtTheSnapshotBoundary:
+    """Scheduled-cycle fix round 1, MUST/SHOULD item 6. Before this change,
+    `AlertRecord`/`AlertMessage` were only ever written by
+    `JsonFileAlertRepository`, a single writer this process itself controls.
+    `DynamoDbAlertRepository` (change 3) reads the same fields back from a
+    shared, multi-writer table with no schema enforcement beyond the
+    adapter's own mapper -- `alert_record_from_dict` passes `title`/`body`
+    through with no type check. A hostile or future-schema item could carry
+    a non-string value (a stray `Decimal`, say), and `sanitize_source_text`
+    assumes `str`. Guarded here, at the boundary the public page actually
+    reads, rather than trusting every caller upstream to have done it
+    already."""
+
+    def test_a_non_string_alert_title_raises_rather_than_reaching_the_public_page(self) -> None:
+        result = alerting_cycle_result()
+        assert result.message is not None
+        corrupted = replace(result, message=replace(result.message, title=Decimal("5")))
+
+        with pytest.raises(ValueError, match="title"):
+            build_snapshot(corrupted, config(), recent=())
+
+    def test_a_non_string_alert_body_raises_rather_than_reaching_the_public_page(self) -> None:
+        result = alerting_cycle_result()
+        assert result.message is not None
+        corrupted = replace(result, message=replace(result.message, body=Decimal("5")))
+
+        with pytest.raises(ValueError, match="body"):
+            build_snapshot(corrupted, config(), recent=())
+
+    def test_a_non_string_recent_alert_title_raises_rather_than_reaching_the_public_page(self) -> None:
+        record = sent_alert_record()
+        corrupted = replace(record, message=replace(record.message, title=Decimal("5")))
+
+        with pytest.raises(ValueError, match="title"):
+            build_snapshot(quiet_cycle_result(), config(), recent=(corrupted,))
+
+    def test_the_published_alert_title_is_sanitized(self) -> None:
+        """Same rule `render_reason_es` already follows two lines above in
+        production code -- source-derived text is sanitized before a human
+        reads it, and a record read back from a shared table is exactly the
+        kind of source this rule exists for."""
+        result = alerting_cycle_result()
+        assert result.message is not None
+        corrupted = replace(result, message=replace(result.message, title="Aviso\nde lluvias \x1b[31mrojo"))
+
+        document = build_snapshot(corrupted, config(), recent=())
+
+        assert document["alert"]["title"] == "Aviso de lluvias [31mrojo"
 
 
 def _golden_contract() -> dict[str, Any]:
