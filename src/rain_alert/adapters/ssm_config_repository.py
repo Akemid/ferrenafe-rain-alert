@@ -1,8 +1,23 @@
 """`SsmConfigRepository` — the `ConfigRepository` over SSM Parameter Store
-(design.md D28, D32; `cloud-configuration` spec).
+(design.md D28, D32 as amended by fix round 1; `cloud-configuration` spec).
 
-**Layout, one parameter per value object**, under one path prefix so the IAM
-grant is one resource and the read is one `GetParametersByPath` call:
+**Fix round 1, MUST item 2 — `GetParameters` by exact name, never
+`GetParametersByPath`.** Design D32 originally chose `GetParametersByPath`
+over one shared prefix specifically so the IAM grant could be a single
+resource. The security reviewer's point is the one that matters more: a
+single resource that is a **wildcard over the whole prefix** grants
+`ssm:GetParametersByPath` on `parameter/ferrenafe/rain-alert/*` forever,
+including anything an operator parks there later — the grant is written once
+in Phase 3 and a later adapter change would mean a later, separate policy
+change. There are exactly seven parameters and `GetParameters` accepts up to
+ten names per call, so this adapter now requests the seven exact names and
+Phase 3's IAM grant will list seven exact ARNs instead of one prefix. A
+missing parameter now shows up explicitly in the response's
+`InvalidParameters` list, named, rather than as a silent absence `_require`
+would otherwise have to infer later from a plain "not present" check.
+
+**Layout, one parameter per value object**, all seven read by exact name in
+a single `GetParameters` call:
 
 | Name | Shape | Who writes it |
 |---|---|---|
@@ -58,14 +73,17 @@ from collections.abc import Mapping
 from typing import Any
 
 import boto3
+from botocore.config import Config
 
 from rain_alert.domain.config import AlertConfig, CoordinatesSource, RiskThresholds
+from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.values import ComposerName, Coordinates, WarningLevel
 
 #: A golden contract file (design.md D31, D32) also carries this same prefix
 #: as a later phase's own deliverable: the Python constant here will be
-#: asserted against it, and the CDK IAM grant's resource ARN will be asserted
-#: to end with it, so a one-character disagreement between the two would be
+#: asserted against it, and the seven CDK IAM grant ARNs (fix round 1 — no
+#: longer one prefix-wildcard resource) will each be asserted to start with
+#: it, so a one-character disagreement between the two would be
 #: `AccessDenied` on every cycle and on no test in *this* file. Not cited by
 #: path here because that file does not exist in this slice yet.
 SSM_PATH_PREFIX = "/ferrenafe/rain-alert/"
@@ -78,19 +96,21 @@ _COMPOSER_NAME = f"{SSM_PATH_PREFIX}composer"
 _FORECAST_HOURS_NAME = f"{SSM_PATH_PREFIX}forecast-hours"
 _DEDUP_LOOKBACK_HOURS_NAME = f"{SSM_PATH_PREFIX}dedup-lookback-hours"
 
-#: The explicit allow-list the loader maps by. Never a wildcard merge over
-#: whatever happens to live under the prefix — a stray parameter at, say,
-#: `city_slug` must be silently ignored, not silently adopted (task 1.22).
-_ALLOWED_PARAMETER_NAMES = frozenset(
-    {
-        _LOCATION_NAME,
-        _THRESHOLDS_NAME,
-        _CHECKLIST_NAME,
-        _ACTIVE_CHANNEL_NAME,
-        _COMPOSER_NAME,
-        _FORECAST_HOURS_NAME,
-        _DEDUP_LOOKBACK_HOURS_NAME,
-    }
+#: The exact seven names this adapter requests, by `GetParameters` (fix
+#: round 1) — never a wildcard read over the prefix. `GetParameters` accepts
+#: up to ten names per call, well above these seven, so no pagination is
+#: needed either. A stray parameter parked under the same prefix at, say,
+#: `city_slug` is never requested at all, which is strictly stronger than
+#: filtering it out of a wildcard response after the fact (task 1.22's
+#: original mechanism, superseded here).
+_PARAMETER_NAMES: tuple[str, ...] = (
+    _LOCATION_NAME,
+    _THRESHOLDS_NAME,
+    _CHECKLIST_NAME,
+    _ACTIVE_CHANNEL_NAME,
+    _COMPOSER_NAME,
+    _FORECAST_HOURS_NAME,
+    _DEDUP_LOOKBACK_HOURS_NAME,
 )
 
 #: Code constants — never SSM-sourced (`cloud-configuration` spec).
@@ -110,6 +130,21 @@ def _require(raw: Mapping[str, str], name: str) -> str:
     if not value:
         raise ValueError(f"SSM parameter {name!r} is missing or empty")
     return value
+
+
+def _echo(value: Any) -> str:
+    """A bounded, sanitized rendering of an operator-supplied value, safe to
+    interpolate into an exception message that reaches CloudWatch Logs (fix
+    round 1, SHOULD item 7).
+
+    Without this, an operator who pastes a credential into the wrong
+    parameter by mistake would have that mistake durably logged in full —
+    up to several kilobytes, verbatim. `_require` already gets this right
+    for the missing/empty case by naming only the parameter, never the
+    value; every other raise below that would otherwise echo a raw value
+    goes through this instead.
+    """
+    return sanitize_source_text(str(value))[:80]
 
 
 def _parse_json_document(raw_value: str, name: str) -> Any:
@@ -144,7 +179,7 @@ def _parse_location(raw_value: str) -> tuple[Coordinates, CoordinatesSource]:
     except ValueError as exc:
         raise ValueError(
             f"SSM parameter {_LOCATION_NAME!r}.source must be one of "
-            f"{[member.value for member in CoordinatesSource]}, got {document['source']!r}"
+            f"{[member.value for member in CoordinatesSource]}, got {_echo(document['source'])!r}"
         ) from exc
     coordinates = Coordinates(latitude=latitude, longitude=longitude)  # range-checked by __post_init__
     return coordinates, source
@@ -177,7 +212,7 @@ def _parse_thresholds(raw_value: str) -> RiskThresholds:
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(
-            f"SSM parameter {_THRESHOLDS_NAME!r} is missing a field or holds an invalid value: {exc}"
+            f"SSM parameter {_THRESHOLDS_NAME!r} is missing a field or holds an invalid value: {_echo(exc)}"
         ) from exc
 
 
@@ -193,7 +228,8 @@ def _parse_checklist(raw_value: str) -> tuple[str, ...]:
 def _parse_active_channel(raw_value: str) -> str:
     if raw_value not in _ALLOWED_ACTIVE_CHANNELS:
         raise ValueError(
-            f"SSM parameter {_ACTIVE_CHANNEL_NAME!r} must be one of {_ALLOWED_ACTIVE_CHANNELS}, got {raw_value!r}"
+            f"SSM parameter {_ACTIVE_CHANNEL_NAME!r} must be one of {_ALLOWED_ACTIVE_CHANNELS}, "
+            f"got {_echo(raw_value)!r}"
         )
     return raw_value
 
@@ -204,7 +240,7 @@ def _parse_composer(raw_value: str) -> ComposerName:
     except ValueError as exc:
         raise ValueError(
             f"SSM parameter {_COMPOSER_NAME!r} must be one of {[member.value for member in ComposerName]}, "
-            f"got {raw_value!r}"
+            f"got {_echo(raw_value)!r}"
         ) from exc
 
 
@@ -212,10 +248,28 @@ def _parse_positive_int(raw_value: str, name: str) -> int:
     try:
         value = int(raw_value)
     except ValueError as exc:
-        raise ValueError(f"SSM parameter {name!r} must be an integer, got {raw_value!r}") from exc
+        raise ValueError(f"SSM parameter {name!r} must be an integer, got {_echo(raw_value)!r}") from exc
     if value <= 0:
         raise ValueError(f"SSM parameter {name!r} must be positive, got {value}")
     return value
+
+
+#: Fix round 1, SHOULD item 4. Mirrors `s3_snapshot_publisher.py`'s and
+#: `dynamodb_alert_repository.py`'s own bound and rationale: a bare
+#: `boto3.client("ssm")` inherits botocore's defaults -- 60 s connect, 60 s
+#: read, legacy retries with `max_attempts: 5` -- and a single small
+#: `GetParameters` call over seven names is exactly the kind of operation
+#: that either answers in tens of milliseconds or is not going to. This read
+#: runs at the very start of `build_cloud_deps` (change 3), before anything
+#: else in the cycle, so a hang here is a hang before the cycle can even
+#: begin.
+CONNECT_TIMEOUT = 3.0
+READ_TIMEOUT = 5.0
+
+#: `total_max_attempts`, never `max_attempts`: the two mean opposite things.
+#: See `agentcore_invoker.py`'s module docstring, which quotes
+#: `botocore.config.Config` on this at length.
+TOTAL_MAX_ATTEMPTS = 2
 
 
 class SsmConfigRepository:
@@ -238,26 +292,35 @@ class SsmConfigRepository:
 
     def _resolved_client(self) -> Any:
         if self._client is None:
-            self._client = boto3.client("ssm")
+            self._client = boto3.client(
+                "ssm",
+                config=Config(
+                    connect_timeout=CONNECT_TIMEOUT,
+                    read_timeout=READ_TIMEOUT,
+                    retries={"total_max_attempts": TOTAL_MAX_ATTEMPTS},
+                ),
+            )
         return self._client
 
     def load(self) -> AlertConfig:
         if self._cached is not None:
             return self._cached
-        raw = self._fetch_allowed_parameters()
+        raw = self._fetch_parameters()
         self._cached = self._parse(raw)
         return self._cached
 
-    def _fetch_allowed_parameters(self) -> dict[str, str]:
+    def _fetch_parameters(self) -> dict[str, str]:
+        """One `GetParameters` call over the seven exact names (fix round 1
+        — never `GetParametersByPath` over the prefix). `InvalidParameters`
+        is checked and raised on explicitly, named, rather than left for
+        `_require` to infer later from a plain absence in the returned
+        dict."""
         client = self._resolved_client()
-        paginator = client.get_paginator("get_parameters_by_path")
-        values: dict[str, str] = {}
-        for page in paginator.paginate(Path=SSM_PATH_PREFIX, Recursive=True, WithDecryption=False):
-            for parameter in page.get("Parameters", ()):
-                name = parameter["Name"]
-                if name in _ALLOWED_PARAMETER_NAMES:
-                    values[name] = parameter["Value"]
-        return values
+        response = client.get_parameters(Names=list(_PARAMETER_NAMES), WithDecryption=False)
+        invalid = response.get("InvalidParameters", ())
+        if invalid:
+            raise ValueError(f"SSM parameter(s) not found: {sorted(invalid)}")
+        return {parameter["Name"]: parameter["Value"] for parameter in response.get("Parameters", ())}
 
     def _parse(self, raw: dict[str, str]) -> AlertConfig:
         coordinates, coordinates_source = _parse_location(_require(raw, _LOCATION_NAME))

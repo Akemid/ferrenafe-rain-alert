@@ -1,10 +1,11 @@
 """`SsmConfigRepository` — the `ConfigRepository` over SSM Parameter Store
-(design.md D28, D32; `cloud-configuration` spec).
+(design.md D28, D32 as amended by fix round 1; `cloud-configuration` spec).
 
 Every case here runs against `moto`'s in-memory SSM backend (D28): a
-hand-written fake would have to re-implement `GetParametersByPath`'s
-pagination and prefix matching, and the point of this suite is to prove the
-adapter's own pagination and allow-list logic, not a fake's guess at it.
+hand-written fake would have to re-implement `GetParameters`' request/
+response shape (including `InvalidParameters`), and the point of this suite
+is to prove the adapter's own request-construction and validation logic, not
+a fake's guess at it.
 """
 
 from __future__ import annotations
@@ -16,8 +17,12 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from rain_alert.adapters import ssm_config_repository
 from rain_alert.adapters.ssm_config_repository import (
+    CONNECT_TIMEOUT,
+    READ_TIMEOUT,
     SSM_PATH_PREFIX,
+    TOTAL_MAX_ATTEMPTS,
     SsmConfigRepository,
 )
 from rain_alert.domain.config import CoordinatesSource
@@ -104,8 +109,15 @@ class TestFullLoad:
 class TestCitySlugIsNeverSsmSourced:
     def test_city_slug_is_the_code_constant_regardless_of_a_stray_parameter(self, ssm_client: Any) -> None:
         """A stray parameter under the prefix at a name the loader does not
-        map must be silently ignored, not silently adopted -- the loader maps
-        by an explicit allow-list, never a wildcard merge."""
+        map must never be adopted. Fix round 1, MINOR item: the mechanism
+        changed from "filter a wildcard response by an allow-list" to
+        "request only the seven exact names in the first place" (MUST item
+        2 -- `GetParameters`, never `GetParametersByPath`), which is
+        structurally stronger -- a stray parameter is never even requested,
+        so there is no filter step left to get wrong. This test still
+        demonstrates the outcome the old docstring claimed; see
+        `test_only_the_seven_exact_names_are_requested` below for the
+        mechanism itself."""
         _seed(ssm_client, extra={f"{SSM_PATH_PREFIX}city_slug": "some-other-slug"})
 
         config = SsmConfigRepository(client=ssm_client).load()
@@ -227,22 +239,22 @@ class TestActiveChannelAllowList:
 
 
 class _CallCountingClient:
-    """A hand-written spy counting `get_paginator` calls around a real
+    """A hand-written spy counting `get_parameters` calls around a real
     `moto`-backed client. Not `unittest.mock`: this wraps the genuine client
     and delegates every call, only counting one method — the same pattern
     `tests/support/fakes.py` uses for its recording spies."""
 
     def __init__(self, client: Any) -> None:
         self._client = client
-        self.get_paginator_calls = 0
+        self.get_parameters_calls = 0
 
-    def get_paginator(self, operation_name: str) -> Any:
-        self.get_paginator_calls += 1
-        return self._client.get_paginator(operation_name)
+    def get_parameters(self, **kwargs: Any) -> Any:
+        self.get_parameters_calls += 1
+        return self._client.get_parameters(**kwargs)
 
 
 class TestMemoization:
-    def test_calling_load_twice_issues_exactly_one_get_parameters_by_path_call(self, ssm_client: Any) -> None:
+    def test_calling_load_twice_issues_exactly_one_get_parameters_call(self, ssm_client: Any) -> None:
         _seed(ssm_client)
         counting_client = _CallCountingClient(ssm_client)
         repository = SsmConfigRepository(client=counting_client)
@@ -251,27 +263,151 @@ class TestMemoization:
         second = repository.load()
 
         assert first == second
-        assert counting_client.get_paginator_calls == 1
+        assert counting_client.get_parameters_calls == 1
 
 
-# --- moto-backed pagination (1.32/1.33) ---
+# --- exact-name request, never a wildcard (fix round 1, MUST item 2) ---
 
 
-class TestPagination:
-    def test_pagination_finds_every_allowed_parameter_across_more_than_one_page(self, ssm_client: Any) -> None:
-        """`GetParametersByPath` pages at (at most) 10 parameters per call,
-        in the order parameters were created (`moto`'s emulation of it, at
-        least — confirmed empirically, not assumed). So the 10 stray
-        parameters are seeded **first**, pushing the 7 real ones onto a
-        second page. A missing `NextToken` continuation loop would silently
-        drop whichever real parameter landed there, and the load below would
-        raise on a "missing" parameter that was never actually missing from
-        SSM — only from the first page this adapter read."""
-        for i in range(10):
-            ssm_client.put_parameter(Name=f"{SSM_PATH_PREFIX}stray-{i}", Value="ignored", Type="String")
-        _seed(ssm_client)
+class TestGetParametersRequestsExactNamesOnly:
+    """Supersedes the old `moto`-backed pagination coverage (tasks 1.32/1.33):
+    `GetParameters` accepts up to ten names per call, and this adapter sends
+    exactly seven, so there is nothing left to paginate. What replaces it is
+    the actual point of the fix -- the request never asks for anything
+    beyond the seven names an IAM grant can enumerate exactly."""
 
-        config = SsmConfigRepository(client=ssm_client).load()
+    def test_only_the_seven_exact_names_are_requested(self, ssm_client: Any) -> None:
+        """A stray parameter under the same prefix, even with a name that
+        collides suggestively (`city_slug`), must never appear in the
+        request `GetParameters` sends -- proven by a kwarg-recording spy,
+        not by inference from the loaded result."""
+        _seed(ssm_client, extra={f"{SSM_PATH_PREFIX}city_slug": "some-other-slug"})
+        requests: list[list[str]] = []
 
-        assert config.forecast_hours == 48
-        assert config.dedup_lookback_hours == 72
+        class _RequestRecordingClient:
+            def get_parameters(self, **kwargs: Any) -> Any:
+                requests.append(kwargs["Names"])
+                return ssm_client.get_parameters(**kwargs)
+
+        SsmConfigRepository(client=_RequestRecordingClient()).load()
+
+        assert len(requests) == 1
+        assert set(requests[0]) == {
+            f"{SSM_PATH_PREFIX}location",
+            f"{SSM_PATH_PREFIX}thresholds",
+            f"{SSM_PATH_PREFIX}checklist",
+            f"{SSM_PATH_PREFIX}active-channel",
+            f"{SSM_PATH_PREFIX}composer",
+            f"{SSM_PATH_PREFIX}forecast-hours",
+            f"{SSM_PATH_PREFIX}dedup-lookback-hours",
+        }
+
+    def test_a_parameter_absent_from_ssm_entirely_is_named_in_invalid_parameters(self, ssm_client: Any) -> None:
+        """`GetParameters` reports a name it could not find in
+        `InvalidParameters`, distinct from a name it found with an empty or
+        malformed value. This adapter raises on that list directly, naming
+        the parameter, rather than only ever seeing a generic "missing or
+        empty" from `_require` once the value never made it into the parsed
+        dict."""
+        _drop(ssm_client, f"{SSM_PATH_PREFIX}composer")
+
+        with pytest.raises(ValueError, match="not found.*composer") as excinfo:
+            SsmConfigRepository(client=ssm_client).load()
+        assert "InvalidParameters" not in str(excinfo.value)  # the raw AWS field name never leaks to the message
+
+
+# --- bounded client config (fix round 1, SHOULD item 4) ---
+
+
+class TestTheRealClientIsBuiltWithAnExplicitBoundedConfig:
+    """`_resolved_client` is the one method every other test bypasses by
+    injecting `client=`, so nothing checked what it builds. Mirrors
+    `dynamodb_alert_repository.py`'s own test and rationale: a bare
+    `boto3.client("ssm")` inherits botocore's minute-scale defaults, and this
+    read runs before anything else in the scheduled cycle."""
+
+    def test_the_real_client_carries_the_module_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_boto3_client(service_name: str, config: Any) -> object:
+            captured["service_name"] = service_name
+            captured["config"] = config
+            return object()
+
+        monkeypatch.setattr(ssm_config_repository.boto3, "client", fake_boto3_client)
+
+        SsmConfigRepository()._resolved_client()
+
+        assert captured["service_name"] == "ssm"
+        config = captured["config"]
+        assert config.connect_timeout == CONNECT_TIMEOUT
+        assert config.read_timeout == READ_TIMEOUT
+        assert config.retries == {"total_max_attempts": TOTAL_MAX_ATTEMPTS}
+
+    def test_the_bound_stays_small_enough_for_a_scheduled_lambda(self) -> None:
+        assert TOTAL_MAX_ATTEMPTS * (CONNECT_TIMEOUT + READ_TIMEOUT) <= 20.0
+
+
+# --- operator-supplied values are bounded and sanitized in messages (fix round 1, SHOULD item 7) ---
+
+
+class TestExceptionMessagesNeverEchoAnOperatorValueInFull:
+    """An operator who pastes a credential or a large document into the
+    wrong parameter by mistake must not have that mistake durably logged in
+    full -- up to several kilobytes, verbatim, in CloudWatch Logs. Each case
+    below plants an oversized value at the exact field whose raise used to
+    interpolate it raw."""
+
+    def test_an_oversized_active_channel_value_is_truncated_in_the_message(self, ssm_client: Any) -> None:
+        oversized = "x" * 5000
+        _seed(ssm_client, overrides={f"{SSM_PATH_PREFIX}active-channel": oversized})
+
+        with pytest.raises(ValueError) as excinfo:
+            SsmConfigRepository(client=ssm_client).load()
+
+        assert oversized not in str(excinfo.value)
+        assert len(str(excinfo.value)) < 300
+
+    def test_an_oversized_composer_value_is_truncated_in_the_message(self, ssm_client: Any) -> None:
+        oversized = "y" * 5000
+        _seed(ssm_client, overrides={f"{SSM_PATH_PREFIX}composer": oversized})
+
+        with pytest.raises(ValueError) as excinfo:
+            SsmConfigRepository(client=ssm_client).load()
+
+        assert oversized not in str(excinfo.value)
+        assert len(str(excinfo.value)) < 300
+
+    def test_an_oversized_integer_field_value_is_truncated_in_the_message(self, ssm_client: Any) -> None:
+        oversized = "9" * 5000
+        _seed(ssm_client, overrides={f"{SSM_PATH_PREFIX}forecast-hours": oversized})
+
+        with pytest.raises(ValueError) as excinfo:
+            SsmConfigRepository(client=ssm_client).load()
+
+        assert oversized not in str(excinfo.value)
+        assert len(str(excinfo.value)) < 300
+
+    def test_an_oversized_coordinates_source_value_is_truncated_in_the_message(self, ssm_client: Any) -> None:
+        oversized = json.dumps({"latitude": 1.0, "longitude": 1.0, "source": "z" * 5000})
+        _seed(ssm_client, overrides={f"{SSM_PATH_PREFIX}location": oversized})
+
+        with pytest.raises(ValueError) as excinfo:
+            SsmConfigRepository(client=ssm_client).load()
+
+        assert "z" * 5000 not in str(excinfo.value)
+        assert len(str(excinfo.value)) < 300
+
+    def test_control_characters_in_an_operator_value_do_not_reach_the_message(self, ssm_client: Any) -> None:
+        """The same control/bidi-character concern `sanitize_source_text`
+        exists for anywhere else it is applied -- a raw ANSI escape or a
+        right-to-left override in an operator value must not reach a
+        terminal or a log viewer unsanitized."""
+        hostile = "console\x1b[31m\ndrop-tables"
+        _seed(ssm_client, overrides={f"{SSM_PATH_PREFIX}active-channel": hostile})
+
+        with pytest.raises(ValueError) as excinfo:
+            SsmConfigRepository(client=ssm_client).load()
+
+        assert "\x1b" not in str(excinfo.value)
+        assert "\n" not in str(excinfo.value)
