@@ -69,55 +69,55 @@ in the same category as `FileHtmlFetcher`, already shipped in
 
 ### Offline guarantee (must exist before either adapter's client-touching test)
 
-- [ ] 1.1 [RED] Add `test_aws_credentials_are_forced_to_dummy_values` to `tests/conftest.py` (or a new `tests/unit/test_conftest_fixtures.py`): inside the fixture's scope, `boto3.Session().get_credentials().access_key == "testing"`. Expects: fails today — no such fixture exists, so the resolved credential is whatever the ambient environment holds (or `None`).
-- [ ] 1.2 [GREEN] Add a session-scoped `autouse` fixture in `tests/conftest.py` forcing `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_DEFAULT_REGION` to dummy values via `monkeypatch`. Add `moto` to `pyproject.toml`'s dev group. Verify: `uv run pytest tests/unit/test_conftest_fixtures.py -q`
+- [x] 1.1 [RED] Add `test_aws_credentials_are_forced_to_dummy_values` to `tests/conftest.py` (or a new `tests/unit/test_conftest_fixtures.py`): inside the fixture's scope, `boto3.Session().get_credentials().access_key == "testing"`. Expects: fails today — no such fixture exists, so the resolved credential is whatever the ambient environment holds (or `None`).
+- [x] 1.2 [GREEN] Add a session-scoped `autouse` fixture in `tests/conftest.py` forcing `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_DEFAULT_REGION` to dummy values via `monkeypatch`. Add `moto` to `pyproject.toml`'s dev group. Verify: `uv run pytest tests/unit/test_conftest_fixtures.py -q`
 
 ### `DynamoDbAlertRepository` — pure mapping (D26, D27)
 
-- [ ] 1.3 [RED] `tests/unit/adapters/test_dynamodb_alert_repository.py` — key construction: alert item `pk=f"ALERT#{city_slug}"`, `sk=f"{window_start.isoformat()}#{level.value}"`; outage item `pk=f"OUTAGE#{city_slug}"`, `sk="CURRENT"`. Expects `ModuleNotFoundError`: adapter does not exist.
-- [ ] 1.4 [GREEN] `adapters/dynamodb_alert_repository.py` — pure key-construction functions, reusing `adapters/serialization.py`'s `alert_record_to_dict`/`from_dict` and `outage_record_to_dict`/`from_dict` with no translation layer. Verify: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py -k key -q`
-- [ ] 1.5 [RED] Sentinel-ordering test, parametrized over every `Level` member: `f"{ts}#{level.value}" < upper_bound_sort_key(ts)` where the bound uses `￿` (U+FFFF), never `~`. Expects `AttributeError`: `upper_bound_sort_key` does not exist. Mutation proof recorded at 1.6.
-- [ ] 1.6 [GREEN] Implement `upper_bound_sort_key(latest_start) -> str`. Verify green, then temporarily swap `￿` for `~` and record that the parametrized case for at least one `Level` member now fails — proving the sentinel choice, not just its presence, is under test. Revert.
-- [ ] 1.7 [RED] TTL relation test: `expires_at - int(sent_at.timestamp()) > dedup_lookback_hours * 3600`, computed from the `AlertConfig` under test with `ALERT_RETENTION_DAYS = 30` (per `alert-persistence` spec — **this supersedes design D27's proposed 365**; the spec pinned 30 days after the design was written, and this task is where that resolution is recorded). Expects `AttributeError`: no `compute_expires_at` function.
-- [ ] 1.8 [GREEN] Implement `compute_expires_at(sent_at) -> int` with `ALERT_RETENTION_DAYS = 30`. Mutation proof: temporarily lower the constant to 2 days (below `dedup_lookback_hours=72h ≈ 3 days`) and record the relation test going red; revert. Verify: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py -k ttl -q`
-- [ ] 1.9 [RED] Outage item mapping carries no `expires_at` attribute at all (not `None` — absent). Expects: fails if the mapper writes the key with a null value instead of omitting it.
-- [ ] 1.10 [GREEN] Confirm/implement the outage mapper omits the attribute entirely.
+- [x] 1.3 [RED] `tests/unit/adapters/test_dynamodb_alert_repository.py` — key construction: alert item `pk=f"ALERT#{city_slug}"`, `sk=f"{window_start.isoformat()}#{level.value}"`; outage item `pk=f"OUTAGE#{city_slug}"`, `sk="CURRENT"`. Expects `ModuleNotFoundError`: adapter does not exist.
+- [x] 1.4 [GREEN] `adapters/dynamodb_alert_repository.py` — pure key-construction functions, reusing `adapters/serialization.py`'s `alert_record_to_dict`/`from_dict` and `outage_record_to_dict`/`from_dict` with no translation layer. Verify: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py -k key -q`
+- [x] 1.5 [RED] Sentinel-ordering test, parametrized over every `Level` member: `f"{ts}#{level.value}" < upper_bound_sort_key(ts)` where the bound uses `￿` (U+FFFF), never `~`. Expects `AttributeError`: `upper_bound_sort_key` does not exist. Mutation proof recorded at 1.6.
+- [x] 1.6 [GREEN] Implement `upper_bound_sort_key(latest_start) -> str`. Verify green, then temporarily swap `￿` for `~` and record that the parametrized case for at least one `Level` member now fails — proving the sentinel choice, not just its presence, is under test. Revert.
+- [x] 1.7 [RED] TTL relation test: `expires_at - int(sent_at.timestamp()) > dedup_lookback_hours * 3600`, computed from the `AlertConfig` under test with `ALERT_RETENTION_DAYS = 30` (per `alert-persistence` spec — **this supersedes design D27's proposed 365**; the spec pinned 30 days after the design was written, and this task is where that resolution is recorded). Expects `AttributeError`: no `compute_expires_at` function.
+- [x] 1.8 [GREEN] Implement `compute_expires_at(sent_at) -> int` with `ALERT_RETENTION_DAYS = 30`. Mutation proof: temporarily lower the constant to 2 days (below `dedup_lookback_hours=72h ≈ 3 days`) and record the relation test going red; revert. Verify: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py -k ttl -q`
+- [x] 1.9 [RED] Outage item mapping carries no `expires_at` attribute at all (not `None` — absent). Expects: fails if the mapper writes the key with a null value instead of omitting it.
+- [x] 1.10 [GREEN] Confirm/implement the outage mapper omits the attribute entirely.
 
 ### `DynamoDbAlertRepository` — client-touching, `moto` (D28)
 
-- [ ] 1.11 [RED] `alerts_with_window_start_between` builds `KeyConditionExpression: pk = :pk AND sk BETWEEN :lo AND :hi`, `ConsistentRead=True`, `ScanIndexForward=True`, against a `moto`-backed table. Expects: repository has no client-injecting constructor yet.
-- [ ] 1.12 [GREEN] `DynamoDbAlertRepository(client: Any | None = None)`, lazily built on first call (mirrors `BedrockAgentCoreInvoker`). Verify: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py -k query -q`
-- [ ] 1.13 [RED] Pagination: seed more items than one `Query` page holds; assert every item across `LastEvaluatedKey` pages is returned. Expects: fails if the query reads only the first page.
-- [ ] 1.14 [GREEN] Use the `boto3` paginator. Mutation proof: temporarily return after the first page (skip the `LastEvaluatedKey` loop) and record the seeded-item test going red; revert.
-- [ ] 1.15 [RED] `record_alert` is a plain `PutItem` with no `ConditionExpression`: writing the same key twice overwrites (last-write-wins), never raises.
-- [ ] 1.16 [GREEN] Implement as an unconditional `put_item`. Verify: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py -k record_alert -q`
-- [ ] 1.17 [RED] Round-trip: a fully populated `AlertRecord` (including `reasons` and `composer`) written by `DynamoDbAlertRepository` and read back equals the original.
-- [ ] 1.18 [GREEN] Confirm the full path (1.4/1.12/1.16 composed) satisfies this with no new production code. Verify: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py -q`
+- [x] 1.11 [RED] `alerts_with_window_start_between` builds `KeyConditionExpression: pk = :pk AND sk BETWEEN :lo AND :hi`, `ConsistentRead=True`, `ScanIndexForward=True`, against a `moto`-backed table. Expects: repository has no client-injecting constructor yet.
+- [x] 1.12 [GREEN] `DynamoDbAlertRepository(client: Any | None = None)`, lazily built on first call (mirrors `BedrockAgentCoreInvoker`). Verify: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py -k query -q`
+- [x] 1.13 [RED] Pagination: seed more items than one `Query` page holds; assert every item across `LastEvaluatedKey` pages is returned. Expects: fails if the query reads only the first page.
+- [x] 1.14 [GREEN] Use the `boto3` paginator. Mutation proof: temporarily return after the first page (skip the `LastEvaluatedKey` loop) and record the seeded-item test going red; revert.
+- [x] 1.15 [RED] `record_alert` is a plain `PutItem` with no `ConditionExpression`: writing the same key twice overwrites (last-write-wins), never raises.
+- [x] 1.16 [GREEN] Implement as an unconditional `put_item`. Verify: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py -k record_alert -q`
+- [x] 1.17 [RED] Round-trip: a fully populated `AlertRecord` (including `reasons` and `composer`) written by `DynamoDbAlertRepository` and read back equals the original.
+- [x] 1.18 [GREEN] Confirm the full path (1.4/1.12/1.16 composed) satisfies this with no new production code. Verify: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py -q`
 
 ### `SsmConfigRepository` (D28, D32)
 
-- [ ] 1.19 [RED] `tests/unit/adapters/test_ssm_config_repository.py` — full load from valid parameters returns an `AlertConfig` with SSM values for the seven operator-editable fields and code constants for `city`/`city_slug`/`region`/`timezone`. Expects `ModuleNotFoundError`.
-- [ ] 1.20 [GREEN] `adapters/ssm_config_repository.py` — one `GetParametersByPath` call, JSON document parsing per D32's layout (`location`, `thresholds`, `checklist` as a JSON array — **never `StringList`**, per the reproduction below — `active-channel`, `composer`, `forecast-hours`, `dedup-lookback-hours`).
-- [ ] 1.21 **Rationale task, no test**: record in the module docstring why `checklist` is `String` holding a JSON array and never `StringList` — two of the five shipped checklist items contain commas (`"Limpia canaletas, techos y desagües cercanos."`, `"Ten a mano una linterna, un botiquín y los teléfonos de emergencia."`), and SSM's `StringList` is a bare comma split with no escaping, so those two items would each arrive as two fragments a resident reads as separate instructions. This must be readable in the code, not only in this task, so a later "simplification" back to `StringList` is caught by someone reading the adapter, not only by someone reading `openspec/`.
-- [ ] 1.22 [RED] `city_slug` is never read from SSM even if a stray parameter existed under the prefix at that name (typo-tolerance test): the loader only maps the seven named keys and ignores anything else under the path.
-- [ ] 1.23 [GREEN] Confirm/implement the parser maps by an explicit allow-list of parameter names, not a wildcard merge.
-- [ ] 1.24 [RED] Operator-supplied `coordinates` without `coordinates_source` raises, rather than defaulting to `public_reference`. Mutation proof: the naive fix is inferring a default when the key is absent — assert the specific raise, so a future "just default it" change is caught by this test, not merely by review.
-- [ ] 1.25 [GREEN] Implement: `coordinates_source` required whenever `coordinates` is present; no inference path exists in code at all (not merely untested).
-- [ ] 1.26 [RED] Missing/empty/malformed-JSON/out-of-range parameter raises, parametrized over each of the seven fields independently (location, each of the two threshold sub-shapes, checklist, active-channel, composer, forecast-hours, dedup-lookback-hours). Expects: at least one field currently has no validation and silently proceeds or defaults.
-- [ ] 1.27 [GREEN] Implement per-field strict validation, matching `StaticConfigRepository`'s existing strictness. Verify: `uv run pytest tests/unit/adapters/test_ssm_config_repository.py -q`
-- [ ] 1.28 [RED] `active_channel` other than the literal `"console"` raises (not merely "any non-empty string is fine").
-- [ ] 1.29 [GREEN] Validate against the one-member allow-list `["console"]`.
-- [ ] 1.30 [RED] Instance-level memoization: calling `.load()` twice on the same `SsmConfigRepository` instance issues exactly one `GetParametersByPath` call (D29's "one cycle, one configuration" correctness argument, not merely a cost optimization). Expects: fails if each `.load()` re-fetches.
-- [ ] 1.31 [GREEN] Cache the parsed result on the instance after the first successful load.
-- [ ] 1.32 [RED] `moto`-backed pagination test seeding more parameters under the prefix than one `GetParametersByPath` page holds.
-- [ ] 1.33 [GREEN] Use the `boto3` paginator. Mutation proof: return only the first page and record the seeded test going red; revert. Verify: `uv run pytest tests/unit/adapters/test_ssm_config_repository.py -q`
+- [x] 1.19 [RED] `tests/unit/adapters/test_ssm_config_repository.py` — full load from valid parameters returns an `AlertConfig` with SSM values for the seven operator-editable fields and code constants for `city`/`city_slug`/`region`/`timezone`. Expects `ModuleNotFoundError`.
+- [x] 1.20 [GREEN] `adapters/ssm_config_repository.py` — one `GetParametersByPath` call, JSON document parsing per D32's layout (`location`, `thresholds`, `checklist` as a JSON array — **never `StringList`**, per the reproduction below — `active-channel`, `composer`, `forecast-hours`, `dedup-lookback-hours`).
+- [x] 1.21 **Rationale task, no test**: record in the module docstring why `checklist` is `String` holding a JSON array and never `StringList` — two of the five shipped checklist items contain commas (`"Limpia canaletas, techos y desagües cercanos."`, `"Ten a mano una linterna, un botiquín y los teléfonos de emergencia."`), and SSM's `StringList` is a bare comma split with no escaping, so those two items would each arrive as two fragments a resident reads as separate instructions. This must be readable in the code, not only in this task, so a later "simplification" back to `StringList` is caught by someone reading the adapter, not only by someone reading `openspec/`.
+- [x] 1.22 [RED] `city_slug` is never read from SSM even if a stray parameter existed under the prefix at that name (typo-tolerance test): the loader only maps the seven named keys and ignores anything else under the path.
+- [x] 1.23 [GREEN] Confirm/implement the parser maps by an explicit allow-list of parameter names, not a wildcard merge.
+- [x] 1.24 [RED] Operator-supplied `coordinates` without `coordinates_source` raises, rather than defaulting to `public_reference`. Mutation proof: the naive fix is inferring a default when the key is absent — assert the specific raise, so a future "just default it" change is caught by this test, not merely by review.
+- [x] 1.25 [GREEN] Implement: `coordinates_source` required whenever `coordinates` is present; no inference path exists in code at all (not merely untested).
+- [x] 1.26 [RED] Missing/empty/malformed-JSON/out-of-range parameter raises, parametrized over each of the seven fields independently (location, each of the two threshold sub-shapes, checklist, active-channel, composer, forecast-hours, dedup-lookback-hours). Expects: at least one field currently has no validation and silently proceeds or defaults.
+- [x] 1.27 [GREEN] Implement per-field strict validation, matching `StaticConfigRepository`'s existing strictness. Verify: `uv run pytest tests/unit/adapters/test_ssm_config_repository.py -q`
+- [x] 1.28 [RED] `active_channel` other than the literal `"console"` raises (not merely "any non-empty string is fine").
+- [x] 1.29 [GREEN] Validate against the one-member allow-list `["console"]`.
+- [x] 1.30 [RED] Instance-level memoization: calling `.load()` twice on the same `SsmConfigRepository` instance issues exactly one `GetParametersByPath` call (D29's "one cycle, one configuration" correctness argument, not merely a cost optimization). Expects: fails if each `.load()` re-fetches.
+- [x] 1.31 [GREEN] Cache the parsed result on the instance after the first successful load.
+- [x] 1.32 [RED] `moto`-backed pagination test seeding more parameters under the prefix than one `GetParametersByPath` page holds.
+- [x] 1.33 [GREEN] Use the `boto3` paginator. Mutation proof: return only the first page and record the seeded test going red; revert. Verify: `uv run pytest tests/unit/adapters/test_ssm_config_repository.py -q`
 
 ### Close-out
 
-- [ ] 1.34 **Security review** (fresh context) on the PR-1 branch diff before opening the PR. Scope: the forced-dummy-credentials fixture (confirm it cannot leak a real session's credentials into a `moto` test), the SSM parameter shapes (confirm no secret-shaped value — nothing here should ever be a `SecureString` candidate), the DynamoDB item shape (no PII).
-- [ ] 1.35 PR-1 verification gate: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py tests/unit/adapters/test_ssm_config_repository.py tests/unit/test_conftest_fixtures.py -q`; `uv run ruff check`; `uv run mypy src`.
-- [ ] 1.36 Confirm the whole default suite still passes with AWS credential env vars unset: `env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN uv run pytest -q`.
-- [ ] 1.37 `uv add moto --dev` diff and `pyproject.toml` lockfile committed; confirm no compiled-extension surprises for the offline suite (this is unrelated to D30's Lambda-bundle no-`.so` check, which is a PR-3 concern, but the dev dependency should not itself require network at test time).
+- [x] 1.34 **Security review** (fresh context) on the PR-1 branch diff before opening the PR. Scope: the forced-dummy-credentials fixture (confirm it cannot leak a real session's credentials into a `moto` test), the SSM parameter shapes (confirm no secret-shaped value — nothing here should ever be a `SecureString` candidate), the DynamoDB item shape (no PII).
+- [x] 1.35 PR-1 verification gate: `uv run pytest tests/unit/adapters/test_dynamodb_alert_repository.py tests/unit/adapters/test_ssm_config_repository.py tests/unit/test_conftest_fixtures.py -q`; `uv run ruff check`; `uv run mypy src`.
+- [x] 1.36 Confirm the whole default suite still passes with AWS credential env vars unset: `env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN uv run pytest -q`.
+- [x] 1.37 `uv add moto --dev` diff and `pyproject.toml` lockfile committed; confirm no compiled-extension surprises for the offline suite (this is unrelated to D30's Lambda-bundle no-`.so` check, which is a PR-3 concern, but the dev dependency should not itself require network at test time).
 
 ---
 
