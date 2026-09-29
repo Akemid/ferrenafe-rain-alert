@@ -675,3 +675,281 @@ performs one real DNS lookup as an unavoidable consequence of exercising
 the actual regression path — the TCP connect itself is blocked locally, per
 item 1's own corrected description of the guard's scope). No `cdk` command
 was run. Nothing was pushed; no PR was opened — the coordinator opens it.
+
+---
+
+# Phase 2 (PR 2 of 4, stacked-to-main)
+
+**Scope**: Phase 2 only — `run_once` extraction, `lambda_handler`,
+`build_cloud_deps`, the architecture-boundary extension. Tasks 2.1–2.23.
+Phase 3, Phase 4 and the Owner-Run section remain out of scope. Task 2.22
+(fresh-context security review) is explicitly **not** performed here — see
+Deviations.
+
+**Branch**: `feat/scheduled-cycle-entrypoints`, from `feat/scheduled-cycle-adapters`
+at `41080e6` (PR 1, still open as PR #19, not yet merged). This PR will
+target `main` once #19 merges.
+**Delivery strategy**: `ask-on-risk`, resolved by the orchestrator to
+`stacked-to-main` — PR 2 of 4.
+**Mode**: Strict TDD (RED → GREEN, mutation proofs on every load-bearing
+assertion named in `tasks.md`).
+
+## Golden baseline (task 2.1)
+
+Captured **before** any change to `cli.py`, as the very first action of this
+batch:
+
+```
+uv run rain-alert-cycle --now 2026-09-28T12:00:00+00:00 \
+  --state-file /tmp/golden_fixtures/state.json \
+  --offline-fixtures /tmp/golden_fixtures            # plain mode
+uv run rain-alert-cycle --json --now 2026-09-28T12:00:00+00:00 \
+  --state-file /tmp/golden_fixtures/state.json \
+  --offline-fixtures /tmp/golden_fixtures            # --json mode
+```
+
+`--offline-fixtures` held copies of `tests/fixtures/senamhi/warnings_table.html`
+and `tests/fixtures/open_meteo/forecast_72h.json`, renamed to `senamhi.html`/
+`open_meteo.json`. Stdout, stderr and exit code from both invocations saved
+under `tests/fixtures/golden/{plain,json}.{stdout,stderr,exit_code}.txt`,
+committed. Both exit 0; the `--json` run's stderr carries one
+`[OPERATOR NOTICE] source_unavailable` block (`open_meteo` fell outside the
+fixture's own horizon at this `--now`) — a real, non-trivial branch, not an
+empty baseline.
+
+## Tasks completed
+
+### The extraction itself
+- [x] 2.2 [RED] `test_run_once_executes_the_calibrated_sequence` — `ModuleNotFoundError: No module named 'rain_alert.entrypoints.run_once'`
+- [x] 2.3 [GREEN] `entrypoints/run_once.py` created (see "A real gap this task's own text left open" below for what else moved here)
+- [x] 2.4 [RED→proof] byte-identity test (see "A RED that could not be RED" below)
+- [x] 2.5 [GREEN] `cli.py:main` rewired to `run_once(deps, publisher, report=err)`
+- [x] 2.6 [RED] `test_snapshot_publish_failure_does_not_cost_the_alert`
+- [x] 2.7 [GREEN] confirmed by 2.3; mutation proof below
+
+### `lambda_handler`
+- [x] 2.8 [RED] `test_handler_ignores_event_payload` — `ModuleNotFoundError: No module named 'rain_alert.entrypoints.lambda_handler'`
+- [x] 2.9 [GREEN] `entrypoints/lambda_handler.py::handler`
+- [x] 2.10 [RED] `test_handler_does_not_catch_construction_failures`
+- [x] 2.11 [GREEN] confirmed no `try`/`except`; mutation proof below
+- [x] 2.12 [RED] `test_handler_logs_as_json_for_every_completed_outcome` (`none`/`degraded`) + `test_a_deduplicated_cycle_still_logs_a_document`
+- [x] 2.13 [GREEN] the unconditional `print(as_json(...))` line
+- [x] 2.14 [RED] `test_dedup_window_derives_from_actual_clock`
+- [x] 2.15 [GREEN] confirmed — the window bound is `deps.now()` throughout, nothing hardcoded in the handler
+
+### `build_cloud_deps`
+- [x] 2.16 [RED] `test_build_cloud_deps_constructs_only_console_notifier` — `AttributeError: module 'rain_alert.entrypoints.wiring' has no attribute 'SsmConfigRepository'`
+- [x] 2.17 [GREEN] `wiring.py::build_cloud_deps()` (see `TABLE_NAME` amendment below)
+- [x] 2.18 [RED] `test_build_cloud_deps_reuses_select_composer`
+- [x] 2.19 [GREEN] confirmed — `select_composer` is the same function, same call shape, as `build_local_deps`
+
+### Architecture boundary
+- [x] 2.20 [RED] `test_lambda_handler_never_imports_local_only_modules` + `test_the_scan_detects_a_planted_violation` — both new (the scanner itself is new test-file infrastructure, so there is no prior "clean tree" state to be RED against here; the planted-violation test is what actually starts red until the scanner exists — `NameError`)
+- [x] 2.21 [GREEN] `LAMBDA_HANDLER_FORBIDDEN_MODULES` + `_forbidden_module_imports`; mutation proof below
+
+### Close-out
+- [ ] 2.22 **Not run** — see Deviations
+- [x] 2.23 PR-2 verification gate — green (see Verification below)
+
+## TDD Cycle Evidence
+
+| Task | RED (real failure observed) | GREEN | REFACTOR |
+|---|---|---|---|
+| 2.2/2.3 | `ModuleNotFoundError: No module named 'rain_alert.entrypoints.run_once'` | `run_once.py` created; sequence extracted verbatim from `cli.py:396-409` | `as_json`/`source_notes`/`MAX_RECENT_ALERTS`/`_recent_alerts` moved alongside (see below) |
+| 2.4 | Could not be a real RED against the *original* `cli.py` — see below | rewired `main`; byte-identity green | n/a |
+| 2.6/2.7 | `ModuleNotFoundError` (same module) | guard confirmed; mutation proof below | n/a |
+| 2.8/2.9 | `ModuleNotFoundError: No module named 'rain_alert.entrypoints.lambda_handler'` | `handler` created | n/a |
+| 2.10/2.11 | Same `ModuleNotFoundError` at collection; once the module existed, the construction-failure test needed no separate RED beyond that | confirmed no `try`/`except`; mutation proof below | n/a |
+| 2.12/2.13 | Same `ModuleNotFoundError` | one `as_json` line, unconditional | n/a |
+| 2.14/2.15 | Same `ModuleNotFoundError`; first attempt asserted on `query_calls[0]`, which is `AlertPolicy`'s own dedup check (bounded by `assessment.window.end`, not `now`) and genuinely failed for the *wrong* reason — corrected to read `query_calls[-1]`, `_recent_alerts`'s own call | window bound is `deps.now()` throughout | Test also needed a real publisher (`RecordingPublisher`) — `_recent_alerts` is skipped entirely when the publisher is `None`, so the first version of this test exercised only `AlertPolicy`'s query and never `_recent_alerts`'s |
+| 2.16-2.19 | `AttributeError: module 'rain_alert.entrypoints.wiring' has no attribute 'SsmConfigRepository'` | `build_cloud_deps` implemented | n/a |
+| 2.20/2.21 | `NameError` (scanner helper did not exist) | scanner + constants implemented | n/a |
+
+## Mutation Proofs (live, run and reverted)
+
+1. **Snapshot-publish guard (task 2.7).** Removed the `try`/`except` around
+   `publisher.publish(...)` in `run_once.py`. Result:
+   `test_snapshot_publish_failure_does_not_cost_the_alert` failed with the
+   real `OSError: bucket on fire` propagating uncaught out of `run_once` —
+   confirming the guard is load-bearing, not redundant with anything
+   upstream. Reverted.
+
+2. **Handler's uncaught-exception posture (task 2.11).** Wrapped the
+   handler's body in `try: ... except Exception: return {"sent": False}`.
+   Result: `test_handler_does_not_catch_construction_failures` failed with
+   `Failed: DID NOT RAISE ValueError` — the exception was swallowed exactly
+   as the `scheduled-execution` spec forbids. Reverted.
+
+3. **Architecture-boundary scanner (task 2.20/2.21).** Temporarily made
+   `_forbidden_module_imports` return `set()` unconditionally. Result:
+   `test_the_scan_detects_a_planted_violation` failed
+   (`assert set() == {'rain_alert.entrypoints.cli', 'rain_alert.adapters.local.json_alert_repository',
+   'rain_alert.adapters.local.static_config_repository'}`) — confirming the
+   scanner, not merely the constant, is what the test exercises. Reverted.
+
+4. **Byte-identity test's own teeth (task 2.4, see below for why this
+   replaces the task's stated RED).** Mutated `cli.py:main`'s final `print`
+   to call `render(result, config)` unconditionally, ignoring `--json`.
+   Result: `test_cli_json_output_is_byte_identical_after_extraction` failed,
+   comparing a human-readable block against the golden JSON document.
+   Reverted.
+
+## Discoveries
+
+- **A RED that could not be RED (task 2.4).** The golden fixture was
+  captured, by construction, from the exact pre-extraction `cli.py:main`.
+  Running the byte-identity test against that same unmodified code
+  necessarily passes — there is no behavior difference to detect yet, so
+  "Expects: fails until `cli.py:main` is rewired to delegate" does not hold
+  literally. Verified this directly: restored the original `cli.py` from
+  `git show HEAD:...` mid-task and re-ran the test — it passed, not failed.
+  The test's real value (that it *can* catch an extraction regression) is
+  demonstrated instead by mutation proof 4 above, against the *rewired*
+  code. Recorded here rather than silently reporting "2.4 was RED as
+  specified."
+- **`query_calls[0]` is not `_recent_alerts`'s call (task 2.14).**
+  `application/policies.py::AlertPolicy` also calls
+  `alerts_with_window_start_between`, as part of the dedup *decision* inside
+  `RunAlertCycle.execute()` — bounded by `assessment.window.end` (the
+  48-hour forecast horizon), not by `now`. The first version of
+  `test_dedup_window_derives_from_actual_clock` asserted on `query_calls[0]`
+  and failed for this unrelated reason before it was corrected to
+  `query_calls[-1]` (`_recent_alerts`'s own call, made after
+  `RunAlertCycle.execute()` returns) — worth naming so a future reader of
+  this test does not mistake `AlertPolicy`'s query for `_recent_alerts`'s.
+- **`_recent_alerts` never runs when `publisher is None`.** The same test
+  originally monkeypatched `select_snapshot_publisher` to return `None`
+  (mirroring several other tests in this batch), which meant `run_once`'s
+  publish guard — and `_recent_alerts` inside it — never executed at all.
+  Fixed by wiring in `RecordingPublisher` instead.
+
+## A real gap this task's own text left open — `as_json`'s location
+
+Task 2.5's literal text: "argparse, `render()`, `as_json()` and the exit
+code stay in `cli.py`, untouched in shape." Task 2.20/design.md D29's own
+architecture test: `entrypoints/lambda_handler.py` must import neither
+`entrypoints.cli` nor either local-only adapter. Design.md D29 itself
+states the handler "prints `as_json(result, config)` as one line to
+stdout" — naming the exact function `cli.py` was told to keep.
+
+These two instructions cannot both hold literally: if `as_json` stays
+defined in `cli.py`, `lambda_handler.py` cannot call it without importing
+`cli.py`, which the architecture test (also written by this same task list)
+forbids. This is not a scope decision I get to make silently either way, so
+it is named here rather than picked without comment.
+
+**Resolution applied**: moved `as_json`'s *definition* to `run_once.py`
+(already the shared module both entry points depend on for `default_now`
+and `run_once` itself), and re-exported it from `cli.py` via a plain import
+— exactly the treatment `design.md` already prescribes for `default_now`
+alone ("`cli.py` re-exports `default_now`... so `cli.default_now`... still
+resolves"). The result: `cli.as_json` is unchanged from every caller's
+point of view (same import path, same signature, same behavior — confirmed
+by the byte-identity test staying green with no changes to its own
+assertions), `lambda_handler.py` calls the same function with no forbidden
+import, and the architecture test holds for real rather than being routed
+around. `MAX_RECENT_ALERTS`/`_recent_alerts`/`source_notes` (renamed from
+`_source_notes`, since `cli.py`'s `render()` also needs it) moved for the
+same structural reason — `_recent_alerts` is called from inside the
+extracted publish guard and cannot stay behind in a module the new code
+does not import.
+
+`tests/unit/entrypoints/test_cli.py`'s own import of `MAX_RECENT_ALERTS`
+was updated to pull it from `run_once` instead of `cli` (a test-only
+change); its imports of `as_json`/`default_now` from `cli` were left
+unchanged, since both are still re-exported from there.
+
+## Deviations from Design
+
+1. **Task 2.22 (fresh-context security review) was not performed.** The
+   launching prompt is explicit: "Do not dispatch subagents." A genuinely
+   fresh-context review cannot happen from within this single session — the
+   same constraint Phase 1's task 1.34 hit, and the same resolution: **not**
+   performed inline and reported as done. Flagged here as outstanding for
+   the coordinator, which is the correct call per that same precedent.
+2. **`as_json`'s definition location** — see the dedicated section above.
+3. **Table name constant added, not specified by any task text.**
+   `DynamoDbAlertRepository(table_name)` requires a table name, and neither
+   `tasks.md` nor `design.md`'s Phase 2 material names one (design.md D26
+   states the CDK-side literal, `ferrenafe-alerts-sent`, but Phase 3 has not
+   landed yet). Added `TABLE_NAME = "ferrenafe-alerts-sent"` to
+   `dynamodb_alert_repository.py`, matching the literal D26 already commits
+   the CDK stack to, so both sides of the Python/TypeScript boundary name
+   the same physical table without waiting for Phase 3.
+4. **Task 2.12's three named outcomes (`none`/degraded/deduplicated)
+   implemented as two parametrized cases plus one dedicated test**, not one
+   parametrized-over-three test. Same coverage, split for a clearer failure
+   message per outcome and because constructing a genuinely deduplicated
+   `build_fake_deps()` graph (a prior `AlertRecord` inside the current
+   window) needed enough extra setup to read better as its own test.
+
+## Issues Found
+
+None beyond what is captured in Discoveries and Deviations above.
+
+## Verification (all commands run bare — no `-q` on the command line, since
+`pyproject.toml`'s own `addopts` already sets it and a second one silently
+suppresses the summary line, per Phase 1's own discovery)
+
+```
+uv run pytest                       # 1132 passed, 15 deselected
+uv run --directory agent pytest     # 32 passed (unaffected by this change)
+uv run ruff check                   # All checks passed
+uv run ruff format --check          # all files already formatted (one file auto-formatted during this batch)
+uv run mypy                         # Success: no issues found in 47 source files
+uv run pytest tests/unit/entrypoints/test_cli.py -k byte_identical
+                                     # 2 passed (re-run per 2.23's own instruction)
+env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+  -u AWS_DEFAULT_REGION -u AWS_PROFILE uv run pytest
+                                     # 1132 passed, 15 deselected, still offline
+uv run pytest tests/hygiene/        # 49 passed (run after `git add`, per convention;
+                                     # failed with two phantom-citation findings before
+                                     # `git add` — both were the new, not-yet-committed
+                                     # files themselves, not real defects)
+```
+
+**Real test count, measured, not estimated**: root suite grew from 1117
+(Phase 1's fix-round-2 baseline) to 1132 — **15 tests added** this batch:
+3 in `test_run_once.py`, 6 in `test_lambda_handler.py`, 2 in
+`test_layer_boundaries.py`, 2 in `test_cli.py` (byte-identity), 2 in
+`test_wiring.py` (`build_cloud_deps`). Counted via
+`pytest --collect-only -q` on each new/changed test file, summed and
+cross-checked against the root-suite delta (1132 − 1117 = 15, matches
+exactly).
+
+No AWS command was run against the real account. No `cdk` command was run
+(out of scope for Phase 2).
+
+## Workload / PR Boundary
+
+- **Mode**: stacked PR slice (`stacked-to-main`), PR 2 of 4.
+- **Current work unit**: Unit 2 — `run_once` extraction, `lambda_handler`,
+  `build_cloud_deps`, the architecture-boundary extension.
+- **Boundary**: starts from `feat/scheduled-cycle-adapters` at `41080e6`
+  (PR 1, not yet merged); ends with the CLI unchanged in observable
+  behavior, the scheduled entry point fully wired against the same
+  `CycleDependencies` the CLI uses, and the architecture boundary that
+  keeps the two paths from silently converging. This PR is inert on its
+  own in the sense that matters for rollback: `lambda_handler.py` is never
+  invoked by anything until Phase 3's CDK stack wires it to a real
+  `EventBridge Scheduler` target, so merging this PR changes nothing about
+  what the CLI does today.
+- **Estimated review budget impact**: forecast was 550–800 changed lines;
+  actual is markedly smaller — this slice mostly *moves* existing code
+  (four functions and two constants relocated verbatim from `cli.py` to
+  `run_once.py`) rather than writing new production logic, and the new
+  production code (`lambda_handler.py`, `build_cloud_deps`) is short. Not
+  split further; well inside budget.
+
+## Remaining Tasks (not started, out of scope for this batch)
+
+- [ ] Phase 3 — `contracts/scheduled-cycle.json` + CDK stack (PR 3)
+- [ ] Phase 4 — Runbook + region correction (PR 4)
+- [ ] Owner-Run — live deploy and verification (not automated by sdd-apply)
+- [ ] Task 2.22 — fresh-context security review on the PR-2 branch diff (coordinator's, not sdd-apply's)
+
+## Status
+
+**22/23 Phase 2 tasks complete** (2.1–2.21, 2.23; 2.22 outstanding by
+design — see Deviations). Branch `feat/scheduled-cycle-entrypoints`, not
+pushed, no PR opened, per instructions.
