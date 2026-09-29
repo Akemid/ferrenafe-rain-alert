@@ -27,8 +27,12 @@ from typing import Any
 import pytest
 from moto import mock_aws
 
+from rain_alert.adapters import dynamodb_alert_repository
 from rain_alert.adapters.dynamodb_alert_repository import (
     ALERT_RETENTION_DAYS,
+    CONNECT_TIMEOUT,
+    READ_TIMEOUT,
+    TOTAL_MAX_ATTEMPTS,
     DynamoDbAlertRepository,
     alert_item_pk,
     alert_item_sk,
@@ -124,22 +128,17 @@ class TestSentinelOrdering:
         assert upper_bound_sort_key(BASE) == f"{BASE.isoformat()}#￿"
 
     def test_mutation_proof_tilde_sentinel_is_not_a_safe_substitute(self) -> None:
-        """Recorded proof for task 1.6: swapping the sentinel for ASCII `~`
-        breaks the ordering relation for `Level.IMMINENT`, whose value sorts
-        above `~` in a way `�`... — see docstring above; the concrete
-        failure is `"imminent" > "~"` is False is NOT what we want to show.
+        """Recorded proof for task 1.6, rewritten in fix round 1 for clarity.
 
-        The actual defect a `~`-based bound has is narrower than "sorts
-        below": `~` (0x7E) sorts BELOW many Unicode code points a pathological
-        future `Level` member's value could use, and below every ASCII
-        lowercase letter used by every existing member's own value at a tie
-        in the timestamp prefix — this test demonstrates the concrete case
-        that matters today: a hypothetical member whose value starts above
-        `~` lexically would break the naive bound. Levels today are ASCII
-        lowercase, so this test constructs the failing input directly rather
-        than relying on an existing member to expose it, and states why: the
-        parametrized test above only proves the *chosen* sentinel is safe; it
-        is this test's job to prove an *alternate* choice is not.
+        Every current `Level` member (`none`, `prepare`, `imminent`) is
+        plain ASCII lowercase, so an ASCII `~` (0x7E) bound already sorts
+        above all three today — the parametrized test above does not
+        actually go red if the sentinel is swapped for `~`. What breaks is
+        the *general* guarantee design.md D26 states: the bound must hold
+        "regardless of what a future `Level` value spells". This test
+        constructs one hypothetical future value that sorts above `~`
+        lexically (a non-ASCII label) and shows the tilde bound is already
+        broken by it, while the real U+FFFF sentinel still holds.
         """
         tilde_bound = f"{BASE.isoformat()}#~"
         # A pathological future level value that sorts above "~" (0x7E) --
@@ -171,17 +170,43 @@ class TestTtlRelation:
         resolution (tasks.md task 1.7's own note)."""
         assert ALERT_RETENTION_DAYS == 30
 
-    def test_mutation_proof_a_too_short_retention_breaks_the_relation(self) -> None:
-        """Recorded proof for task 1.8: a retention constant at or below the
-        dedup lookback (72h ~= 3 days) fails the same relation the real
-        constant must satisfy. This does not mutate the module constant in
-        place (which every other test in this session would then see); it
-        recomputes the relation with a substitute value to show the relation
-        is not vacuously true for any integer."""
-        too_short_days = 2
+    def test_mutation_proof_a_too_short_retention_breaks_the_relation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Recorded proof for task 1.8, corrected in fix round 1: the
+        original version of this test computed the relation over local
+        literals and never called `compute_expires_at` at all -- it would
+        have passed even if the module were deleted. This one monkeypatches
+        the real module constant and calls the real function, so the
+        assertion is actually exercising production code: a retention
+        constant at or below the dedup lookback (72h ~= 3 days) must fail
+        the same relation the real constant (30 days) satisfies."""
+        monkeypatch.setattr(dynamodb_alert_repository, "ALERT_RETENTION_DAYS", 2)
         sent_at = BASE
-        substitute_expires_at = int(sent_at.timestamp()) + too_short_days * 86400
-        assert not (substitute_expires_at - int(sent_at.timestamp()) > DEDUP_LOOKBACK_HOURS * 3600)
+
+        expires_at = dynamodb_alert_repository.compute_expires_at(sent_at)
+
+        assert not (expires_at - int(sent_at.timestamp()) > DEDUP_LOOKBACK_HOURS * 3600)
+
+    def test_a_naive_sent_at_raises_rather_than_silently_shifting_the_ttl(self) -> None:
+        """Fix round 1, MINOR item. `TimeWindow` enforces timezone-aware UTC
+        on construction (`domain/values.py`), but `AlertRecord.sent_at` does
+        not carry the same enforcement, and `datetime.timestamp()` on a
+        naive value is interpreted as the *local* system time -- silently
+        shifting the computed TTL by the host's UTC offset. Raising here
+        matches the enforcement `TimeWindow` already has, rather than
+        trusting every caller to have constructed `sent_at` correctly."""
+        naive_sent_at = datetime(2026, 9, 4, 12)  # no tzinfo
+
+        with pytest.raises(ValueError, match="timezone-aware"):
+            compute_expires_at(naive_sent_at)
+
+    def test_a_non_utc_sent_at_raises_rather_than_silently_shifting_the_ttl(self) -> None:
+        from datetime import timedelta as _timedelta
+        from datetime import timezone as _timezone
+
+        non_utc_sent_at = BASE.astimezone(_timezone(_timedelta(hours=-5)))
+
+        with pytest.raises(ValueError, match="UTC"):
+            compute_expires_at(non_utc_sent_at)
 
 
 # --- item <-> record mapping, pure (1.3/1.4, 1.9/1.10) ---
@@ -256,6 +281,71 @@ def dynamodb_client() -> Any:
         client = boto3.client("dynamodb", region_name="us-east-2")
         _create_table(client)
         yield client
+
+
+class _RecordingQueryPaginator:
+    """Wraps a real `query` paginator, recording every `paginate()` call's
+    kwargs before delegating. `moto`'s backend is synchronous in-memory, so
+    it cannot distinguish a consistent read from an eventually consistent
+    one — the "a just-written record is visible" scenario would pass either
+    way. This spy is what actually proves the request carried
+    `ConsistentRead=True`, not merely that the query behaved as if it had."""
+
+    def __init__(self, real_paginator: Any, calls: list[dict[str, Any]]) -> None:
+        self._real_paginator = real_paginator
+        self._calls = calls
+
+    def paginate(self, **kwargs: Any) -> Any:
+        self._calls.append(kwargs)
+        return self._real_paginator.paginate(**kwargs)
+
+
+class _ConsistentReadRecordingClient:
+    """A hand-written spy wrapping a real (`moto`-backed) `dynamodb` client,
+    recording the kwargs `get_paginator("query").paginate(...)` and
+    `get_item(...)` were called with. Every other call is delegated straight
+    through via `__getattr__`. Not `unittest.mock`: this is the same
+    wrap-and-delegate pattern as `_CallCountingClient`
+    (`test_ssm_config_repository.py`) and `tests/support/fakes.py`'s spies."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self.query_paginate_calls: list[dict[str, Any]] = []
+        self.get_item_calls: list[dict[str, Any]] = []
+
+    def get_paginator(self, operation_name: str) -> Any:
+        real_paginator = self._client.get_paginator(operation_name)
+        if operation_name == "query":
+            return _RecordingQueryPaginator(real_paginator, self.query_paginate_calls)
+        return real_paginator
+
+    def get_item(self, **kwargs: Any) -> Any:
+        self.get_item_calls.append(kwargs)
+        return self._client.get_item(**kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
+class TestConsistentReadIsActuallyRequested:
+    """Fix round 1, MUST item 1. `moto`'s DynamoDB backend is synchronous
+    in-memory, so it cannot distinguish `ConsistentRead=True` from the
+    default eventually-consistent read — every prior test in this file would
+    still pass with the kwarg deleted entirely. Only a kwarg-recording spy
+    proves the request itself carries it."""
+
+    def test_query_and_get_item_both_request_a_consistent_read(self, dynamodb_client: Any) -> None:
+        spy = _ConsistentReadRecordingClient(dynamodb_client)
+        repository = DynamoDbAlertRepository(TABLE_NAME, client=spy)
+        repository.record_alert(_record())
+
+        repository.alerts_with_window_start_between(CITY, BASE - timedelta(hours=1), BASE + timedelta(hours=1))
+        repository.get_active_outage(CITY)
+
+        assert len(spy.query_paginate_calls) == 1
+        assert spy.query_paginate_calls[0]["ConsistentRead"] is True
+        assert len(spy.get_item_calls) == 1
+        assert spy.get_item_calls[0]["ConsistentRead"] is True
 
 
 class TestQueryAgainstMoto:
@@ -460,3 +550,46 @@ class TestOutageState:
 
         assert repository.get_active_outage(CITY) is None
         assert repository.get_active_outage("other-city") is not None
+
+
+# --- bounded client config (fix round 1, SHOULD item 4) ---
+
+
+class TestTheRealClientIsBuiltWithAnExplicitBoundedConfig:
+    """`_resolved_client` is the one method every other test bypasses by
+    injecting `client=`, so nothing checked what it builds.
+
+    A bare `boto3.client("dynamodb")` inherits botocore's defaults: 60 s
+    connect, 60 s read, legacy retries with `max_attempts: 5` -- roughly five
+    minutes of silent waiting against a blackholed endpoint. Worse here than
+    in `s3_snapshot_publisher.py`, where this pattern was first written:
+    `alerts_with_window_start_between` runs *before* the send decision, so a
+    hung dedup read costs the whole cycle's Lambda budget and no alert goes
+    out at all.
+    """
+
+    def test_the_real_client_carries_the_module_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_boto3_client(service_name: str, config: Any) -> object:
+            captured["service_name"] = service_name
+            captured["config"] = config
+            return object()
+
+        monkeypatch.setattr(dynamodb_alert_repository.boto3, "client", fake_boto3_client)
+
+        DynamoDbAlertRepository(TABLE_NAME)._resolved_client()
+
+        assert captured["service_name"] == "dynamodb"
+        config = captured["config"]
+        assert config.connect_timeout == CONNECT_TIMEOUT
+        assert config.read_timeout == READ_TIMEOUT
+        assert config.retries == {"total_max_attempts": TOTAL_MAX_ATTEMPTS}
+
+    def test_the_bound_stays_small_enough_for_a_scheduled_lambda(self) -> None:
+        """A single small `Query`/`GetItem`/`PutItem` is not a cold-starting
+        model call: the worst case stays well inside a scheduled Lambda's
+        budget, so a later edit that copies `agentcore_invoker.py`'s 35 s
+        read timeout wholesale fails here instead of holding the cycle open
+        on a dedup read that runs before any alert can be sent."""
+        assert TOTAL_MAX_ATTEMPTS * (CONNECT_TIMEOUT + READ_TIMEOUT) <= 20.0

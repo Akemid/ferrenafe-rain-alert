@@ -64,12 +64,13 @@ credentials.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
+from botocore.config import Config
 
 from rain_alert.adapters.serialization import (
     alert_record_from_dict,
@@ -96,6 +97,31 @@ UPPER_BOUND_SENTINEL = "￿"
 ALERT_RETENTION_DAYS = 30
 
 _OUTAGE_SORT_KEY = "CURRENT"
+
+#: Fix round 1, SHOULD item 4. Mirrors `s3_snapshot_publisher.py`'s own
+#: constants and its rationale: a bare `boto3.client(...)` inherits
+#: botocore's defaults — 60 s connect, 60 s read, legacy retries with
+#: `max_attempts: 5` — roughly five minutes of silent waiting against a
+#: blackholed endpoint. It is worse here than in S3:
+#: `alerts_with_window_start_between` runs **before** the send decision, so a
+#: hung dedup read consumes the Lambda's whole timeout budget and no alert
+#: goes out at all — the S3 publish this pattern was first written for runs
+#: *after* the alert has already gone out, so a hang there costs only the
+#: public snapshot, not the alert itself.
+#:
+#: **3 s to connect, 5 s to read**: the same bound `s3_snapshot_publisher.py`
+#: uses, for the same reason — a `Query`/`GetItem`/`PutItem` against a
+#: regional DynamoDB endpoint, in the same region as the caller, either
+#: answers in tens of milliseconds or is not going to.
+CONNECT_TIMEOUT = 3.0
+READ_TIMEOUT = 5.0
+
+#: `total_max_attempts`, never `max_attempts`: the two mean opposite things.
+#: `total_max_attempts` counts *every* attempt including the first, so 2 is
+#: one retry; `max_attempts` counts retries excluding the first, so the same
+#: 2 would be two retries. `agentcore_invoker.py`'s module docstring quotes
+#: `botocore.config.Config` on this at length.
+TOTAL_MAX_ATTEMPTS = 2
 
 
 def alert_item_pk(city_slug: str) -> str:
@@ -130,7 +156,21 @@ def compute_expires_at(sent_at: datetime) -> int:
     """The alert item's TTL attribute: `ALERT_RETENTION_DAYS` after
     `sent_at`, as whole epoch seconds. TTL is not a correctness mechanism
     (design.md D27) — dedup correctness comes from the key-range condition,
-    evaluated on every read regardless of TTL."""
+    evaluated on every read regardless of TTL.
+
+    Raises:
+        ValueError: If `sent_at` is not timezone-aware UTC (fix round 1,
+            MINOR item). `TimeWindow` enforces this on construction
+            (`domain/values.py`), but `AlertRecord.sent_at` carries no such
+            enforcement of its own, and `datetime.timestamp()` on a naive
+            value is interpreted as the *local* system time — silently
+            shifting the computed TTL by the host's UTC offset rather than
+            failing loudly.
+    """
+    if sent_at.tzinfo is None:
+        raise ValueError("sent_at must be timezone-aware UTC, got a naive datetime")
+    if sent_at.utcoffset() != timedelta(0):
+        raise ValueError(f"sent_at must be UTC, got offset {sent_at.utcoffset()}")
     return int(sent_at.timestamp()) + ALERT_RETENTION_DAYS * 86400
 
 
@@ -201,7 +241,14 @@ class DynamoDbAlertRepository:
 
     def _resolved_client(self) -> Any:
         if self._client is None:
-            self._client = boto3.client("dynamodb")
+            self._client = boto3.client(
+                "dynamodb",
+                config=Config(
+                    connect_timeout=CONNECT_TIMEOUT,
+                    read_timeout=READ_TIMEOUT,
+                    retries={"total_max_attempts": TOTAL_MAX_ATTEMPTS},
+                ),
+            )
         return self._client
 
     # --- community-alert dedup ---
@@ -258,7 +305,13 @@ class DynamoDbAlertRepository:
 
     def save_active_outage(self, record: OutageRecord) -> None:
         serializer = TypeSerializer()
-        item = outage_record_to_item(record)
+        # `_decimalize` applied for symmetry with `record_alert` (fix round
+        # 1, MINOR item): `OutageRecord` carries no `float` field today, so
+        # this cannot be exercised by a failing test yet — but a future
+        # field that is one would otherwise raise from `TypeSerializer` at
+        # write time, in production, the same way `record_alert` did before
+        # `_decimalize` existed.
+        item = _decimalize(outage_record_to_item(record))
         self._resolved_client().put_item(
             TableName=self._table_name,
             Item={key: serializer.serialize(value) for key, value in item.items()},
