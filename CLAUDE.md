@@ -53,7 +53,16 @@ uv run mypy                        # files = ["src"]; tests/ and agent/ are unch
 ```
 
 The default suite is **offline**: no network, no credentials, no model calls.
-It must stay that way — verify with the AWS environment variables unset.
+It must stay that way, and two `tests/conftest.py` fixtures enforce it
+structurally rather than by convention: a session-scoped fixture forces
+dummy AWS credentials, and a session-scoped socket guard refuses any
+non-loopback connection outright. Running with the AWS environment
+variables unset is a sanity check that nothing depends on the *ambient*
+environment happening to be clean — it is not a test of whether a
+credential or a network call is required, because the credentials fixture
+supplies its own dummy values either way. What actually proves "no network"
+is the socket guard raising on a real connection attempt, verified directly
+by `tests/unit/test_conftest_fixtures.py`.
 
 ## AWS
 
