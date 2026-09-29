@@ -6,12 +6,15 @@ same post-dependency sequence").
 from __future__ import annotations
 
 import io
+from datetime import timedelta
 
 from rain_alert.application.run_alert_cycle import CycleResult
 from rain_alert.domain.config import AlertConfig
+from rain_alert.domain.entities import Forecast, HourlyPoint
+from rain_alert.domain.sources import Available
 from rain_alert.entrypoints.run_once import SNAPSHOT_FAILURE_PREFIX, run_once
 from tests.support.fakes import RecordingPublisher
-from tests.support.wiring import build_fake_deps
+from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
 
 
 class RaisingPublisher:
@@ -19,6 +22,19 @@ class RaisingPublisher:
 
     def publish(self, document: dict) -> None:
         raise OSError("bucket on fire")
+
+
+def _authorizing_forecast(hours: int = 24, *, mm_total: float = 29.8, probability_pct: int = 90) -> Available[Forecast]:
+    """A forecast that clears `DEFAULT_CONFIG`'s imminent threshold
+    (`imminent_mm_24h=20.0`, `imminent_probability_pct=70`), so `execute()`
+    actually authorizes and delivers a send — the same pattern
+    `test_run_alert_cycle.py::_forecast` uses."""
+    mm_per_hour = mm_total / hours
+    points = tuple(
+        HourlyPoint(at=DEFAULT_NOW + timedelta(hours=h), precipitation_mm=mm_per_hour, probability_pct=probability_pct)
+        for h in range(hours)
+    )
+    return Available(data=Forecast(location=DEFAULT_CONFIG.coordinates, points=points), fetched_at=DEFAULT_NOW)
 
 
 class TestRunOnceExecutesTheCalibratedSequence:
@@ -54,12 +70,28 @@ class TestSnapshotPublishFailureDoesNotCostTheAlert:
     def test_snapshot_publish_failure_does_not_cost_the_alert(self) -> None:
         """`publisher.publish` raises after `notifier.send_alert` already
         ran; `run_once` returns normally and the `SNAPSHOT_FAILURE_PREFIX`
-        line appears on the `report` stream."""
-        deps = build_fake_deps()
+        line appears on the `report` stream (`scheduled-execution` spec,
+        "A snapshot-publish failure does not cost the alert, on either
+        path").
+
+        `build_fake_deps()`'s calm default never authorizes a send at all
+        (fix round 1, item 1 — `deps.notifier.alert_calls` stayed empty
+        under the previous version of this test, so the GIVEN this
+        scenario names was never actually exercised). `_authorizing_forecast`
+        forces a real, delivered send so the precondition holds for real."""
+        deps = build_fake_deps(forecast=_authorizing_forecast())
         report = io.StringIO()
 
         result, config = run_once(deps, RaisingPublisher(), report=report)
 
+        # The precondition: the alert was actually composed and delivered
+        # through the notifier before the publish guard ran at all — proven
+        # on the shared `CallLog`, not merely inferred from `result.sent`.
+        assert result.sent is True
+        assert len(deps.notifier.alert_calls) == 1
+        assert deps.notifier.log.position_of("notifier", "send_alert") < deps.alerts.log.position_of(
+            "alerts", "record_alert"
+        )
         assert isinstance(result, CycleResult)
         assert isinstance(config, AlertConfig)
         assert SNAPSHOT_FAILURE_PREFIX in report.getvalue()

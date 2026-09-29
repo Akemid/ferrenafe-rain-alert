@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+import rain_alert.adapters.dynamodb_alert_repository as dynamodb_alert_repository
 import rain_alert.adapters.s3_snapshot_publisher as s3_snapshot_publisher
 import rain_alert.entrypoints.wiring as wiring
 from rain_alert.adapters.agent_composer import AgentBackedComposer
@@ -152,6 +153,33 @@ class TestSelectSnapshotPublisher:
         assert isinstance(publisher, S3SnapshotPublisher)
 
 
+class _SpyDynamoDbQueryPaginator:
+    """Records every `paginate()` call's kwargs before returning one empty
+    page. Same wrap-and-delegate spy shape
+    `test_dynamodb_alert_repository.py`'s `_RecordingQueryPaginator` already
+    uses, minimal here since only the `TableName=` kwarg is under test."""
+
+    def __init__(self, calls: list[dict[str, Any]]) -> None:
+        self._calls = calls
+
+    def paginate(self, **kwargs: Any) -> Any:
+        self._calls.append(kwargs)
+        return [{"Items": []}]
+
+
+class _SpyDynamoDbClient:
+    """A hand-written spy standing in for `boto3.client("dynamodb")`,
+    recording the `TableName=` a `Query` was actually sent with. No
+    `unittest.mock`, per project rule."""
+
+    def __init__(self) -> None:
+        self.query_calls: list[dict[str, Any]] = []
+
+    def get_paginator(self, operation_name: str) -> Any:
+        assert operation_name == "query"
+        return _SpyDynamoDbQueryPaginator(self.query_calls)
+
+
 class _FakeSsmConfigRepository:
     """Stands in for `SsmConfigRepository` so `build_cloud_deps` is tested
     with no SSM client ever constructed (D28's offline guarantee, same
@@ -181,7 +209,32 @@ class TestBuildCloudDeps:
         assert isinstance(deps.forecast, OpenMeteoForecastProvider)
         assert isinstance(deps.contacts, StaticContactRepository)
         assert isinstance(deps.alerts, DynamoDbAlertRepository)
-        assert deps.alerts._table_name == TABLE_NAME  # noqa: SLF001 — the property under test
+
+    def test_build_cloud_deps_wires_the_alerts_repository_to_the_correct_table(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix round 1, item 2: which physical table the cloud graph reads
+        and writes is the single most consequential fact in
+        `build_cloud_deps` — a wrong table means dedup is silently inert in
+        production, the exact failure D29's architecture test exists to
+        prevent for imports and this test exists to prevent for
+        configuration. Asserted through observable behaviour — the
+        `TableName=` a real `Query` call actually carries — rather than
+        through `DynamoDbAlertRepository`'s private `_table_name`
+        attribute, following the same remedy
+        `test_the_key_env_var_is_honoured_when_the_bucket_is_set` already
+        applies to `S3SnapshotPublisher`'s private `_key`."""
+        fake_config = _config(ComposerName.TEMPLATE)
+        monkeypatch.setattr(wiring, "SsmConfigRepository", lambda: _FakeSsmConfigRepository(fake_config))
+        spy = _SpyDynamoDbClient()
+        monkeypatch.setattr(dynamodb_alert_repository.boto3, "client", lambda *args, **kwargs: spy)
+
+        deps = wiring.build_cloud_deps()
+        deps.alerts.alerts_with_window_start_between(
+            "ferrenafe", datetime(2026, 9, 3, tzinfo=UTC), datetime(2026, 9, 4, tzinfo=UTC)
+        )
+
+        assert spy.query_calls[0]["TableName"] == TABLE_NAME
 
     def test_build_cloud_deps_reuses_select_composer(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """`select_composer` is invoked with the loaded config exactly as

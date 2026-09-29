@@ -953,3 +953,167 @@ No AWS command was run against the real account. No `cdk` command was run
 **22/23 Phase 2 tasks complete** (2.1–2.21, 2.23; 2.22 outstanding by
 design — see Deviations). Branch `feat/scheduled-cycle-entrypoints`, not
 pushed, no PR opened, per instructions.
+
+---
+
+# Phase 2, Fix Round 1
+
+Two reviews came back **PASS** (spec compliance, code quality) and the
+security review found no Critical/High/Medium. Four items came back: two
+Important (the same defect class — asserting a precondition or a bound
+without actually establishing/pinning it), one Minor, one stale-spec
+correction. Same rules as the original apply: strict TDD, real RED pasted
+before each fix, no `unittest.mock`, English artifacts, no AI attribution,
+no AWS commands, no push, no PR.
+
+## Important
+
+**1. `test_snapshot_publish_failure_does_not_cost_the_alert` asserted a
+precondition it never established.** The docstring and task 2.6 both claim
+the publish raises "after `notifier.send_alert` already ran" — it did not:
+`build_fake_deps()`'s calm default never authorizes a send, so
+`send_alert` is never called and the `scheduled-execution` spec scenario's
+GIVEN was unexercised while the docstring claimed coverage.
+
+**RED, pasted**: added `assert len(deps.notifier.alert_calls) == 1` to the
+*unmodified* test body (still `build_fake_deps()`'s calm default) —
+`AssertionError: assert 0 == 1`, `where 0 = len([])`. Confirmed the gap
+exactly as the reviewer found it.
+
+**Fix**: added `_authorizing_forecast()` (same pattern as
+`test_run_alert_cycle.py::_forecast`, clears `DEFAULT_CONFIG`'s
+`imminent_mm_24h=20.0`/`imminent_probability_pct=70`) and wired it via
+`build_fake_deps(forecast=_authorizing_forecast())`. The test now asserts
+`result.sent is True`, `len(deps.notifier.alert_calls) == 1`, and the
+ordering itself on the shared `CallLog` —
+`deps.notifier.log.position_of("notifier", "send_alert") <
+deps.alerts.log.position_of("alerts", "record_alert")` — rather than only
+inferring the precondition from a later effect. Green: `uv run pytest
+tests/unit/entrypoints/test_run_once.py` → 3 passed.
+
+The four CLI-level equivalents at `test_cli.py:655-700` share the same gap
+and were left as-is — pre-existing, not introduced by this phase, and out
+of the scope the review named.
+
+**2. `test_wiring.py` read `deps.alerts._table_name` through a
+port-typed value.** `CycleDependencies.alerts` is typed `AlertRepository`;
+reading a private attribute through it could pass while `build_cloud_deps`
+wired the wrong table, since renaming or restructuring `_table_name` would
+not be caught by anything reading it directly the way this test did.
+
+**Fix**: added `_SpyDynamoDbClient`/`_SpyDynamoDbQueryPaginator` (the same
+wrap-and-delegate spy shape `test_dynamodb_alert_repository.py`'s
+`_ConsistentReadRecordingClient` already uses), monkeypatching
+`dynamodb_alert_repository.boto3.client` — the same seam
+`test_the_key_env_var_is_honoured_when_the_bucket_is_set` already uses for
+`S3SnapshotPublisher`. The new
+`test_build_cloud_deps_wires_the_alerts_repository_to_the_correct_table`
+calls `deps.alerts.alerts_with_window_start_between(...)` and asserts on
+`spy.query_calls[0]["TableName"]` — the real `TableName=` a `Query` call
+carries — never touching `_table_name`. The old private-attribute
+assertion was removed, not merely supplemented.
+
+**Mutation proof, run live**: temporarily changed
+`wiring.py::build_cloud_deps` to construct
+`DynamoDbAlertRepository("wrong-table")`. Result:
+`AssertionError: assert 'wrong-table' == 'ferrenafe-alerts-sent'`.
+Reverted.
+
+## Minor
+
+**3. `test_dedup_window_derives_from_actual_clock` pinned only the upper
+query bound.** `query_calls[-1][2] == now` was asserted; `query_calls[-1][1]`
+(the lower bound, `earliest_start`) never was — so a hardcoded six-hour
+lookback in `_recent_alerts` would still pass this test, since the upper
+bound is `now` either way.
+
+**RED, pasted, against a live mutation**: changed `run_once.py::_recent_alerts`
+to `earliest_start = now - timedelta(hours=6)` (hardcoded, ignoring
+`config.dedup_lookback_hours`). The *original* test (end-bound only)
+**still passed** — `1 passed, 5 deselected` — confirming the gap exactly as
+named: this mutation was invisible to the test as it stood.
+
+**Fix**: added `assert first_call[1] == first_now - timedelta(hours=DEFAULT_CONFIG.dedup_lookback_hours)`
+(and the same for `second_call`). Re-ran against the still-active mutation:
+now failed for real (`AssertionError`, comparing the hardcoded 6h bound
+against the real 72h-derived one). Reverted the production mutation;
+re-ran — green: `uv run pytest tests/unit/entrypoints/test_lambda_handler.py`
+→ 6 passed.
+
+## Stale spec
+
+**4. `specs/scheduled-execution/spec.md:35`** stated
+`run_once(deps, publisher) -> CycleResult`; the implementation returns
+`tuple[CycleResult, AlertConfig]` and takes a required keyword-only
+`report: TextIO` (both sanctioned by design.md D29). Added an "Amendment
+(Phase 2 apply, fix round 1)" paragraph in place, matching this project's
+own precedent (design.md's `ALERT_RETENTION_DAYS`/D28/D32 amendments) —
+the original text is left intact for the record, the correction states
+what was actually built and why.
+
+## A gotcha for whoever re-verifies this
+
+`pytest -k lambda_handler` (lowercase, with the underscore) is a **partial**
+selector on `TestLambdaHandlerNeverImportsLocalOnlyModules`, and the part
+it silently drops is the one a mutation proof needs. Verified directly,
+node ids visible (`--collect-only` with no extra `-q` — a second `-q`
+stacks onto this project's own `addopts` and collapses the output to a
+per-file count, hiding exactly what this check needs to see):
+
+```
+uv run pytest tests/architecture -k lambda_handler --collect-only
+  -> only test_lambda_handler_never_imports_local_only_modules  (1/12 collected)
+     test_the_scan_detects_a_planted_violation NOT selected
+
+uv run pytest tests/architecture -k LambdaHandler --collect-only
+  -> both tests in the class (2/12 collected)
+```
+
+The reason: `test_lambda_handler_never_imports_local_only_modules`'s own
+*method name* happens to contain the lowercase substring `lambda_handler`,
+so `-k lambda_handler` matches it by accident of naming, not by matching
+the class. `test_the_scan_detects_a_planted_violation`'s method name
+contains no such substring at all — it is only reachable through the
+CamelCase class name, `TestLambdaHandlerNeverImportsLocalOnlyModules`,
+which the lowercase-with-underscore query never matches. A reviewer
+re-running "the lambda_handler architecture test" with `-k lambda_handler`
+gets a clean pass while the triangulation test — the one that actually
+proves the scanner can fail — never runs at all. The correct selector is
+the class name (`-k LambdaHandlerNeverImports` or `-k LambdaHandler`) or
+the explicit node id
+(`tests/architecture/test_layer_boundaries.py::TestLambdaHandlerNeverImportsLocalOnlyModules::test_the_scan_detects_a_planted_violation`).
+
+## Verification (fix round 1, all commands bare — no `-q`)
+
+```
+uv run pytest                       # 1133 passed, 15 deselected (+1 net: the new
+                                     # table-wiring test; the other three fixes
+                                     # strengthened existing tests, added none)
+uv run --directory agent pytest     # 32 passed (unaffected)
+uv run ruff check                   # All checks passed
+uv run ruff format --check          # all files already formatted
+uv run mypy                         # Success: no issues found in 47 source files
+env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN uv run pytest
+                                     # 1133 passed, 15 deselected, still offline
+uv run pytest tests/hygiene/        # green (run after git add)
+```
+
+No AWS command was run. No `cdk` command was run. Nothing was pushed; no
+PR was opened — the coordinator opens it.
+
+## Files changed (fix round 1)
+
+| File | What changed |
+|---|---|
+| `tests/unit/entrypoints/test_run_once.py` | `_authorizing_forecast()`; the publish-failure test now forces and proves a real, ordered send |
+| `tests/unit/entrypoints/test_wiring.py` | `_SpyDynamoDbClient`/`_SpyDynamoDbQueryPaginator`; the table-wiring assertion moved off `_table_name` onto observable `TableName=` |
+| `tests/unit/entrypoints/test_lambda_handler.py` | dedup-window test now pins both query bounds, not only the upper one |
+| `openspec/changes/scheduled-cycle/specs/scheduled-execution/spec.md` | `run_once`'s signature amended in place to match what was built |
+
+## Status (fix round 1)
+
+Both Important items and the Minor item fixed and mutation/RED-verified
+live, per the review's own probes. The stale spec line corrected in place.
+Task 2.22 (fresh-context security review) remains outstanding for the
+coordinator, as it was before this round — this round's own reviews were
+external to this session, not performed by `sdd-apply`.

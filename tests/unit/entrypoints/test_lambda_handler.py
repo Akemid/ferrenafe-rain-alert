@@ -14,7 +14,7 @@ import rain_alert.entrypoints.lambda_handler as lambda_handler
 from rain_alert.domain.sources import Unavailable
 from rain_alert.domain.values import SourceName, UnavailableReason
 from tests.support.fakes import RecordingPublisher
-from tests.support.wiring import DEFAULT_NOW, build_fake_deps
+from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
 
 
 class _RaisingBuildCloudDeps:
@@ -170,6 +170,13 @@ class TestDedupWindowDerivesFromActualClock:
         # made after `RunAlertCycle.execute()` has already returned.
         first_call = first_deps.alerts.query_calls[-1]
         second_call = second_deps.alerts.query_calls[-1]
+        # Both bounds, not only the upper one (fix round 1, item 3): a
+        # hardcoded six-hour lookback in `_recent_alerts` would still pass
+        # `first_call[2] == first_now` — the upper bound is `now` either
+        # way — and would only be caught here by pinning the lower bound
+        # too, derived from `deps.config`'s actual `dedup_lookback_hours`.
+        assert first_call[1] == first_now - timedelta(hours=DEFAULT_CONFIG.dedup_lookback_hours)
         assert first_call[2] == first_now
+        assert second_call[1] == second_now - timedelta(hours=DEFAULT_CONFIG.dedup_lookback_hours)
         assert second_call[2] == second_now
         assert second_call[2] - first_call[2] == timedelta(hours=2)

@@ -32,10 +32,22 @@ invalidating the deployed timeout.
 ### Requirement: Both entry points execute the same post-dependency sequence
 
 `cli.py:main` and `lambda_handler.handler` MUST both delegate to one shared
-`run_once(deps, publisher) -> CycleResult` that loads config, executes
-`RunAlertCycle`, and publishes the snapshot inside the same
-failure-isolating guard that exists in `cli.py` today. Neither entry point
-may reimplement this sequence independently.
+`run_once(deps, publisher, *, report) -> tuple[CycleResult, AlertConfig]`
+that loads config, executes `RunAlertCycle`, and publishes the snapshot
+inside the same failure-isolating guard that exists in `cli.py` today.
+Neither entry point may reimplement this sequence independently.
+
+**Amendment (Phase 2 apply, fix round 1)**: this requirement originally
+stated the signature as `run_once(deps, publisher) -> CycleResult`. The
+implemented signature returns `tuple[CycleResult, AlertConfig]` and takes a
+required keyword-only `report: TextIO` — design.md D29 sanctions both: the
+config is returned because `cli.main` needs it for `render`/`as_json` and
+returning it removes a third `config.load()`, and `report` is where the
+`SNAPSHOT_FAILURE_PREFIX` line goes (the CLI's error stream on one path,
+Lambda's `stderr` on the other). Corrected here to match what was actually
+built, per this project's own precedent of amending a stale spec/design
+line in place rather than leaving prose that disagrees with the code
+`sdd-verify` checks against.
 
 #### Scenario: Identical `CycleResult` for identical dependencies
 - GIVEN the same `CycleDependencies`-shaped graph and the same clock
