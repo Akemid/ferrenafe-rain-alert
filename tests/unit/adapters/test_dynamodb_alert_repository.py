@@ -406,3 +406,57 @@ class TestFullRoundTrip:
 
         assert len(results) == 1
         assert results[0] == record
+
+
+# --- outage-notice dedup state, over moto (not separately numbered in
+# tasks.md's Phase 1 breakdown, but required by the AlertRepository port and
+# design.md D26's outage-item row; added for completeness rather than left
+# implemented-but-untested) ---
+
+
+class TestOutageState:
+    def test_get_active_outage_is_none_when_nothing_was_ever_saved(self, dynamodb_client: Any) -> None:
+        repository = DynamoDbAlertRepository(TABLE_NAME, client=dynamodb_client)
+        assert repository.get_active_outage(CITY) is None
+
+    def test_a_saved_outage_survives_across_separate_repository_instances(self, dynamodb_client: Any) -> None:
+        writer = DynamoDbAlertRepository(TABLE_NAME, client=dynamodb_client)
+        writer.save_active_outage(_outage(notified=False))
+
+        reader = DynamoDbAlertRepository(TABLE_NAME, client=dynamodb_client)
+        restored = reader.get_active_outage(CITY)
+
+        assert restored == _outage(notified=False)
+
+    def test_save_active_outage_upserts_rather_than_duplicating(self, dynamodb_client: Any) -> None:
+        repository = DynamoDbAlertRepository(TABLE_NAME, client=dynamodb_client)
+        repository.save_active_outage(_outage(notified=False))
+        repository.save_active_outage(_outage(notified=True))
+
+        restored = repository.get_active_outage(CITY)
+
+        assert restored is not None
+        assert restored.notified_at is not None
+
+    def test_clear_active_outage_removes_it(self, dynamodb_client: Any) -> None:
+        repository = DynamoDbAlertRepository(TABLE_NAME, client=dynamodb_client)
+        repository.save_active_outage(_outage())
+
+        repository.clear_active_outage(CITY)
+
+        assert repository.get_active_outage(CITY) is None
+
+    def test_clearing_one_city_never_touches_another_citys_outage_item(self, dynamodb_client: Any) -> None:
+        """The `pk` is city-scoped (`OUTAGE#<city_slug>`), so clearing one
+        city's outage item must be a distinct `DeleteItem` against a distinct
+        key -- not a query-and-clear-everything path that would silently
+        clear an unrelated city, if this system ever monitored more than
+        one."""
+        repository = DynamoDbAlertRepository(TABLE_NAME, client=dynamodb_client)
+        repository.save_active_outage(_outage())
+        repository.save_active_outage(replace(_outage(), city_slug="other-city"))
+
+        repository.clear_active_outage(CITY)
+
+        assert repository.get_active_outage(CITY) is None
+        assert repository.get_active_outage("other-city") is not None
