@@ -555,11 +555,25 @@ needed no real lookup — that part was accurate and is unchanged.
 ## 2. `CLAUDE.md` — "refuses any non-loopback connection outright" was broader than the code
 
 `connect_ex` and UDP `sendto` both pass through the guard untouched — a live
-probe sent a real UDP byte to `8.8.8.8:53` to confirm it. Nothing in
-botocore's stack uses either mechanism, so this is not currently
-exploitable, but the wording is narrowed to **TCP** specifically, with the
-untouched paths named, since this is the file every future session reads
-first and an overclaim here costs more than anywhere else.
+probe sent a real UDP byte to `8.8.8.8:53` to confirm it. The wording is
+narrowed to **TCP** specifically, with the untouched paths named, since this
+is the file every future session reads first and an overclaim here costs
+more than anywhere else.
+
+**Corrected again after the pre-PR security review.** The first correction
+said "nothing in botocore's stack uses either mechanism", and that is false:
+`botocore.monitoring.SocketPublisher` sends client-side monitoring events
+over UDP `sendto`. It is off by default, its default host is loopback, and
+nothing in this repository enables it — so the conclusion ("not currently
+exploitable") survives, but the reason given for it did not.
+
+This was the **fourth** instance of the same overclaim about this one guard
+on this one branch: `design.md`'s DNS claim, `CLAUDE.md`'s original wording,
+the test docstring, and then the sentence written to correct the third. The
+pattern worth carrying forward is not "check the guard" — it is that a
+claim about what *nothing* does is a claim about an entire dependency tree,
+and it is cheaper to write than to verify. Prefer naming what was checked
+("no path this project enables") over asserting a universal.
 
 ## 3. `dynamodb_alert_repository.py` — a stale reference to a removed mechanism
 
