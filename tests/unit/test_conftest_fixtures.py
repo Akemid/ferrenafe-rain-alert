@@ -32,9 +32,14 @@ class TestTheSocketGuard:
 
     def test_a_non_loopback_connection_attempt_is_blocked_before_any_socket_is_opened(self) -> None:
         """`192.0.2.1` is TEST-NET-1 (RFC 5737): guaranteed non-routable, and
-        an IP literal, so resolving it performs no real DNS lookup either --
-        the guard must fire before any network activity at all, including
-        the address resolution a hostname would need."""
+        an IP literal, so this test needs no DNS lookup to run -- which keeps
+        what it proves narrow and honest.
+
+        What it proves is that the guard refuses a non-loopback **TCP
+        connect**. It does not prove the guard fires "before any network
+        activity": DNS is not intercepted. A `boto3` call to a hostname
+        resolves for real and only then is blocked, which is why the guard's
+        own error message carries an already-resolved public IP."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             with pytest.raises(RuntimeError, match="blocked a real network connection"):
