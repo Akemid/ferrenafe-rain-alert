@@ -69,10 +69,16 @@ assertions).
 - [x] 1.36 Whole default suite passes with AWS credential env vars unset — confirmed
 - [x] 1.37 `uv add moto --dev` committed; confirmed no dev-only package (`moto`, `cryptography`, `cffi`, `pyyaml`, `requests`, `responses`, `werkzeug`, `xmltodict`, `charset-normalizer`) appears in `uv export --frozen --no-dev --no-emit-project`
 
-**32 unit tests added** across `test_conftest_fixtures.py` (1),
-`test_dynamodb_alert_repository.py` (22), `test_ssm_config_repository.py`
-(27 — includes the 20-case per-field parametrized table). Total suite: 245
-tests, all green.
+**Corrected in fix round 1**: this line originally claimed "32 unit tests
+added... total suite: 245 tests" without ever running a real count — both
+numbers were wrong. Verified directly: `main` at `2095d4c` collects **1035**
+tests (`uv run pytest --color=no -rN`, no `-q`, which was silently
+swallowing the summary line in every prior run in this session — a tooling
+gap, not a suite behavior). This batch, through the last commit before fix
+round 1, added **60** tests (1095 total), not 32 — the per-field
+parametrized table alone (`FIELD_FAULTS`, 20 cases) plus the round-trip,
+`moto`-backed, and outage-state tests account for the rest. See "Fix Round
+1" below for what was added on top of that.
 
 ## TDD Cycle Evidence
 
@@ -232,15 +238,20 @@ None beyond what is captured in Discoveries and Deviations above.
 ## Verification (run before every commit, all green)
 
 ```
-uv run pytest                      # 245 passed
+uv run pytest                      # 1095 passed, 15 deselected (verified with `uv run pytest` bare, or
+                                    # `-rN`; an explicit `-q` on the command line stacks with this
+                                    # project's own `addopts = "-q ..."`, becoming `-qq`, which suppresses
+                                    # the final summary line entirely -- see Discoveries)
 uv run --directory agent pytest    # unaffected by this change; not re-run (Phase 1 touches no agent/ files)
 uv run ruff check                  # All checks passed
 uv run ruff format --check         # all files already formatted
 uv run mypy                        # Success: no issues found in 45 source files
 env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
-  -u AWS_DEFAULT_REGION -u AWS_PROFILE uv run pytest   # 245 passed, still offline
-uv run pytest tests/hygiene -q     # 49 passed (run after every git add)
+  -u AWS_DEFAULT_REGION -u AWS_PROFILE uv run pytest   # 1095 passed, still offline
+uv run pytest tests/hygiene -q     # all passed (run after every git add)
 ```
+
+(Numbers above are this batch's state before fix round 1; see "Fix Round 1" for the current totals.)
 
 No AWS command was run against the real account. No `cdk` command was run
 at all (out of scope for Phase 1).
@@ -274,3 +285,244 @@ at all (out of scope for Phase 1).
 tests beyond the enumerated list. Ready for the maintainer's review and, per
 instructions, **no PR was opened and nothing was pushed** — this branch and
 these commits are local only.
+
+---
+
+# Fix Round 1
+
+Two fresh-context reviews (code review: PASS, high quality; security: no
+Critical, no High) found one structural gap in the production logic
+(`ConsistentRead` unverifiable via `moto` alone) and a set of real hardening
+items. All MUST and SHOULD items were addressed; MINOR items were addressed
+except where explicitly noted as not applicable. Same rules as the original
+apply: strict TDD, offline suite, no `unittest.mock`, English artifacts, no
+AI attribution, hygiene after `git add`, no AWS commands, no push, no PR.
+
+## MUST items
+
+**1. `ConsistentRead` was asserted by nothing.** `moto`'s DynamoDB backend is
+synchronous in-memory and cannot distinguish a consistent read from an
+eventually consistent one — the "just-written record is visible" scenario
+passed with the kwarg present or absent. Added
+`TestConsistentReadIsActuallyRequested` (`test_dynamodb_alert_repository.py`)
+— a hand-written kwarg-recording spy (`_ConsistentReadRecordingClient`,
+`_RecordingQueryPaginator`) wrapping the real `moto`-backed client, asserting
+`ConsistentRead=True` on both the `Query` (via the paginator) and the outage
+`GetItem` call. **Mutation proof, run live**: deleted `ConsistentRead=True`
+from both call sites in `dynamodb_alert_repository.py`; the whole suite
+still reported `1 failed, 1100 passed` (only the new spy test failed, with
+`KeyError: 'ConsistentRead'`) — confirming the reviewer's finding that no
+prior test caught this, and that the new one does. Reverted. Corrected task
+1.11's checkbox text in `tasks.md` (added 1.11a for the real proof) rather
+than leaving a task marked done on a claim it did not keep.
+
+**2. `GetParametersByPath` forced a prefix-wide IAM grant.** Switched
+`SsmConfigRepository` to `client.get_parameters(Names=[...])` over the seven
+exact names — `GetParameters` accepts up to ten names per call, well above
+seven, so no paginator is needed. A missing parameter now raises explicitly
+off the response's `InvalidParameters` list, named, rather than falling
+through to `_require`'s generic message. **Mutation proof, run live**:
+removed the `InvalidParameters` check — the "absent parameter" test failed
+with the wrong message (`"...is missing or empty"` instead of `"not
+found...composer"`), proving the explicit check is load-bearing, not
+redundant with `_require`. Reverted. This also structurally resolves the
+MINOR item about the untested allow-list filter (see below) and design.md
+D32 is amended in place (new "Amendment (fix round 1)" subsection, original
+text left intact for the record, matching the `ALERT_RETENTION_DAYS`
+precedent). Replaced the old `moto`-backed pagination test (tasks 1.32/1.33,
+which no longer applies — `GetParameters` doesn't paginate) with
+`TestGetParametersRequestsExactNamesOnly`, proving via a request-recording
+spy that only the seven exact names are ever sent.
+
+**3. The dummy-credential fixture protected the account but broke the
+offline guarantee.** Both reviewers independently found that forcing
+`AWS_DEFAULT_REGION` gave a test with a forgotten `mock_aws()` decorator
+enough configuration to construct a real client and reach
+`dynamodb.us-east-2.amazonaws.com` over genuine HTTPS (`UnrecognizedClientException`
+back — DNS resolved, TLS completed, AWS answered), where before the fixture
+existed the same construction failed locally and instantly with
+`NoRegionError`. Fixed by:
+- Dropping `AWS_DEFAULT_REGION` from `tests/conftest.py`'s credential
+  fixture — keeping only the three credential variables, which is what
+  actually needs to be dummy.
+- Adding a second session-scoped `autouse` fixture,
+  `_block_non_loopback_network_egress`, that monkeypatches
+  `socket.socket.connect` to raise on any non-loopback address. This is
+  what actually makes "no network" true rather than merely changing which
+  error a real request returns.
+- Recording the amendment in `design.md` (D28's amendment subsection)
+  rather than silently diverging from what it mandated verbatim.
+- Rewording both `CLAUDE.md`'s verification-gate note and `tasks.md` task
+  1.36 to describe what running with the AWS variables unset actually
+  verifies now (that nothing depends on the *ambient* environment, not that
+  no credential/network dependency exists at all — the credentials fixture
+  supplies its own dummy values regardless).
+
+New tests in `tests/unit/test_conftest_fixtures.py`: a non-loopback connect
+attempt to `192.0.2.1` (TEST-NET-1, an IP literal — no real DNS lookup even
+attempted) is blocked with the guard's own `RuntimeError`; a loopback
+connect attempt to a port nothing listens on reaches the real socket layer
+(`ConnectionRefusedError`, not the guard's exception) — proving the guard
+discriminates rather than blocking everything. Verified the guard does not
+break `moto` (`moto`'s `mock_aws()` patches botocore internals directly and
+never opens a real socket at all — full suite still green with the guard
+active, both with and without ambient AWS env vars set).
+
+## SHOULD items
+
+**4. Neither client carried a bounded `Config`.** Added the same
+`CONNECT_TIMEOUT=3.0`/`READ_TIMEOUT=5.0`/`TOTAL_MAX_ATTEMPTS=2` pattern
+`s3_snapshot_publisher.py` already established, to both
+`DynamoDbAlertRepository` and `SsmConfigRepository`. New tests mirror
+`test_s3_snapshot_publisher.py`'s own: a `boto3.client` factory swap
+(`monkeypatch`, not `unittest.mock`) captures the `Config` actually passed
+and asserts its three fields; a separate test asserts the bound stays under
+20 seconds worst case. **Mutation proof, run live, both adapters**: deleted
+the `config=` argument entirely from each `_resolved_client`; both new tests
+failed with `TypeError: ...fake_boto3_client() missing 1 required
+positional argument: 'config'` — confirming the bound is actually passed,
+not merely documented. Reverted both.
+
+**5. `checklist` was the one source-derived field the agent prompt did not
+sanitize.** Verified first, since an existing test
+(`test_operator_owned_text_is_not_sanitized`) explicitly asserted the
+*opposite* — checklist was deliberately exempt while it was a Python code
+constant (`MessageComposer`'s own port docstring: "excludes operator-owned
+configuration — city, timezone, checklist"). Confirmed the real end-to-end
+risk was already closed by defense-in-depth: `domain/template.py` sanitizes
+checklist at render time regardless, and
+`domain/message_validation.py::_message_is_safe`'s `has_unsafe_characters`
+check on the model's final title/body rejects *any* unsafe character
+reaching a resident, independent of what the prompt contained — so no
+unsafe checklist text could ever have reached a community message. Made the
+change anyway, because it removes a real, previously-accepted cost rather
+than only closing a hypothetical: the validator's verbatim-quotation
+exemption already compares against the *sanitized* form of each checklist
+item, so an operator item that sanitizes differently than what the model
+saw could never earn that exemption before this fix — now it can, because
+the model is shown the same sanitized text the validator compares against.
+Renamed the existing test to `test_code_owned_text_is_not_sanitized`
+(covering only `city`/`timezone`, which remain genuine code constants) and
+added `test_checklist_items_are_sanitized`. Updated the stale "excludes
+operator-owned configuration... checklist" claim in both
+`ports/__init__.py`'s `MessageComposer` docstring and
+`docs/architecture/ports-and-application.md`, which would otherwise still
+describe behavior this fix changed.
+
+**6. DynamoDB read-back title/body were published to the public snapshot
+with no type check.** `alert_record_from_dict` passes `title`/`body`
+through with no `isinstance` check; the trust boundary changed from a local,
+single-writer JSON file to a shared, multi-writer DynamoDB table. Added
+`_published_text` in `domain/snapshot.py`: raises `ValueError` naming the
+field if the value is not a `str`, otherwise sanitizes via
+`sanitize_source_text` (the same rule `render_reason_es` already follows).
+Applied to the `alert` dict's `title`/`body` and to each `recent_alerts[]`
+entry's `title`. New tests in `test_snapshot.py`
+(`TestPublishedTextIsGuardedAtTheSnapshotBoundary`), constructed by
+`dataclasses.replace`-ing a real `CycleResult`/`AlertRecord`'s message with
+a `Decimal` in place of a `str` — confirmed RED first (`DID NOT RAISE
+ValueError` / a literal newline surviving into the published title) before
+implementing the guard.
+
+**7. Operator-supplied SSM values were echoed whole into exception
+messages.** Up to several kilobytes into CloudWatch Logs on a mistake (e.g.
+an operator pasting a credential into the wrong parameter). Added
+`_echo(value)` (`sanitize_source_text(str(value))[:80]`) and applied it at
+every site that previously interpolated a raw operator value:
+`coordinates_source`, `active_channel`, `composer`, both integer fields, and
+the thresholds document's generic exception-message fallback (the last one
+not explicitly named in the review but the same vulnerability class — a
+huge numeric string handed to `float()`/`int()` produces a `ValueError`
+whose own message echoes the value verbatim). **Mutation proof, run live**:
+reverted `_echo` to bare `str(value)`; 4 of the 5 new tests
+(`TestExceptionMessagesNeverEchoAnOperatorValueInFull`) failed with the full
+5000-character oversized value visible in the assertion diff. Reverted.
+
+## MINOR items
+
+- **The TTL mutation-proof test touched zero production code.** Rewrote
+  `test_mutation_proof_a_too_short_retention_breaks_the_relation` to
+  `monkeypatch.setattr(dynamodb_alert_repository, "ALERT_RETENTION_DAYS",
+  2)` and call the real `compute_expires_at`, rather than recomputing the
+  relation over local literals.
+- **The SSM allow-list filter was untested and its comment overstated it.**
+  Resolved structurally by MUST item 2: `GetParameters` requests only the
+  seven exact names, so there is no wildcard response left to filter, and
+  no filter-correctness claim left to test or overstate. Updated the
+  now-superseded comments in `ssm_config_repository.py` and the docstring
+  of `test_city_slug_is_the_code_constant_regardless_of_a_stray_parameter`
+  to say so explicitly, and added `test_only_the_seven_exact_names_are_requested`
+  as the new, accurate proof of the actual mechanism.
+- **A stray U+FFFD-adjacent docstring that argued with itself.** Rewrote
+  `test_mutation_proof_tilde_sentinel_is_not_a_safe_substitute`'s docstring
+  to the three sentences it needs; removed the confusing "what we don't
+  want to show" aside.
+- **`compute_expires_at` trusted an untyped `sent_at`.** Added the same
+  timezone-aware-UTC enforcement `TimeWindow.__post_init__` already has.
+  Confirmed RED first (`DID NOT RAISE ValueError` for both a naive and a
+  non-UTC input) before implementing.
+- **`_decimalize` was asymmetric.** Applied to `save_active_outage` too, for
+  symmetry with `record_alert`. Cannot be exercised by a failing test today
+  — `OutageRecord` carries no `float` field — so this was not RED-first;
+  stated here rather than silently done, per this project's own strict-TDD
+  discipline.
+- **`apply-progress.md`'s test counts were wrong**, and were corrected
+  above and in the Verification section, with a real `git worktree`
+  comparison against `main` to establish the actual baseline (1035) and
+  actual delta (60 tests added, not 32) — not merely a corrected guess.
+
+## Discoveries
+
+- **`-q` on the command line, stacked on this project's own `addopts = "-q
+  ..."`, becomes `-qq` and suppresses pytest's final summary line
+  entirely.** Every `uv run pytest -q` invocation in the original apply
+  batch (and the count claims derived from watching its output) silently
+  lost the "N passed" line — the suite was never actually failing to report
+  it, the command was asking twice. Verified reproducibly: `uv run pytest
+  -q` produces no summary; bare `uv run pytest` or `uv run pytest -rN`
+  does. All test-count claims in this fix round were re-verified with the
+  summary line actually visible.
+- Confirmed empirically that `moto`'s `mock_aws()` never opens a real
+  socket at all (it patches botocore internals directly), so the new
+  socket guard does not interfere with any existing `moto`-backed test —
+  full suite green with the guard active.
+
+## Verification (fix round 1, all green)
+
+```
+uv run pytest                      # 1115 passed, 15 deselected
+uv run --directory agent pytest    # 32 passed (unaffected by this change)
+uv run ruff check                  # All checks passed
+uv run ruff format --check         # all files already formatted
+uv run mypy                        # Success: no issues found in 45 source files
+env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+  -u AWS_DEFAULT_REGION -u AWS_PROFILE uv run pytest   # 1115 passed, still offline
+uv run pytest tests/hygiene -q     # all passed (run after every git add)
+```
+
+## Files changed (fix round 1)
+
+| File | What changed |
+|---|---|
+| `src/rain_alert/adapters/dynamodb_alert_repository.py` | Bounded `Config`; `compute_expires_at` UTC guard; `_decimalize` on outage save |
+| `src/rain_alert/adapters/ssm_config_repository.py` | `GetParameters` by exact name (not `GetParametersByPath`); bounded `Config`; `_echo` truncation/sanitization |
+| `src/rain_alert/adapters/agent_prompt.py` | `checklist` sanitized in the prompt payload |
+| `src/rain_alert/domain/snapshot.py` | `_published_text` guard on `alert.title`/`.body` and `recent_alerts[].title` |
+| `src/rain_alert/ports/__init__.py` | `MessageComposer` docstring corrected (`checklist` no longer exempt) |
+| `docs/architecture/ports-and-application.md` | Same correction, doc copy |
+| `CLAUDE.md` | Reworded what the "AWS vars unset" verification step actually proves |
+| `tests/conftest.py` | Dropped `AWS_DEFAULT_REGION`; added the socket-guard fixture |
+| `tests/unit/test_conftest_fixtures.py` | Socket-guard tests |
+| `tests/unit/adapters/test_dynamodb_alert_repository.py` | `ConsistentRead` spy test; bounded-`Config` tests; UTC-guard tests; corrected TTL mutation test; cleaned-up docstring |
+| `tests/unit/adapters/test_ssm_config_repository.py` | Exact-name request tests; bounded-`Config` tests; message-truncation tests; memoization spy updated for `get_parameters` |
+| `tests/unit/adapters/test_agent_prompt.py` | Split the operator-owned-text test; added checklist-sanitization test |
+| `tests/unit/domain/test_snapshot.py` | Snapshot-boundary guard tests |
+| `openspec/changes/scheduled-cycle/tasks.md` | Corrected 1.11's claim (+1.11a); superseded 1.20/1.22-23/1.30/1.32-33's `GetParametersByPath` text; reworded 1.36 |
+| `openspec/changes/scheduled-cycle/design.md` | Amendments to D28 (socket guard, region) and D32 (`GetParameters`) |
+
+## Status (fix round 1)
+
+All MUST and SHOULD items addressed and mutation-verified where the review
+demanded it; all MINOR items addressed or explicitly stated as not
+applicable. No AWS command was run. No `cdk` command was run. Nothing was
+pushed; no PR was opened.

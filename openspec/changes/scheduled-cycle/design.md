@@ -122,7 +122,13 @@ The testing is split by what can actually fail:
 
 **Required, not optional**: a `conftest.py` fixture that forces `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` and `AWS_DEFAULT_REGION` to dummy values for the whole session. Without it, a developer with a live `ferrenafe` session and a mis-scoped `mock_aws` decorator runs the suite against real AWS. The suite's offline guarantee is a property of that fixture, not of good intentions, and it is asserted by a test that reads the resolved credentials inside the fixture's scope.
 
-**Pagination is not optional in either adapter.** `Query` and `GetParametersByPath` both paginate, and a first page that happens to hold everything is what makes a missing `LastEvaluatedKey` / `NextToken` loop invisible until the data grows. Both are driven by the `boto3` paginator, and the `moto` test seeds more items than one page holds.
+**Pagination is not optional in the DynamoDB adapter.** `Query` paginates, and a first page that happens to hold everything is what makes a missing `LastEvaluatedKey` loop invisible until the data grows. It is driven by the `boto3` paginator, and the `moto` test seeds more items than one page holds. (`GetParametersByPath` paged too, in this decision's original text — see the amendment below: the SSM adapter no longer uses it at all.)
+
+#### Amendment (fix round 1) — `AWS_DEFAULT_REGION` is not forced, and a socket guard replaces it
+
+This decision originally mandated forcing `AWS_DEFAULT_REGION` to a dummy value alongside the three credential variables, verbatim, as part of the required `conftest.py` fixture. A fresh-context security review found the actual effect of doing so: a test with a forgotten `mock_aws()` decorator no longer failed fast with `NoRegionError` (a local, no-network error) — it now had enough configuration to construct a real client and reach `dynamodb.us-east-2.amazonaws.com` over genuine HTTPS, receiving `UnrecognizedClientException` back. DNS resolved, TLS completed, AWS answered. The dummy region bought the trade; nothing needed it, because both `moto` fixtures in this suite pass `region_name` explicitly.
+
+**Amended**: `AWS_DEFAULT_REGION` is dropped from the fixture. In its place, a second session-scoped `autouse` fixture in `tests/conftest.py` monkeypatches `socket.socket.connect` to raise on any non-loopback address. This is the mechanism that actually makes "no network" true, rather than merely changing which error a real request returns — it fails locally, immediately, and names the destination that was blocked, attributed to whichever test caused it. `tests/unit/test_conftest_fixtures.py` asserts both halves: a non-loopback attempt is blocked before any network activity (including DNS resolution — verified with an IP literal, `192.0.2.1`, so no real lookup is needed to prove it), and a loopback attempt still reaches the real socket layer (proven by a genuine `ConnectionRefusedError`, not the guard's own exception).
 
 ### D29 — `run_once` lives in `entrypoints/`, and the Lambda handler is forbidden to import the CLI
 
@@ -247,6 +253,17 @@ Timeout <= 900
 **The prefix is the third thing that would drift silently**, so it rides in `contracts/scheduled-cycle.json` alongside the timeout: the Python constant is asserted against the file, and the CDK test asserts the granted resource ARN ends with it. A one-character disagreement between the grant and the reader is `AccessDenied` on every cycle and on no test.
 
 **Alternatives considered**: twelve flat parameters, one per field (an operator edits one number without JSON — at the cost of every cross-field invariant and a half-applied calibration); `AlertConfig` fields for the agent ARN and timeout (D23 already refused: an ARN is an AWS concern and must not widen the frozen core — CDK sets `RAIN_ALERT_AGENT_RUNTIME_ARN` and `RAIN_ALERT_AGENT_TIMEOUT_S` as Lambda environment); Secrets Manager (nothing here is a secret, and `CLAUDE.md`'s secret-handling rules would then apply to a checklist).
+
+#### Amendment (fix round 1) — `GetParameters` by exact name, never `GetParametersByPath`
+
+This decision originally chose `GetParametersByPath` over the shared prefix specifically so the IAM grant could be a single resource (`arn:…:parameter/ferrenafe/rain-alert/*`, quoted above). A security review named the cost that framing left out: a single resource that is a **wildcard over the whole prefix** grants `ssm:GetParametersByPath` on everything under it *forever*, including anything an operator parks there later that this design never anticipated — the grant is written once, in Phase 3, and a later adapter change to read one more value would otherwise need a separate, later policy change to narrow it back down.
+
+**Amended**: there are exactly seven parameters, and `GetParameters` accepts up to ten names per call — no paginator needed. `SsmConfigRepository` now requests the seven exact names by `GetParameters`, and Phase 3's IAM grant will list seven exact ARNs instead of one prefix-wildcard resource. Two consequences, both improvements over the original text:
+
+- **A stray parameter under the same prefix is never requested at all**, which is stronger than the original design's "read everything under the prefix, then filter by an explicit allow-list" (the `city_slug`-typo-tolerance scenario above). There is no filter step left to get wrong, because there is no wildcard read to filter.
+- **A genuinely missing parameter is now named directly.** `GetParameters`' response carries an `InvalidParameters` list of exactly the names it could not find, which this adapter raises on explicitly — a clearer failure than `GetParametersByPath`'s silent omission of an unmatched name from its result set, which previously left the missing-parameter case indistinguishable from an "empty value" case until `_require` inferred it generically.
+
+The prefix itself is unaffected by this amendment — it still names the one path all seven parameters live under, still rides in the golden contract file alongside the timeout, and the CDK test now asserts each of the seven granted ARNs starts with it, rather than asserting one granted resource ends with it.
 
 ### D33 — Observability: one JSON line, two alarms, one topic, and no subscriber in the repository
 
