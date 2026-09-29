@@ -129,6 +129,43 @@ describe('ScheduledCycleStack — Lambda role and the imported SnapshotWriter po
     );
     expect(withPutObject).toEqual([]);
   });
+
+  test('the execution role carries exactly one managed policy, and no statement anywhere carries a wildcard resource', () => {
+    // Fix round 2, SHOULD 2: `Match.arrayWith([SNAPSHOT_WRITER_POLICY_ARN])` above passes on a role that
+    // ALSO carries CDK's implicit `AWSLambdaBasicExecutionRole` (`logs:*` on `Resource: "*"`) — `arrayWith`
+    // only proves the named ARN is present, never that nothing else is. This is the PR's central security
+    // claim (fix round 1: the implicit role was replaced with an explicit one plus a scoped
+    // `logGroup.grantWrite`), and it had no test protecting it until this one.
+    //
+    // Two assertions, proven independently (mutation run live, recorded in apply-progress) to catch two
+    // DIFFERENT classes of regression — one does not substitute for the other:
+    // - The exact-set `ManagedPolicyArns` check is the one that actually catches the implicit-role
+    //   regression: restoring it and re-running with only the wildcard sweep active left this test GREEN,
+    //   because `AWSLambdaBasicExecutionRole` is an AWS-owned managed policy referenced by ARN — its
+    //   permissions are never inlined into this template as a `Statement` array at all, so
+    //   `everyStatement()` cannot see them. This confirms the fix round 1 review's own finding, precisely:
+    //   `everyStatement()` is structurally blind to managed policies, by construction, not by an oversight
+    //   fixable here.
+    // - The wildcard-resource sweep still earns its place for a different mistake: an inline
+    //   `iam.PolicyStatement` this stack's own code adds with `resources: ['*']` — a regression the
+    //   `ManagedPolicyArns` check cannot see, since that mistake would never touch a managed-policy ARN.
+    const template = synthesizeTemplate();
+
+    const roles = template.findResources('AWS::IAM::Role');
+    const executionRoles = Object.values(roles).filter((role) =>
+      (role.Properties.AssumeRolePolicyDocument.Statement as Array<Record<string, unknown>>).some(
+        (statement) =>
+          (statement.Principal as { Service?: string } | undefined)?.Service === 'lambda.amazonaws.com',
+      ),
+    );
+    expect(executionRoles).toHaveLength(1);
+    expect(executionRoles[0].Properties.ManagedPolicyArns).toEqual([SNAPSHOT_WRITER_POLICY_ARN]);
+
+    const wildcardResourceStatements = everyStatement(template).filter(
+      (statement) => statement.Resource === '*' || (Array.isArray(statement.Resource) && statement.Resource.includes('*')),
+    );
+    expect(wildcardResourceStatements).toEqual([]);
+  });
 });
 
 describe('ScheduledCycleStack — DynamoDB table (D26, D27, D34)', () => {

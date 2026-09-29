@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Stack, StackProps, RemovalPolicy, Duration, TimeZone } from 'aws-cdk-lib/core';
+import { Annotations, Stack, StackProps, RemovalPolicy, Duration, TimeZone } from 'aws-cdk-lib/core';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -47,8 +47,25 @@ const SSM_PARAMETER_SUFFIXES = [
   'dedup-lookback-hours',
 ] as const;
 
+/**
+ * The committed placeholder for `snapshotBucketName` (see `cdk.json`'s `context` block). Never a real
+ * bucket name — the constructor below refuses to treat it as one (fix round 1, SHOULD 5), rather than
+ * letting it reach `RAIN_ALERT_SNAPSHOT_BUCKET` truthily and fail every publish with `AccessDenied` while
+ * the alert itself still goes out and reports success.
+ *
+ * **Fix round 2, MUST 1 — this check now lives here, not in `bin/infra.ts`.** A `throw` at
+ * `bin/infra.ts`'s module scope killed the ENTIRE app-construction process, including `PublicSnapshotStack`
+ * — verified live: `cdk synth PublicSnapshotStack` failed with this exact error, which also breaks
+ * `docs/runbooks/public-page-deploy.md`'s documented `cdk destroy` emergency teardown for infrastructure
+ * that is deployed and serving residents right now. `Annotations.of(this).addError(...)` below is CDK's own
+ * mechanism for a synthesis-time problem that must fail *this stack's* `cdk synth`/`cdk deploy` without
+ * aborting the whole app-construction process other stacks share (confirmed live: `Annotations.fromStack`
+ * and the CDK CLI both scope error annotations to the stack that carries them).
+ */
+export const PLACEHOLDER_SNAPSHOT_BUCKET_NAME = 'ferrenafe-public-snapshot-example';
+
 export interface ScheduledCycleStackProps extends StackProps {
-  /** committed to `cdk.context.json` — no account id in it (design D25). */
+  /** committed to `cdk.json`'s `context` block — no account id in it (design D25). */
   readonly snapshotBucketName: string;
   /** supplied only at deploy time via `-c snapshotWriterPolicyArn=…` — never committed, the ARN embeds the
    * account id (design D25). */
@@ -63,7 +80,7 @@ export interface ScheduledCycleStackProps extends StackProps {
   readonly alarmEmail: string;
   /**
    * Whether the schedule is enabled on deploy (design D34's durable disable route:
-   * `cdk deploy ferrenafe-scheduled-cycle -c scheduleEnabled=false`).
+   * `cdk deploy ScheduledCycleStack -c scheduleEnabled=false`).
    * @default true
    */
   readonly scheduleEnabled?: boolean;
@@ -80,6 +97,47 @@ export interface ScheduledCycleStackProps extends StackProps {
 export class ScheduledCycleStack extends Stack {
   constructor(scope: Construct, id: string, props: ScheduledCycleStackProps) {
     super(scope, id, props);
+
+    // --- Required-value validation (fix round 2, MUST 1) ---
+    // Every check here is an `Annotations` ERROR, never a thrown exception: `bin/infra.ts` always
+    // constructs this stack once `snapshotBucketName` context is present at all (even a placeholder or an
+    // empty-string fallback for a missing ARN/email), so that a problem specific to THIS stack fails only
+    // `cdk synth`/`cdk deploy ScheduledCycleStack` and leaves `PublicSnapshotStack`'s own synth, diff and
+    // destroy commands unaffected. The resources below are still constructed with whatever values were
+    // given — none of the props below can make CDK itself throw synchronously (confirmed live for
+    // `EmailSubscription('')`) — so an operator running `cdk synth ScheduledCycleStack` sees every one of
+    // these errors at once, not just the first.
+    if (!props.snapshotBucketName || props.snapshotBucketName === PLACEHOLDER_SNAPSHOT_BUCKET_NAME) {
+      Annotations.of(this).addError(
+        'snapshotBucketName is required and must not be the placeholder value ' +
+          `'${PLACEHOLDER_SNAPSHOT_BUCKET_NAME}' committed in cdk.json's context. Replace it with the real ` +
+          'deployed PublicSnapshotStack bucket name — the placeholder would otherwise reach ' +
+          'RAIN_ALERT_SNAPSHOT_BUCKET truthily and fail every publish with AccessDenied while the alert ' +
+          'itself still goes out and reports success.',
+      );
+    }
+    if (!props.snapshotWriterPolicyArn) {
+      Annotations.of(this).addError(
+        'snapshotWriterPolicyArn is required and is never defaulted (design.md D25). Supply it at deploy ' +
+          'time — it must never be committed, because the ARN embeds the account id: cdk deploy ' +
+          'ScheduledCycleStack -c snapshotWriterPolicyArn=<arn>',
+      );
+    }
+    if (!props.agentRuntimeArn) {
+      Annotations.of(this).addError(
+        'agentRuntimeArn is required and is never defaulted, for the same reason as ' +
+          'snapshotWriterPolicyArn: the ARN embeds the account id. Supply it at deploy time: cdk deploy ' +
+          'ScheduledCycleStack -c agentRuntimeArn=<arn>',
+      );
+    }
+    if (!props.alarmEmail) {
+      Annotations.of(this).addError(
+        "alarmEmail is required and is never defaulted — an unsubscribed Alarm 2 is decorative for this " +
+          "design's defining silent failure (the cycle stops running). An email address is personal data " +
+          'and must never be committed. Supply it at deploy time: cdk deploy ScheduledCycleStack ' +
+          '-c alarmEmail=<address>',
+      );
+    }
 
     // --- DynamoDB (D26, D27, D34) ---
     const table = new dynamodb.Table(this, 'AlertsTable', {
@@ -285,7 +343,15 @@ export class ScheduledCycleStack extends Stack {
     const topic = new sns.Topic(this, 'AlarmsTopic', {
       topicName: 'ferrenafe-scheduled-cycle-alarms',
     });
-    topic.addSubscription(new sns_subscriptions.EmailSubscription(props.alarmEmail));
+    // Guarded rather than unconditional (fix round 2, MUST 1): an empty `alarmEmail` — the fallback
+    // `bin/infra.ts` supplies when the context value is missing — throws synchronously from inside
+    // `Subscription`'s own construct-id derivation (`Only root constructs may have an empty ID`, confirmed
+    // live), which would defeat the whole point of reporting every missing value as an `Annotations` error
+    // instead of crashing synthesis. The missing-value error above already covers this case; no subscription
+    // is the correct behaviour for no address, not a placeholder one.
+    if (props.alarmEmail) {
+      topic.addSubscription(new sns_subscriptions.EmailSubscription(props.alarmEmail));
+    }
     for (const alarm of [errorsAlarm, noInvocationsAlarm, snapshotFailureAlarm]) {
       alarm.addAlarmAction(new cw_actions.SnsAction(topic));
     }

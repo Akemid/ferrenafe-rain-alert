@@ -1,5 +1,7 @@
 import { App, Token } from 'aws-cdk-lib/core';
+import { Annotations, Match } from 'aws-cdk-lib/assertions';
 import { stack, buildScheduledCycleStack } from '../bin/infra';
+import { PublicSnapshotStack } from '../lib/public-snapshot-stack';
 
 /**
  * Guards what `bin/infra.ts` configures, as opposed to what
@@ -52,6 +54,17 @@ describe('bin/infra.ts — the deploy target', () => {
  * deploy time), so this is exercised with hand-built `App({ context })` instances rather than the module-
  * level `app` — the real committed context/CLI `-c` flags are not present when `npm test` runs
  * `bin/infra.ts` directly.
+ *
+ * **Fix round 2, MUST 1 — these used to assert `toThrow`.** A thrown exception at this function's call
+ * site aborted the ENTIRE app-construction process `bin/infra.ts` runs, including `PublicSnapshotStack`'s
+ * own construction a few lines below it — verified live: `cdk synth PublicSnapshotStack` failed with
+ * `ScheduledCycleStack`'s own missing-context error, which also breaks `docs/runbooks/public-page-deploy.md`'s
+ * documented `cdk destroy` emergency teardown for infrastructure that is deployed and serving residents
+ * right now. Every one of these checks now lives inside `ScheduledCycleStack`'s own constructor as an
+ * `Annotations.of(this).addError(...)` — CDK's mechanism for a synthesis-time problem that fails only the
+ * ONE stack that carries the annotation. `buildScheduledCycleStack` therefore now ALWAYS constructs the
+ * stack once `snapshotBucketName` context is present at all (never throwing), and these tests assert the
+ * resulting stack carries the expected error annotation instead of asserting a thrown exception.
  */
 describe('bin/infra.ts — buildScheduledCycleStack', () => {
   const SNAPSHOT_WRITER_POLICY_ARN = 'arn:aws:iam::ACCOUNT:policy/SnapshotWriter';
@@ -70,13 +83,16 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
     expect(buildScheduledCycleStack(app)).toBeUndefined();
   });
 
-  test('throws a clear error naming the missing key when snapshotWriterPolicyArn is absent, never defaulting it', () => {
+  test('carries an error annotation naming the missing key when snapshotWriterPolicyArn is absent, never defaulting it', () => {
     const app = new App({ context: { snapshotBucketName: REAL_BUCKET_NAME } });
 
-    expect(() => buildScheduledCycleStack(app)).toThrow(/snapshotWriterPolicyArn/);
+    const scheduledCycleStack = buildScheduledCycleStack(app);
+
+    expect(scheduledCycleStack).toBeDefined();
+    Annotations.fromStack(scheduledCycleStack!).hasError('*', Match.stringLikeRegexp('snapshotWriterPolicyArn'));
   });
 
-  test('throws a clear error naming the missing key when agentRuntimeArn is absent, never defaulting it', () => {
+  test('carries an error annotation naming the missing key when agentRuntimeArn is absent, never defaulting it', () => {
     const app = new App({
       context: {
         snapshotBucketName: REAL_BUCKET_NAME,
@@ -84,10 +100,13 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
       },
     });
 
-    expect(() => buildScheduledCycleStack(app)).toThrow(/agentRuntimeArn/);
+    const scheduledCycleStack = buildScheduledCycleStack(app);
+
+    expect(scheduledCycleStack).toBeDefined();
+    Annotations.fromStack(scheduledCycleStack!).hasError('*', Match.stringLikeRegexp('agentRuntimeArn'));
   });
 
-  test('throws a clear error naming the missing key when alarmEmail is absent, never defaulting it', () => {
+  test('carries an error annotation naming the missing key when alarmEmail is absent, never defaulting it', () => {
     // Fix round 1, SHOULD 6: required exactly like the two ARNs — an unsubscribed Alarm 2 is decorative
     // for this design's defining silent failure (the cycle stops running).
     const app = new App({
@@ -98,15 +117,18 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
       },
     });
 
-    expect(() => buildScheduledCycleStack(app)).toThrow(/alarmEmail/);
+    const scheduledCycleStack = buildScheduledCycleStack(app);
+
+    expect(scheduledCycleStack).toBeDefined();
+    Annotations.fromStack(scheduledCycleStack!).hasError('*', Match.stringLikeRegexp('alarmEmail'));
   });
 
-  test('throws when snapshotBucketName still holds the committed placeholder value, rather than deploying against it silently', () => {
+  test('carries an error annotation when snapshotBucketName still holds the committed placeholder value, rather than deploying against it silently', () => {
     // Fix round 1, SHOULD 5: the placeholder reaches `RAIN_ALERT_SNAPSHOT_BUCKET` truthily, so
     // `S3SnapshotPublisher` would be built and every publish would fail with `AccessDenied` (the
     // `SnapshotWriter` policy is scoped to the REAL bucket) — `run_once` absorbs that failure by design
     // (the alert must still go out), so the public page would freeze with no loud signal. The one context
-    // value that could be silently wrong now gets the same throw-not-default treatment as the two ARNs.
+    // value that could be silently wrong now gets the same error-annotation treatment as the two ARNs.
     const app = new App({
       context: {
         snapshotBucketName: 'ferrenafe-public-snapshot-example',
@@ -116,7 +138,21 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
       },
     });
 
-    expect(() => buildScheduledCycleStack(app)).toThrow(/snapshotBucketName/);
+    const scheduledCycleStack = buildScheduledCycleStack(app);
+
+    expect(scheduledCycleStack).toBeDefined();
+    Annotations.fromStack(scheduledCycleStack!).hasError('*', Match.stringLikeRegexp('snapshotBucketName'));
+  });
+
+  test('never throws, and never prevents PublicSnapshotStack from being constructed in the same app', () => {
+    // Fix round 2, MUST 1 — the specific regression this whole round exists to close: constructing
+    // `ScheduledCycleStack` with the required ARNs/email missing must never throw, and must never prevent
+    // `PublicSnapshotStack` from being constructed in the same app.
+    const app = new App({ context: { snapshotBucketName: REAL_BUCKET_NAME } });
+
+    expect(() => buildScheduledCycleStack(app)).not.toThrow();
+    const publicSnapshotStack = new PublicSnapshotStack(app, 'PublicSnapshotStackFixture');
+    expect(publicSnapshotStack).toBeDefined();
   });
 
   test('synthesizes when all required context props are supplied, targeting the pinned region and named stack', () => {
