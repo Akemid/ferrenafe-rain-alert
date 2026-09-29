@@ -56,7 +56,10 @@ The default suite is **offline**: no network, no credentials, no model calls.
 It must stay that way, and two `tests/conftest.py` fixtures enforce it
 structurally rather than by convention: a session-scoped fixture forces
 dummy AWS credentials, and a session-scoped socket guard refuses any
-non-loopback connection outright. Running with the AWS environment
+non-loopback **TCP** connection outright (`connect_ex` and UDP `sendto`
+pass through untouched; nothing in botocore's stack uses either, so this
+is not currently exploitable, but it is not "any network egress").
+Running with the AWS environment
 variables unset is a sanity check that nothing depends on the *ambient*
 environment happening to be clean — it is not a test of whether a
 credential or a network call is required, because the credentials fixture

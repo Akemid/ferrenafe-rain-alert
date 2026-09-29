@@ -51,10 +51,12 @@ DynamoDB TTL only deletes items that *have* the attribute, so omitting it
 entirely is what makes the active-outage record permanent until explicitly
 cleared.
 
-**Pagination is not optional.** Both `Query` (here) and `GetParametersByPath`
-(`ssm_config_repository.py`) paginate, driven by the `boto3` paginator, per
-design.md D28: a first page that happens to hold everything is what makes a
-missing continuation loop invisible until the data grows.
+**Pagination is not optional here.** `Query` paginates, driven by the
+`boto3` paginator, per design.md D28: a first page that happens to hold
+everything is what makes a missing continuation loop invisible until the
+data grows. (`ssm_config_repository.py` no longer paginates at all —
+fix round 1 moved it from `GetParametersByPath` to `GetParameters` over the
+seven exact parameter names, which fit in one call.)
 
 **No credentials offline, exactly like `BedrockAgentCoreInvoker` (D28).**
 `client: Any | None = None`, built lazily on the first call, so wiring never

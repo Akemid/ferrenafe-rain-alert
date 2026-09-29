@@ -55,3 +55,29 @@ class TestTheSocketGuard:
                 sock.connect(("127.0.0.1", 1))
         finally:
             sock.close()
+
+    def test_a_forgotten_mock_aws_still_cannot_reach_the_real_account(self) -> None:
+        """Fix round 2, item 5. The regression that motivated this guard
+        (design.md D28's amendment) was a real `boto3` call reaching
+        `dynamodb.us-east-2.amazonaws.com` because a test forgot its
+        `mock_aws()` decorator — until now that path was only pinned by a
+        fresh-context review's transcript, not by this suite. `region_name`
+        is supplied explicitly because fix round 1 stopped forcing
+        `AWS_DEFAULT_REGION`; the dummy credentials fixture still applies,
+        but a real region plus real (dummy) credentials is exactly the
+        configuration that used to be enough to send the request.
+
+        `botocore`'s HTTP layer catches the guard's `RuntimeError` at the
+        socket layer and re-wraps it as `HTTPClientError` (confirmed by
+        running this once against the real guard, before writing this
+        docstring, and reading what actually surfaced) — so this asserts on
+        the wrapper `botocore` itself raises, with the guard's own message
+        still present inside it, rather than asserting a `RuntimeError`
+        that never reaches this level uncaught.
+        """
+        from botocore.exceptions import HTTPClientError
+
+        client = boto3.client("dynamodb", region_name="us-east-2")
+
+        with pytest.raises(HTTPClientError, match="blocked a real network connection"):
+            client.list_tables()

@@ -388,6 +388,25 @@ class TestExceptionMessagesNeverEchoAnOperatorValueInFull:
         assert oversized not in str(excinfo.value)
         assert len(str(excinfo.value)) < 300
 
+    def test_an_oversized_negative_integer_value_is_truncated_in_the_message(self, ssm_client: Any) -> None:
+        """Fix round 2, item 4. `int()` itself refuses more than ~4300
+        digits (Python's own integer-string-conversion limit), which is why
+        the all-`9`s case above never reaches `_parse_positive_int`'s
+        `value <= 0` branch at all -- it fails inside `int()` and goes
+        through `_echo` via the `except ValueError` path. A **3000**-digit
+        negative value stays under that limit, parses to a valid (negative)
+        `int`, and used to reach the `value <= 0` raise, which interpolated
+        the parsed integer directly with no `_echo` -- a 3076-character
+        message into CloudWatch Logs, confirmed by a fresh-context probe."""
+        oversized_negative = "-" + "9" * 3000
+        _seed(ssm_client, overrides={f"{SSM_PATH_PREFIX}forecast-hours": oversized_negative})
+
+        with pytest.raises(ValueError) as excinfo:
+            SsmConfigRepository(client=ssm_client).load()
+
+        assert oversized_negative not in str(excinfo.value)
+        assert len(str(excinfo.value)) < 300
+
     def test_an_oversized_coordinates_source_value_is_truncated_in_the_message(self, ssm_client: Any) -> None:
         oversized = json.dumps({"latitude": 1.0, "longitude": 1.0, "source": "z" * 5000})
         _seed(ssm_client, overrides={f"{SSM_PATH_PREFIX}location": oversized})

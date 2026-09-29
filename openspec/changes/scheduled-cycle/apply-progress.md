@@ -526,3 +526,138 @@ All MUST and SHOULD items addressed and mutation-verified where the review
 demanded it; all MINOR items addressed or explicitly stated as not
 applicable. No AWS command was run. No `cdk` command was run. Nothing was
 pushed; no PR was opened.
+
+---
+
+# Fix Round 2
+
+The re-review came back **fit to open** (PR 1 of 4), having verified rather
+than read: two independent mutations on `ConsistentRead` re-confirmed
+load-bearing, an AST walk confirming the seven requested SSM names exactly
+match what `_parse` consumes with no asymmetry, eight live socket probes,
+and the test-count arithmetic (1035 + 60 + 20 = 1115) re-derived
+independently in a throwaway worktree. Five small items remained, three of
+them claims in this round's own artifacts that reached further than the
+code — exactly the genre this round existed to remove.
+
+## 1. `design.md` — "including DNS resolution" was empirically false
+
+A live probe found the guard's own blocked-address message naming a
+**resolved public IP** (`('35.71.102.11', 443)`), meaning `getaddrinfo` ran
+and real DNS traffic left the host before the guard fired.
+`socket.getaddrinfo` on its own is not intercepted at all — only
+`socket.socket.connect` is. Corrected D28's amendment to say what the guard
+actually does (intercepts TCP `connect`) and to state the DNS gap
+explicitly, rather than claiming coverage the code does not have. The IP
+literal (`192.0.2.1`) in the tests was always only there so the *tests*
+needed no real lookup — that part was accurate and is unchanged.
+
+## 2. `CLAUDE.md` — "refuses any non-loopback connection outright" was broader than the code
+
+`connect_ex` and UDP `sendto` both pass through the guard untouched — a live
+probe sent a real UDP byte to `8.8.8.8:53` to confirm it. Nothing in
+botocore's stack uses either mechanism, so this is not currently
+exploitable, but the wording is narrowed to **TCP** specifically, with the
+untouched paths named, since this is the file every future session reads
+first and an overclaim here costs more than anywhere else.
+
+## 3. `dynamodb_alert_repository.py` — a stale reference to a removed mechanism
+
+The module docstring still read "Both `Query` (here) and
+`GetParametersByPath` (`ssm_config_repository.py`) paginate" after fix round
+1 moved the SSM adapter to `GetParameters` with no pagination at all. This
+was the one remaining source-tree reference making that false claim — the
+same defect class already caught and fixed in `ports/__init__.py` during
+fix round 1, just out of sight in a different file. Corrected to describe
+`Query`-only pagination and note the SSM adapter's mechanism change
+explicitly, rather than silently dropping the cross-reference.
+
+## 4. `ssm_config_repository.py` — one path still interpolated a full value
+
+`_parse_positive_int`'s `value <= 0` branch raised with the parsed integer
+interpolated directly, not through `_echo`. A probe with a 3000-digit
+negative value produced a 3076-character exception message. Low severity —
+the value is numeric-only by construction, since anything non-numeric fails
+`int()` first and already goes through `_echo` via the `except ValueError`
+path — but the apply-progress claim that `_echo` was applied at "every
+site... both integer fields" was not true for this branch. Bounded it:
+`_echo(value)` instead of `value`.
+
+**Mutation proof, run live**: added
+`test_an_oversized_negative_integer_value_is_truncated_in_the_message`
+(a **3000**-digit negative value, deliberately under Python's own
+~4300-digit integer-string-conversion limit, so it parses successfully and
+reaches this branch rather than failing inside `int()` the way the existing
+all-`9`s test does — confirmed by checking why that existing test passes at
+all, since `"9" * 5000` is a *valid* positive integer and the earlier test
+was unknowingly relying on Python's own conversion-limit `ValueError`, not
+on `_parse_positive_int`'s logic). Confirmed RED first
+(3076-character message, exact match to the probe) against the
+unfixed code, then GREEN, then reverted the fix to re-confirm RED, then
+restored it.
+
+## 5. The socket guard's coverage of the actual regression path lived only in a review transcript
+
+The existing tests prove the guard fires on a raw socket and discriminates
+loopback from non-loopback, but the regression that motivated the guard
+(design.md D28's amendment) is specifically a forgotten `mock_aws()`
+letting `boto3` reach AWS — and that path was pinned by a reviewer's probe,
+not by the suite. Added
+`test_a_forgotten_mock_aws_still_cannot_reach_the_real_account`: constructs
+a real `boto3.client("dynamodb", region_name="us-east-2")` outside any
+`mock_aws()` context and calls `list_tables()`.
+
+**Discovery while writing this test**: the first version asserted
+`pytest.raises(RuntimeError, ...)` and failed — not because the guard
+didn't fire, but because `botocore`'s HTTP layer catches the guard's
+`RuntimeError` at the socket layer and re-raises it wrapped as
+`botocore.exceptions.HTTPClientError`. The failure output confirmed the
+guard fired for real, against a real `boto3` call, naming a real resolved
+AWS IP (consistent with item 1's finding above) — this is itself the live
+proof the test exists to pin, not a bug in the test. Corrected the
+assertion to expect `HTTPClientError` with the guard's message inside it,
+which is what a real caller of this client would actually see.
+
+No additional mutation was performed on this one: disabling the guard to
+prove it would require letting a real socket connection actually complete
+against AWS's endpoint, which conflicts with this task's own "no AWS
+commands, no live network" constraint. The RED run above (before the
+assertion was corrected) already is that evidence — it shows the guard's
+message with a genuine resolved AWS IP address, produced by a real,
+unmocked `boto3` call.
+
+## Verification (fix round 2, all green)
+
+```
+uv run pytest                      # 1117 passed, 15 deselected (no -q: this project's own
+                                    # addopts already sets -q; a second one on the command
+                                    # line was silently swallowing the summary all session)
+uv run --directory agent pytest    # 32 passed
+uv run ruff check                  # All checks passed
+uv run ruff format --check         # all files already formatted
+uv run mypy                        # Success: no issues found in 45 source files
+uv run pytest tests/hygiene/       # 49 passed (run after git add)
+```
+
+## Files changed (fix round 2)
+
+| File | What changed |
+|---|---|
+| `openspec/changes/scheduled-cycle/design.md` | Corrected D28 amendment's DNS-resolution claim |
+| `CLAUDE.md` | Narrowed the socket guard's description to TCP |
+| `src/rain_alert/adapters/dynamodb_alert_repository.py` | Removed the stale `GetParametersByPath` cross-reference |
+| `src/rain_alert/adapters/ssm_config_repository.py` | `_echo()` applied to the `value <= 0` branch of `_parse_positive_int` |
+| `tests/unit/adapters/test_ssm_config_repository.py` | New oversized-negative-integer truncation test |
+| `tests/unit/test_conftest_fixtures.py` | New end-to-end `boto3`-shaped guard test |
+
+Nothing else was changed: no test made inert, no assertion weakened, no
+production path loosened, per the re-review's own finding and this round's
+explicit instruction.
+
+## Status (fix round 2)
+
+All five items addressed. No AWS command was run (the new `boto3` test
+performs one real DNS lookup as an unavoidable consequence of exercising
+the actual regression path — the TCP connect itself is blocked locally, per
+item 1's own corrected description of the guard's scope). No `cdk` command
+was run. Nothing was pushed; no PR was opened — the coordinator opens it.

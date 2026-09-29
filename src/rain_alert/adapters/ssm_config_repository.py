@@ -250,7 +250,7 @@ def _parse_positive_int(raw_value: str, name: str) -> int:
     except ValueError as exc:
         raise ValueError(f"SSM parameter {name!r} must be an integer, got {_echo(raw_value)!r}") from exc
     if value <= 0:
-        raise ValueError(f"SSM parameter {name!r} must be positive, got {value}")
+        raise ValueError(f"SSM parameter {name!r} must be positive, got {_echo(value)}")
     return value
 
 
