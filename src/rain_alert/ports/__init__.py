@@ -46,8 +46,15 @@ class MessageComposer(Protocol):
 
     Source-derived means "the system did not write it": today that is the
     scraped SENAMHI aviso title, carried on `WarningReason.title` and
-    `WarningSummary.title`. It excludes operator-owned configuration
-    (`city`, `timezone`, `checklist`) and the evaluator's own numbers.
+    `WarningSummary.title`. It excludes code-owned configuration (`city`,
+    `timezone`) and the evaluator's own numbers. **`checklist` was excluded
+    here too until change 3's `SsmConfigRepository` made it operator-editable
+    runtime input with no code review** — it now gets the same sanitization
+    every other free-text field on this list gets
+    (`adapters/agent_prompt.py::prompt_payload`,
+    `domain/template.py::MessageComposer`), because "operator-owned" stopped
+    meaning "reviewed like any other line of source" the moment it became an
+    SSM parameter.
 
     The reason is not theoretical. `AlertMessage.body` is a line-oriented
     format whose grammar is `- ` bullets and `Motivos:` / `Recomendaciones:`

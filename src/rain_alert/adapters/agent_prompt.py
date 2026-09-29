@@ -179,7 +179,16 @@ def prompt_payload(request: MessageRequest) -> dict[str, Any]:
         },
         "senamhi_status": request.senamhi_status,
         "open_meteo_status": request.open_meteo_status,
-        "checklist": list(request.checklist),
+        # Sanitized, unlike `city`/`timezone` above: `checklist` was exempt
+        # while it was a Python code constant, reviewed like any other line
+        # of source. `SsmConfigRepository` (change 3) makes it
+        # operator-editable runtime input with no code review, so it now
+        # gets the same treatment every other source-derived field in this
+        # payload already gets. `domain/template.py` already sanitizes each
+        # item at render time; sanitizing here too makes the prompt agree
+        # with what the template and the validator's verbatim-span
+        # comparison (`domain/message_validation.py`) already assume.
+        "checklist": [sanitize_source_text(item) for item in request.checklist],
     }
 
 

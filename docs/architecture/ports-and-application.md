@@ -27,7 +27,7 @@ Seven of the eight are the use case's, and are the seven `CycleDependencies` bun
 
 **`MessageComposer` carries a sanitization invariant, stated on the port.** It is the only port through which recipient-facing text is produced, which makes it the chokepoint: every source-derived free text reaching `AlertMessage.title` or `AlertMessage.body` must pass through `domain.sanitize.sanitize_source_text` first.
 
-"Source-derived" means the system did not write it. Today that is the scraped SENAMHI aviso title, carried on `WarningReason.title` and `WarningSummary.title`. It excludes operator-owned configuration — `city`, `timezone`, `checklist` — and the evaluator's own numbers.
+"Source-derived" means the system did not write it. Today that is the scraped SENAMHI aviso title, carried on `WarningReason.title` and `WarningSummary.title`. It excludes code-owned configuration — `city`, `timezone` — and the evaluator's own numbers. `checklist` was excluded here too until change 3's `SsmConfigRepository` made it operator-editable runtime input with no code review; it now gets the same sanitization every other free-text field in the prompt and the template get.
 
 The invariant lives on the port rather than only in `template.py` so that change 2's agent-backed composer inherits it rather than rediscovering it. An agent does not weaken the requirement and does not replace it: a model asked to quote a title will quote it verbatim, newlines included, and text arriving from a scraped page is precisely the input a composer must not be handed unfiltered. The reproduced defect and the four rendering boundaries are described in [domain.md](./domain.md).
 
