@@ -1117,3 +1117,310 @@ live, per the review's own probes. The stale spec line corrected in place.
 Task 2.22 (fresh-context security review) remains outstanding for the
 coordinator, as it was before this round — this round's own reviews were
 external to this session, not performed by `sdd-apply`.
+
+---
+
+# Apply Progress: Scheduled Cycle — Phase 3 (PR 3 of 4)
+
+**Scope**: Phase 3 only — `contracts/scheduled-cycle.json` + the CDK
+`ScheduledCycleStack` (synth-only, no deploy). Task 3.30 (fresh-context
+security review) is explicitly out of scope for `sdd-apply` and flagged
+outstanding below, as tasks 1.34 and 2.22 were in the prior two phases.
+
+**Branch**: `feat/scheduled-cycle-infra`, from `feat/scheduled-cycle-entrypoints`
+(Phase 2's tip, open as PR #20, not yet merged).
+**Delivery strategy**: `ask-on-risk`, resolved to `stacked-to-main` — PR 3 of
+4 in the chain.
+**Mode**: Strict TDD (RED → GREEN, mutation proofs on the tasks that name
+one explicitly: 3.6, 3.10 (corrected — see below), 3.15, 3.21, 3.28).
+
+**A note on the RED/GREEN cadence in this phase, stated rather than implied**:
+CDK's synthesis-based testing model means the natural first RED for a
+not-yet-existing construct is a compile error or a missing-resource
+assertion failure, not a runtime exception the way Python's is. The contract
+file (3.5/3.6) and the `bin/infra.ts` wiring (3.24/3.25) were each taken
+through a genuine, isolated RED (`FileNotFoundError`; `TypeError: ... is not
+a function` / `Cannot find module`) before their GREEN. The CDK stack itself
+(3.7–3.23) was written and its test file developed together, iterating
+against real synth failures observed live (a `CannotSupplyBothDayAndWeekDay`
+CDK validation error, three `IAM::Role`-count assertion failures from an
+unaccounted-for Scheduler invocation role, an `Fn::Join` shape mismatch) —
+every failure shown below under "Real failures observed and resolved" was
+genuine and unplanned, not scripted. The three tasks that call for a
+standalone mutation proof (3.10, 3.15, 3.21) were each performed as their
+own isolated revert-verified step, after the stack was green, exactly as
+written.
+
+## Facts confirmed (tasks 3.1–3.4)
+
+**3.1** — Confirmed against the installed `aws-cdk-lib@2.270.0` source
+(`infra/node_modules/aws-cdk-lib/aws-scheduler/lib/schedule.js`,
+`.../lib/schedule.d.ts`, `.../aws-scheduler-targets/lib/target.d.ts`):
+
+- The L2 `Schedule` construct has **no** `state` or `scheduleExpressionTimezone`
+  prop. `state` (`'ENABLED'`/`'DISABLED'`) and `scheduleExpressionTimezone`
+  are `CfnSchedule` (L1) properties, rendered by `Schedule` from
+  `props.enabled ?? true` and from `ScheduleExpression.cron({ timeZone })`'s
+  `TimeZone.timezoneName` respectively — confirmed by reading
+  `schedule.js`'s compiled constructor directly:
+  `state: props.enabled ?? true ? "ENABLED" : "DISABLED"`,
+  `scheduleExpressionTimezone: props.schedule.timeZone?.timezoneName`.
+- The retry policy props (`maxEventAge: Duration`, `retryAttempts: number`)
+  are exactly as the launch prompt's correction stated — but they live on
+  `ScheduleTargetBaseProps` (the *target's* construction props, e.g.
+  `new scheduler_targets.LambdaInvoke(fn, { maxEventAge, retryAttempts })`),
+  not on `ScheduleProps` directly. Implemented that way.
+- `CfnSchedule`'s `State`/`ScheduleExpressionTimezone` are plain strings,
+  confirmed against `scheduler.generated.d.ts`.
+
+**3.2** — Confirmed: `iam.ManagedPolicy.fromManagedPolicyArn` compiles to a
+plain `Import` class holding the ARN string verbatim, no parsing performed.
+`arn:aws:iam::ACCOUNT:policy/SnapshotWriter` is accepted without error.
+
+**3.3** — Confirmed against AWS's live documentation (fetched at apply time:
+`docs.aws.amazon.com/AmazonCloudWatch/latest/logs/FilterAndPatternSyntax.html`):
+*"Enclose exact phrases and terms that include non-alphanumeric characters
+in double quotation marks."* The launch prompt's hypothesis was exactly
+right. Implemented as `FilterPattern.literal('"[SNAPSHOT NOT PUBLISHED]"')`
+— `FilterPattern.literal` itself performs no quoting; it emits whatever
+string it is given verbatim (confirmed by reading its compiled source: a
+one-line `LiteralLogPattern` wrapper), so the double-quote wrapping had to
+be supplied by the caller.
+
+**3.4** — Confirmed in code, not merely "undocumented": `ScheduleTargetBaseProps`'s
+own JSDoc states `retryAttempts` defaults to **185** and `maxEventAge`
+defaults to **`Duration.hours(24)`**. Recorded as a stronger correction to
+the task's own rationale in `tasks.md`.
+
+## Real failures observed and resolved (the CDK stack's own RED/GREEN cycle)
+
+1. `CannotSupplyBothDayAndWeekDay` — the cron expression initially supplied
+   both `day: '*'` and `weekDay: '?'` explicitly; CDK's `CronOptions`
+   rejects supplying both. Fixed by omitting `weekDay` entirely (its
+   omission implies the correct `?` once `day` is given), producing the
+   intended `cron(0 0,6,12,18 * * ? *)`.
+2. Three test failures asserting exactly one `AWS::IAM::Role` in the
+   template — `scheduler_targets.LambdaInvoke` creates its own Scheduler
+   invocation role, distinct from the Lambda's execution role, so the
+   template legitimately carries two roles. Fixed the test helper
+   (`findFunctionRoleStatements`) to locate the Lambda's own role by
+   following the function's `Role` `Fn::GetAtt` reference, rather than
+   assuming there is exactly one role in the template.
+3. The SSM grant test's `Fn::Join` shape assertion initially expected the
+   static suffix fragment to start with `parameter${prefix}`; the actual
+   rendered fragment is `:parameter/ferrenafe/rain-alert/<name>` (with a
+   leading colon, from the ARN's own `:` separator before the resource
+   segment). Fixed the assertion to match the real shape.
+
+## A gap the design left open, filled at apply time (task 3.17)
+
+Neither `design.md` nor `tasks.md` names the context key the AgentCore
+runtime ARN is supplied through — D25 only lists `snapshotBucketName`/
+`snapshotWriterPolicyArn` as required stack props, but task 3.17 requires
+the role's AgentCore grant to be "scoped to exactly the one context-supplied
+ARN." Added a third required prop, `agentRuntimeArn`, following the exact
+pattern D25 already establishes for `snapshotWriterPolicyArn`: never
+committed to `cdk.context.json` (the ARN embeds the account id), supplied
+only via `-c agentRuntimeArn=<arn>` at deploy time, and `bin/infra.ts`
+throws a named error if it is absent once an attempt is underway. This is a
+design elaboration to close a real gap the two phase artifacts left open,
+not a deviation from an explicit instruction — flagged here for review.
+
+## `bin/infra.ts` — the `buildScheduledCycleStack` gate (task 3.24)
+
+`snapshotBucketName` gates the *attempt*; `snapshotWriterPolicyArn` and
+`agentRuntimeArn`, once the attempt is underway, are each a hard throw if
+missing, never a default. Refactored `bin/infra.ts` to export a standalone
+`buildScheduledCycleStack(app: cdk.App)` function (rather than only building
+one fixed stack at module top-level) specifically so all three outcomes —
+not synthesized at all, throws naming the missing key, and successfully
+constructed — are independently testable with hand-built `App({ context })`
+instances. This matters because `snapshotWriterPolicyArn`/`agentRuntimeArn`
+are *never* present under a plain `npm test` run (no `cdk.context.json`
+read, no `-c` flag), and the existing `PublicSnapshotStack` tests in the
+same file must keep passing with zero context supplied.
+
+`infra/cdk.context.json` created, carrying `snapshotBucketName` only, per
+the binding constraint. **Placeholder value**: the real `PublicSnapshotStack`
+bucket has no explicit `bucketName` (CloudFormation auto-generates one at
+deploy time — `infra/lib/public-snapshot-stack.ts:18`), so the true deployed
+name is not knowable from source and `sdd-apply` runs no AWS command to look
+it up. `cdk.context.json` currently holds `"ferrenafe-public-snapshot-example"`
+as an explicit placeholder — **the owner must replace this with the real
+deployed bucket name before running `cdk deploy ferrenafe-scheduled-cycle`**,
+flagged here and should also be flagged in the PR-3 description.
+
+## SSM grant — superseded task text (task 3.15/3.16)
+
+Task 3.15's original wording (`ssm:GetParametersByPath` on one prefix-ending
+resource ARN) predates design.md D32's fix-round-1 amendment, which moved
+the CDK grant to **seven exact `ssm:GetParameters` resource ARNs** — matching
+the Python-side move from `GetParametersByPath` to `GetParameters` in Phase
+1. Implemented and tested per the amendment (design.md D32: *"the CDK test
+now asserts each of the seven granted ARNs starts with it, rather than
+asserting one granted resource ends with it"*), not per the stale task text.
+Corrected in `tasks.md` in place.
+
+## Mutation proofs (run live)
+
+**3.6 — contract file.** `READ_TIMEOUT` bumped 35.0 → 40.0 in
+`agentcore_invoker.py` without updating the contract file:
+`test_contract_matches_read_timeout` failed (`assert 35.0 == 40.0`).
+Reverted; green.
+
+**3.10 — corrected, and the correction is the actual finding.** The task's
+premise names the wrong assertion. With `RAIN_ALERT_AGENT_TIMEOUT_S`
+mutated to `"10"`:
+- Relation 2 (task 3.8, `Timeout(120) > env + headroom(60)`) becomes
+  `120 > 70`, which still holds — lowering the env var makes Relation 2
+  *easier* to satisfy, not harder. Verified live:
+  `npm test -- scheduled-cycle-stack -t "exceeds the agent deadline"` →
+  **1 passed**, not red.
+- Relation 1 (task 3.7, `env >= contract.agent_read_timeout_seconds(35)`)
+  is what actually breaks: `10 >= 35` is false. Verified live:
+  `npm test -- scheduled-cycle-stack -t "env timeout at least"` → **failed**,
+  `Expected 35 but received 10`. This is exactly D19's "why not 5 s"
+  kill-switch-by-accident case — a too-low `RAIN_ALERT_AGENT_TIMEOUT_S` is a
+  Relation 1 violation (the deployed value falls below the measured
+  cold-start deadline), not a Relation 2 one. Corrected in `tasks.md`.
+Reverted both; suite green.
+
+**3.15 — SSM grant absence.** Temporarily added
+`new ssm.StringParameter(this, 'PlantedParameter', { stringValue: '...' })`
+to the stack: the "SSM grant" test failed
+(`Expected length: 0, Received length: 1`, naming `PlantedParameter73DBFCD2`).
+Reverted; green.
+
+**3.21 — `reservedConcurrentExecutions`.** Temporarily removed the prop: the
+"schedule" test failed (`Missing key 'ReservedConcurrentExecutions'`).
+Reverted; green.
+
+**3.28 — the build script's no-`.so`/no-`awscrt` guard.** The script's own
+`rm -rf` at the top would erase a file planted beforehand, so the guard's
+exact find/conditional logic was extracted and run standalone against an
+isolated temp directory holding a planted `native.so`: exited 1, named the
+planted file (`GUARD FIRED (expected): found .so at
+/tmp/mutation-proof-lambda-build/planted_pkg/native.so`). The real build was
+then re-run clean to confirm the guard passes on the actual artifact.
+
+## Build script — real run, resolved dependencies (task 3.27/3.28)
+
+`infra/scripts/build-lambda.sh` filters the one compiled wheel via
+`uv export --frozen --no-dev --no-emit-project --no-emit-package awscrt`
+(rather than post-hoc text-filtering the requirements file), then
+`uv pip install --target infra/build/lambda --python-version 3.12
+--python-platform aarch64-manylinux2014 --no-deps --requirements <file>`,
+then copies `src/rain_alert` in.
+
+Run once, live, against the real `uv.lock`. Resolved 16 packages (excluding
+`awscrt`):
+
+```
+anyio==4.15.0
+beautifulsoup4==4.15.0
+boto3==1.43.98
+botocore==1.43.98
+certifi==2026.7.22
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.19
+jmespath==1.1.0
+python-dateutil==2.9.0.post0
+s3transfer==0.19.2
+six==1.17.0
+soupsieve==2.9.2
+typing-extensions==4.16.0
+urllib3==2.8.0
+```
+
+**Deviation from design.md D30's predicted list, stated rather than
+silently corrected**: D30 named `boto3, botocore, httpx, httpcore, h11,
+anyio, sniffio, idna, certifi, beautifulsoup4, soupsieve, jmespath,
+python-dateutil, urllib3, s3transfer`. The real resolution additionally
+includes `six` and `typing-extensions` (not named in D30) and does **not**
+include `sniffio` (which D30 named). The conclusion D30 draws from its list
+— "every remaining distribution is pure Python" — still holds: `find` over
+the built tree confirms zero `*.so` files and zero `awscrt*` directories.
+Built tree size: 31 MB unzipped (well inside the 250 MB Lambda limit, as
+D30 predicted).
+
+## Files changed
+
+| File | Action | What |
+|---|---|---|
+| `contracts/scheduled-cycle.json` | Created | The golden contract (D31, D32) |
+| `tests/unit/adapters/test_agentcore_invoker.py` | Modified | `TestScheduledCycleContract` (task 3.5/3.6) |
+| `infra/lib/scheduled-cycle-stack.ts` | Created | `ScheduledCycleStack` — Lambda, table, IAM grants, schedule, alarms, topic (D25–D35) |
+| `infra/test/scheduled-cycle-stack.test.ts` | Created | 9 tests across timeout relations, IAM, table, SSM, AgentCore, schedule, observability |
+| `infra/bin/infra.ts` | Modified | `buildScheduledCycleStack`, the second stack's context gate |
+| `infra/test/app.test.ts` | Modified | 5 new tests for `buildScheduledCycleStack` |
+| `infra/cdk.context.json` | Created | `snapshotBucketName` only (placeholder — see above) |
+| `infra/scripts/build-lambda.sh` | Created | The Lambda build script (D30) |
+| `infra/.gitignore` | Modified | Ignore `build/` |
+| `openspec/changes/scheduled-cycle/tasks.md` | Modified | Phase 3 tasks checked off; 3.1/3.2/3.3/3.4/3.10/3.15/3.17/3.26/3.28 corrected/elaborated in place |
+
+## Verification (all run live)
+
+```
+cd infra && npm test                # 3 suites, 23 passed (was 9 before this phase)
+cd infra && npx tsc --noEmit        # TypeScript compilation completed, exit 0
+uv run pytest                       # 1134 passed, 15 deselected (+1: the new contract test)
+uv run ruff check                   # All checks passed
+uv run ruff format --check          # 115 files already formatted
+uv run mypy                         # Success: no issues found in 47 source files
+env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN uv run pytest
+                                     # 1134 passed, 15 deselected, still offline
+uv run pytest tests/hygiene -q      # 49 passed (run after `git add infra/` — found and
+                                     # fixed one real phantom-citation defect, see below)
+uv run pytest tests/unit/adapters/test_agentcore_invoker.py -k contract -q
+                                     # 1 passed
+```
+
+No `cdk deploy`, `cdk bootstrap`, or AWS CLI command was run. `cdk synth`
+(via `npm test`/`Template.fromStack`) and `moto` are both local.
+`infra/scripts/build-lambda.sh` (task 3.27/3.28) uses `uv export`/`uv pip
+install`, which may reach a package index over the network if a wheel is
+not already cached — ordinary Python build tooling, not an AWS call, and
+outside `npm test`/`pytest`'s own offline guarantee.
+
+## Hygiene — a real defect found and fixed (task 3.26)
+
+The first hygiene run (after `git add infra/`) failed
+`test_no_docstring_or_comment_cites_a_path_git_does_not_have`: the new
+contract test's docstring cited a hypothetical second contract file by path
+in backticks, copied from design.md D31's own precedent list — that file
+was never actually created in this repository. Removed the backtick-wrapped
+phantom path from the docstring; re-ran, green. This is exactly the class
+of defect `docs/blog/2026-09-21-three-docstrings-cited-a-file-that-was-never-written.md`
+and this hygiene check exist to catch, and it was caught here, live, by
+running the check rather than assuming it would pass.
+
+## Deviations from design
+
+None beyond the two gaps named above and filled with a documented,
+pattern-consistent elaboration (the `agentRuntimeArn` context prop; the SSM
+grant's amended mechanism, already specified by design.md D32's own
+fix-round-1 text). No other place where the implementation diverges from
+`design.md` or the (corrected) `tasks.md`.
+
+## Issues found
+
+None beyond the phantom-citation defect above (found and fixed) and the two
+task-text corrections recorded in `tasks.md` (3.4's rationale, 3.10's
+mislabeled relation).
+
+## Line count (measured, not estimated)
+
+`git diff --cached --stat`: **808 insertions, 33 deletions** across 10 files
+(including the `tasks.md` documentation update). Excluding `tasks.md`'s own
+62-line diff, the code/test diff is **777 insertions, 2 deletions across 9
+files** — well under the ~1000-line split threshold `tasks.md` names for
+this phase; no 3a/3b split was needed.
+
+## Status
+
+29/31 tasks complete (3.1–3.29, 3.31). Task 3.30 (fresh-context security
+review) is outstanding — flagged for the coordinator, not performed inline,
+matching this change's own precedent at tasks 1.34 and 2.22. Not pushed; no
+PR opened.
