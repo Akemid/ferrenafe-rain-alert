@@ -1,0 +1,40 @@
+{
+  "city": "Ferreñafe",
+  "city_slug": "ferrenafe",
+  "coordinates_source": "public_reference",
+  "decision": {
+    "reason": "level none",
+    "send": false
+  },
+  "degraded": true,
+  "evaluated_at": "2026-09-28T12:00:00+00:00",
+  "latitude": -6.636005,
+  "level": "none",
+  "longitude": -79.78986,
+  "message": {
+    "body": "Ciudad: Ferreñafe\nNivel: sin riesgo\nVentana: del 28/09/2026 07:00 al 30/09/2026 07:00 (hora local, America/Lima)\nLa fuente Open-Meteo no estuvo disponible durante esta evaluación.\nRecomendaciones:\n- Almacena agua potable para al menos dos días.\n- Protege documentos y aparatos eléctricos por encima del nivel del piso.\n- Limpia canaletas, techos y desagües cercanos.\n- Asegura objetos sueltos y calaminas.\n- Ten a mano una linterna, un botiquín y los teléfonos de emergencia.",
+    "composed_by": "template",
+    "title": "Alerta de lluvias — Ferreñafe — sin riesgo",
+    "valid_until": "2026-09-30T12:00:00+00:00"
+  },
+  "notes": {
+    "open_meteo": [],
+    "senamhi": []
+  },
+  "notices": [
+    {
+      "kind": "source_unavailable",
+      "sources": [
+        "open_meteo"
+      ]
+    }
+  ],
+  "open_meteo_status": "unavailable",
+  "reasons": [],
+  "reasons_en": [],
+  "recipients_count": 0,
+  "senamhi_status": "available",
+  "sent": false,
+  "window_end": "2026-09-30T12:00:00+00:00",
+  "window_start": "2026-09-28T12:00:00+00:00"
+}

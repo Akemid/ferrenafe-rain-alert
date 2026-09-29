@@ -1,0 +1,9 @@
+------------------------------------------------------------------------
+[OPERATOR NOTICE] source_unavailable — nothing was transmitted: this build has no notifier that can deliver a message
+  sources: open_meteo
+  occurred at: 2026-09-28T12:00:00+00:00
+  subject: Source(s) unavailable: open_meteo
+  body:
+    open_meteo became unavailable as of 2026-09-28T12:00:00+00:00.
+------------------------------------------------------------------------
+
