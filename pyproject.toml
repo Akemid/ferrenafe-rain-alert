@@ -76,7 +76,7 @@ disallow_untyped_defs = false
 # boto3/botocore ship no inline types and no third-party stub package is
 # pinned; the seam that touches them (`adapters/agentcore_invoker.py`)
 # already types its own surface explicitly.
-module = ["boto3", "botocore.*"]
+module = ["boto3", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 [dependency-groups]
