@@ -1,5 +1,5 @@
-import { Token } from 'aws-cdk-lib/core';
-import { stack } from '../bin/infra';
+import { App, Token } from 'aws-cdk-lib/core';
+import { stack, buildScheduledCycleStack } from '../bin/infra';
 
 /**
  * Guards what `bin/infra.ts` configures, as opposed to what
@@ -42,5 +42,65 @@ describe('bin/infra.ts — the deploy target', () => {
     // `docs/runbooks/public-page-deploy.md` depends on this exact string; the
     // CDK default would derive it from the construct id instead.
     expect(stack.stackName).toBe('ferrenafe-public-snapshot');
+  });
+});
+
+/**
+ * Guards `buildScheduledCycleStack`, the function `bin/infra.ts` uses to decide whether — and how — to
+ * synthesize `ScheduledCycleStack` (design D25, task 3.24). `snapshotWriterPolicyArn` embeds the account id
+ * and is deliberately never committed to `cdk.context.json` (only supplied via `-c` at deploy time), so
+ * this is exercised with hand-built `App({ context })` instances rather than the module-level `app` — the
+ * real `cdk.context.json`/CLI `-c` flags are not present when `npm test` runs `bin/infra.ts` directly.
+ */
+describe('bin/infra.ts — buildScheduledCycleStack', () => {
+  const SNAPSHOT_WRITER_POLICY_ARN = 'arn:aws:iam::ACCOUNT:policy/SnapshotWriter';
+  const AGENT_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:us-east-2:ACCOUNT:runtime/example-runtime-abc123';
+
+  test('is not synthesized at all when snapshotBucketName is absent', () => {
+    const app = new App({ context: {} });
+
+    expect(buildScheduledCycleStack(app)).toBeUndefined();
+  });
+
+  test('throws a clear error naming the missing key when snapshotWriterPolicyArn is absent, never defaulting it', () => {
+    const app = new App({ context: { snapshotBucketName: 'ferrenafe-public-snapshot-example' } });
+
+    expect(() => buildScheduledCycleStack(app)).toThrow(/snapshotWriterPolicyArn/);
+  });
+
+  test('throws a clear error naming the missing key when agentRuntimeArn is absent, never defaulting it', () => {
+    const app = new App({
+      context: {
+        snapshotBucketName: 'ferrenafe-public-snapshot-example',
+        snapshotWriterPolicyArn: SNAPSHOT_WRITER_POLICY_ARN,
+      },
+    });
+
+    expect(() => buildScheduledCycleStack(app)).toThrow(/agentRuntimeArn/);
+  });
+
+  test('synthesizes when both required context props are supplied, targeting the pinned region and named stack', () => {
+    const app = new App({
+      context: {
+        snapshotBucketName: 'ferrenafe-public-snapshot-example',
+        snapshotWriterPolicyArn: SNAPSHOT_WRITER_POLICY_ARN,
+        agentRuntimeArn: AGENT_RUNTIME_ARN,
+      },
+    });
+
+    const scheduledCycleStack = buildScheduledCycleStack(app);
+
+    expect(scheduledCycleStack).toBeDefined();
+    expect(scheduledCycleStack!.region).toBe('us-east-2');
+    expect(scheduledCycleStack!.stackName).toBe('ferrenafe-scheduled-cycle');
+  });
+
+  test('never commits the account-bearing ARN: cdk.context.json carries snapshotBucketName only', () => {
+    // This is the file the runbook and D25 both name as the one committed context source; the two ARNs
+    // above are supplied only via `-c` at deploy time.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const committedContext = require('../cdk.context.json') as Record<string, unknown>;
+
+    expect(Object.keys(committedContext)).toEqual(['snapshotBucketName']);
   });
 });

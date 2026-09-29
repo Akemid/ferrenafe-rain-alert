@@ -7,6 +7,10 @@ node_modules
 .cdk.staging
 cdk.out
 
+# The built Lambda artifact (design.md D30, infra/scripts/build-lambda.sh).
+# Rebuilt from `uv export`/`src/rain_alert`, never committed.
+build/
+
 # package-lock.json is deliberately NOT ignored. It pins the tree that runs
 # with CloudFormation deploy credentials, and an unpinned tree is re-resolved
 # on every machine. It carries one third-party email address — npm's copy of
