@@ -52,6 +52,13 @@ uv pip install \
 
 cp -R "${REPO_ROOT}/src/rain_alert" "${BUILD_DIR}/"
 
+# Fix round 1, SHOULD 7: `cp -R` carries over any `__pycache__` directory the local interpreter already
+# populated under `src/rain_alert` (confirmed present after a clean build, including a `.pyc` from a
+# different interpreter version than the target runtime). Not exploitable, but it makes the asset hash
+# machine-dependent — identical source produces a different `S3Key` on different machines, triggering a
+# spurious redeploy on every `cdk deploy` from a different developer's checkout.
+find "${BUILD_DIR}" -type d -name '__pycache__' -exec rm -rf {} +
+
 # The guard this whole design decision depends on (D30): fail loudly on any
 # compiled artifact rather than shipping one silently.
 FOUND_SO_FILES="$(find "${BUILD_DIR}" -name '*.so' -print)"

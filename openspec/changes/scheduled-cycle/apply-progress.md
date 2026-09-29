@@ -1424,3 +1424,263 @@ this phase; no 3a/3b split was needed.
 review) is outstanding — flagged for the coordinator, not performed inline,
 matching this change's own precedent at tasks 1.34 and 2.22. Not pushed; no
 PR opened.
+
+---
+
+# Phase 3 fix round 1
+
+Both fresh-context reviews came back PASS on spec compliance, with three of
+this session's own plan-defect disclosures independently confirmed correct
+(including that task 3.10's mutation premise named the wrong relation) and
+two constructs praised specifically: the real `LogGroup` over the deprecated
+`logRetention` custom resource, and locating the role by `Fn::GetAtt` rather
+than assuming exactly one role in the template. The build script's hash
+pinning was called "the strongest control in the diff" — a reviewer planted
+a wrong hash for `six==1.17.0` and `uv` refused it.
+
+Eight items: 2 MUST (both IAM), 6 SHOULD, plus one item for this report
+only. All eight addressed; the report-only item is recorded below, not
+fixed in code, per the review's own instruction.
+
+## MUST 1 — the AgentCore grant needed two resources, not one
+
+`InvokeAgentRuntime` is evaluated against **both** the agent runtime
+resource and the agent endpoint resource being invoked (AWS's
+`bedrock-agentcore` resource-based-policies documentation, verbatim, and
+confirmed against the installed `aws-cdk-lib`'s own `aws-bedrockagentcore`
+helper, `runtime-base.js`, which grants exactly `[runtimeArn,
+runtimeArn + "/*"]`). `agentcore_invoker.py` passes no `qualifier`, so the
+DEFAULT endpoint is the target, and the original one-resource grant
+silently denied every invocation — `AccessDeniedException` →
+`AgentInvocationError` → caught by `agent_composer.py`'s broad `except` →
+the deterministic template fallback, reporting success with `Errors` at
+zero and Alarm 1 never firing. This is a design defect, not an
+implementation one — D25 and task 3.17 both said "no wildcard" without
+specifying the resource form, and design.md's own to-verify #9 anticipated
+exactly this gap ("action name **and resource form**") without it being
+closed.
+
+**Fixed**: `resources: [props.agentRuntimeArn, \`${props.agentRuntimeArn}/*\`]`
+— still resource-scoped, the `/*` spans only this one runtime's own
+endpoints. Test tightened from `toBe(AGENT_RUNTIME_ARN)` to an exact
+two-element set assertion. `design.md` gets a new addendum after D25 with
+both citations; to-verify #9 is closed in place; `tasks.md` 3.17/3.18
+corrected.
+
+**RED confirmed live**: the tightened test failed with `Received: []` for
+the `/*` resource before the fix; green after.
+
+## MUST 2 — `table.grantReadWriteData(fn)` granted 12 actions; the code calls 4
+
+The extras included `Scan` and `BatchWriteItem` on the life-safety audit
+trail. The exploitation path is concrete: the cycle parses two
+unauthenticated third-party responses every run (SENAMHI HTML through
+`bs4`, Open-Meteo JSON), so a parser bug or a compromised transitive
+dependency inherits this role. `Scan` reads every alert ever sent; a broad
+write path erases the dedup history in bulk, and the next cycle re-alerts
+residents who were already warned.
+
+**Fixed**: `table.grant(fn, 'dynamodb:Query', 'dynamodb:GetItem',
+'dynamodb:PutItem', 'dynamodb:DeleteItem')` — the exact four actions
+`dynamodb_alert_repository.py` calls (`Query`, `GetItem`, `PutItem`,
+`DeleteItem` — matching the port's four operations: dedup query, active-
+outage read, `record_alert`/`save_active_outage`, `clear_active_outage`).
+Test tightened from "no `Resource: '*'`" to exact action-set equality, so a
+future `grantReadWriteData` reds loudly. Also added `pointInTimeRecoverySpecification`
+and `deletionProtection: true` to the table (the reviewer's point: `RemovalPolicy.RETAIN`
+protects against stack deletion, not data deletion, and without PITR there
+was nothing to restore from). `design.md` D26 amended in place; `tasks.md`
+3.13/3.14 corrected.
+
+**RED confirmed live**: the tightened test failed on the exact-action-set
+comparison before the fix (extra actions present); green after.
+
+## SHOULD 3 — the documented deploy command did not work
+
+`bin/infra.ts`'s error messages said `cdk deploy ferrenafe-scheduled-cycle`.
+**Verified live**: `./node_modules/.bin/cdk synth ferrenafe-scheduled-cycle`
+(with both ARNs supplied via `-c`) → `No stacks match the name(s)
+ferrenafe-scheduled-cycle`; `cdk ls` (same context) confirmed the real name
+is the construct id, `ScheduledCycleStack (ferrenafe-scheduled-cycle)`.
+Fixed every message/docstring in `bin/infra.ts` to say `cdk deploy
+ScheduledCycleStack …`. `docs/runbooks/public-page-deploy.md:71`'s bare
+`npx cdk deploy` (now ambiguous with two stacks in the app) is a Phase 4 doc
+fix, out of scope here — flagged for that PR, not fixed in this one.
+
+## SHOULD 4 — `cdk.context.json` was CDK's own auto-written cache, used as hand-authored config
+
+The CDK CLI writes to `cdk.context.json` whenever a context provider runs,
+and the keys it writes (e.g. `availability-zones:account=<12 digits>`)
+embed the account id — a tripwire for the hygiene scan, not a guardrail,
+since the scan only catches it if someone runs it before committing.
+`cdk.json`'s own `context` block is never auto-written by the CDK CLI.
+
+**Fixed**: `snapshotBucketName` moved into `cdk.json`'s `context` block
+(`"ferrenafe-public-snapshot-example"`, the same placeholder as before);
+`infra/cdk.context.json` removed from git (`git rm --cached`) and added to
+`.gitignore`. Zero behavioural change to what `app.node.tryGetContext`
+resolves — the CDK CLI merges both sources identically.
+`app.test.ts`'s "never commits" test now reads `cdk.json` instead.
+
+## SHOULD 5 — the placeholder bucket name failed silently, in the wrong direction
+
+`ferrenafe-public-snapshot-example` reaches `RAIN_ALERT_SNAPSHOT_BUCKET`
+truthily, so a live `S3SnapshotPublisher` would be built; `PutObject`
+returns `AccessDenied` (the `SnapshotWriter` policy is scoped to the real
+bucket); `run_once` absorbs the failure by design (the alert must still go
+out) and prints `[SNAPSHOT NOT PUBLISHED]`, exit code unchanged. Deploy
+succeeds, alerts keep going out, and the public page freezes with no loud
+signal — only Alarm 3, which fix round 1's own SHOULD 6 (below) was closing
+the same gap for.
+
+**Fixed**: `buildScheduledCycleStack` now throws when `snapshotBucketName`
+equals the placeholder literal, with the same treatment as the two ARNs —
+never a silent default. **RED confirmed live**: a new test in `app.test.ts`
+asserting this throw failed before the guard existed (no throw); green
+after. **A real consequence, stated rather than hidden**: because
+`cdk.json`'s committed default IS the placeholder literal, the plain `cdk
+deploy`/`cdk ls`/`cdk synth` (verified live, `./node_modules/.bin/cdk ls`)
+now throws by default until the owner replaces it with the real bucket name
+— this is the review's own explicit, intended outcome ("make the synth
+throw… exactly as the two ARNs already do"), not an oversight, and it is
+flagged here so it is not rediscovered as a surprise.
+
+## SHOULD 6 — the SNS topic had no subscription
+
+The privacy premise (an email address must not be committed) was right;
+the conclusion (therefore no subscription at all) left Alarm 2 — the only
+detector of this design's defining silent failure, the cycle stops running
+— transitioning to ALARM in a console nobody watches.
+
+**Fixed**: `alarmEmail` added as a fourth required `ScheduledCycleStackProps`/
+context prop, following the exact `-c`-only, never-committed pattern
+already established for `agentRuntimeArn`; `bin/infra.ts` throws if it is
+absent. `topic.addSubscription(new sns_subscriptions.EmailSubscription(props.alarmEmail))`
+added to the stack. Test fixtures use `'rain-alert-alarms' + '@' + 'example.com'`
+(RFC 2606 documentation domain), assembled in parts rather than as one
+contiguous literal — `tests/hygiene/test_repo_hygiene.py`'s secret scan is
+deliberately email-shape-blind to *any* committed line with no general
+test-fixture exemption (confirmed live: a first attempt using a contiguous
+literal address failed `test_no_secret_or_personal_data_pattern_is_committed`;
+fixed by assembling the string the same way the hygiene test's own
+`NPM_DEPRECATION_CONTACT` constant does; re-ran, green). `design.md` D33
+amended in place; `tasks.md` 3.22/3.23 corrected.
+
+**RED confirmed live**: the "alarms and topic" test's flipped assertion
+(one subscription expected, `Protocol: 'email'`) failed with "0 resources"
+before the fix; green after.
+
+## SHOULD 7 — `__pycache__` shipped in the Lambda artifact
+
+**Verified present** after a clean build, including a `.pyc` from a
+different interpreter than the deploy target. Not exploitable, but it makes
+the asset hash machine-dependent — identical source produces a different
+`S3Key` on different machines, triggering a spurious redeploy.
+
+**Fixed**: `find "${BUILD_DIR}" -type d -name '__pycache__' -exec rm -rf {}
++` added after the `cp -R`. **Re-ran the real build script live**: `find
+infra/build/lambda -iname "__pycache__" -type d` → 0 results (was 5+ before
+the fix, confirmed by listing them). `tasks.md` 3.27 amended in place.
+
+## SHOULD 8 — a tautology in the timeout test
+
+`expect(Number(CONTRACT.agent_read_timeout_seconds)).toBeGreaterThanOrEqual(CONTRACT.agent_read_timeout_seconds)`
+— an `x >= x` assertion that can never fail. Relation 1 is genuinely
+enforced by the `hasResourceProperties` match two lines above (confirmed
+red under mutation by task 3.10's own proof), so nothing was actually left
+unguarded — the dead assertion is deleted rather than kept as noise.
+
+## For this report, not for code
+
+**`npm test` is not reproducible from a clean checkout.** `infra/build/lambda/`
+is gitignored and `lambda.Code.fromAsset` resolves it at synth time for
+every test that constructs `ScheduledCycleStack`, including ones unrelated
+to the Lambda code itself — moving `infra/build` aside reproduces 10 of 23
+failures. There is no `pretest` hook, and `infra/README.md` does not exist
+yet to say otherwise. A `pretest` running `build-lambda.sh` automatically is
+not obviously right either: that script may reach a package index over the
+network (`uv export`/`uv pip install`), which would silently attach a
+network dependency to `npm test`'s otherwise-local guarantee. **Not fixed in
+code, per the review's own instruction** — recorded here as a known
+prerequisite for Phase 4's docs PR to resolve deliberately (most likely: a
+documented `bash infra/scripts/build-lambda.sh` step before `npm test` in
+CI and in any contributor-facing setup instructions).
+
+**`cdk synth` through the real CLI is stricter than `Template.fromStack` in
+jest.** Verified live: `./node_modules/.bin/cdk synth ScheduledCycleStack`
+(with the `arn:aws:iam::ACCOUNT:policy/SnapshotWriter` fixture ARN supplied
+via `-c`) exits 1 — CloudFormation-Validate treats the placeholder's
+pattern mismatch as an **ERROR** ("Synthesis finished with errors"), while
+`Template.fromStack` in the jest suite only logs it as a **WARNING**. Task
+3.2's finding (that `fromManagedPolicyArn` performs no ARN *parsing*) is
+correct at the construct level and unaffected — but it does not mean the
+placeholder ARN would survive a real `cdk synth`/`cdk deploy`; only a real
+account-shaped ARN would. Recorded so nobody re-derives this under time
+pressure during the owner's actual deploy.
+
+## Do not change (confirmed still true after this round)
+
+`everyStatement()`'s inline-`Statement` walk, the `ssm:GetParameters` grant
+(exact match to the adapter's seven names, `GetParametersByPath` correctly
+absent), Alarm 2's `treatMissingData: BREACHING`, and Alarm 3's filter
+pattern were left untouched, as instructed. **The one related gap the
+review named — `everyStatement()` is structurally blind to managed
+policies, and the role carried CDK's implicit `AWSLambdaBasicExecutionRole`
+(`logs:*` on `Resource: "*"`) — was closed by elimination, not merely
+documented**: the Lambda now uses an explicit `iam.Role` with no managed
+policies of its own, and `logGroup.grantWrite(executionRole)` grants the
+same three log actions scoped to the one log group this stack owns.
+**Verified live**: a standalone script confirmed zero `Resource: "*"`
+statements across all 7 IAM statements in the synthesized template, and
+that the execution role's `ManagedPolicyArns` carries only the imported
+`SnapshotWriter` policy — `AWSLambdaBasicExecutionRole` no longer appears
+at all.
+
+## Verification (all run live, fix round 1)
+
+```
+cd infra && npm test                # 3 suites, 25 passed (was 23; +2 net: the
+                                     # alarmEmail-absent-throws and placeholder-
+                                     # throws tests in app.test.ts)
+cd infra && npx tsc --noEmit        # TypeScript compilation completed, exit 0
+uv run pytest                       # 1134 passed, 15 deselected (unchanged —
+                                     # this round touched no Python file)
+uv run ruff check                   # All checks passed
+uv run ruff format --check          # 115 files already formatted
+uv run mypy                         # Success: no issues found in 47 source files
+env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN uv run pytest
+                                     # 1134 passed, 15 deselected, still offline
+uv run pytest tests/hygiene -q      # 49 passed — one real defect found and fixed
+                                     # live (the ALARM_EMAIL fixture; see SHOULD 6)
+```
+
+No `cdk deploy` or `cdk bootstrap` was run. `./node_modules/.bin/cdk
+synth`/`cdk ls` (local, no credentials) were run twice for live verification
+of SHOULD 3 and the report-only CloudFormation-Validate item; `cdk.out/` was
+deleted afterward and is gitignored regardless.
+
+## Files changed, fix round 1
+
+| File | What changed |
+|---|---|
+| `infra/lib/scheduled-cycle-stack.ts` | AgentCore grant → two resources; DynamoDB grant → exact 4 actions; table gets PITR + `deletionProtection`; explicit `iam.Role` replaces the implicit execution role; `alarmEmail` prop + SNS subscription |
+| `infra/bin/infra.ts` | `alarmEmail` gate; placeholder-`snapshotBucketName` throw; every `ferrenafe-scheduled-cycle` deploy-command string corrected to `ScheduledCycleStack`; `snapshotBucketName` docstrings point at `cdk.json` |
+| `infra/cdk.json` | `snapshotBucketName` added to `context` (moved from `cdk.context.json`) |
+| `infra/cdk.context.json` | Removed from git tracking |
+| `infra/.gitignore` | `cdk.context.json` added |
+| `infra/scripts/build-lambda.sh` | `__pycache__` cleanup after the `cp -R` |
+| `infra/test/scheduled-cycle-stack.test.ts` | Agentcore/DynamoDB/table/subscription assertions tightened; tautological line deleted; `ALARM_EMAIL` fixture |
+| `infra/test/app.test.ts` | `alarmEmail`-absent and placeholder-`snapshotBucketName` throw tests added; "never commits" test reads `cdk.json` |
+| `openspec/changes/scheduled-cycle/design.md` | D25 addendum (AgentCore two-resource grant), D26 amended (PITR/deletionProtection), D33 amended (subscription reversal), to-verify #9 closed |
+| `openspec/changes/scheduled-cycle/tasks.md` | 3.13/3.14/3.17/3.18/3.22/3.23/3.25/3.26/3.27 corrected/amended in place |
+
+Line count: **268 insertions, 70 deletions** across 10 files (`git diff
+--cached --stat`).
+
+## Status, fix round 1
+
+All 8 items (2 MUST, 6 SHOULD) fixed and verified live; the one report-only
+item recorded above, not fixed in code. Task 3.30 (fresh-context security
+review) remains outstanding for the coordinator — this fix round's two
+reviews were external to this session, not performed by `sdd-apply`. Not
+pushed; no PR opened.

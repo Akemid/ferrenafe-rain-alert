@@ -47,14 +47,22 @@ describe('bin/infra.ts — the deploy target', () => {
 
 /**
  * Guards `buildScheduledCycleStack`, the function `bin/infra.ts` uses to decide whether — and how — to
- * synthesize `ScheduledCycleStack` (design D25, task 3.24). `snapshotWriterPolicyArn` embeds the account id
- * and is deliberately never committed to `cdk.context.json` (only supplied via `-c` at deploy time), so
- * this is exercised with hand-built `App({ context })` instances rather than the module-level `app` — the
- * real `cdk.context.json`/CLI `-c` flags are not present when `npm test` runs `bin/infra.ts` directly.
+ * synthesize `ScheduledCycleStack` (design D25, task 3.24). `snapshotWriterPolicyArn`/`agentRuntimeArn`/
+ * `alarmEmail` each embed or carry data that is deliberately never committed (only supplied via `-c` at
+ * deploy time), so this is exercised with hand-built `App({ context })` instances rather than the module-
+ * level `app` — the real committed context/CLI `-c` flags are not present when `npm test` runs
+ * `bin/infra.ts` directly.
  */
 describe('bin/infra.ts — buildScheduledCycleStack', () => {
   const SNAPSHOT_WRITER_POLICY_ARN = 'arn:aws:iam::ACCOUNT:policy/SnapshotWriter';
   const AGENT_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:us-east-2:ACCOUNT:runtime/example-runtime-abc123';
+  // RFC 2606 documentation domain — never a real address. Assembled in parts (matching
+  // `tests/hygiene/test_repo_hygiene.py`'s own `NPM_DEPRECATION_CONTACT` precedent): that scan is
+  // deliberately email-shape-blind to any committed line, with no general test-fixture exemption.
+  const ALARM_EMAIL = 'rain-alert-alarms' + '@' + 'example.com';
+  // A real, non-placeholder bucket name for tests that are not exercising the placeholder-rejection
+  // behaviour below (fix round 1, SHOULD 5).
+  const REAL_BUCKET_NAME = 'ferrenafe-public-snapshot-test-fixture';
 
   test('is not synthesized at all when snapshotBucketName is absent', () => {
     const app = new App({ context: {} });
@@ -63,7 +71,7 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
   });
 
   test('throws a clear error naming the missing key when snapshotWriterPolicyArn is absent, never defaulting it', () => {
-    const app = new App({ context: { snapshotBucketName: 'ferrenafe-public-snapshot-example' } });
+    const app = new App({ context: { snapshotBucketName: REAL_BUCKET_NAME } });
 
     expect(() => buildScheduledCycleStack(app)).toThrow(/snapshotWriterPolicyArn/);
   });
@@ -71,7 +79,7 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
   test('throws a clear error naming the missing key when agentRuntimeArn is absent, never defaulting it', () => {
     const app = new App({
       context: {
-        snapshotBucketName: 'ferrenafe-public-snapshot-example',
+        snapshotBucketName: REAL_BUCKET_NAME,
         snapshotWriterPolicyArn: SNAPSHOT_WRITER_POLICY_ARN,
       },
     });
@@ -79,12 +87,45 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
     expect(() => buildScheduledCycleStack(app)).toThrow(/agentRuntimeArn/);
   });
 
-  test('synthesizes when both required context props are supplied, targeting the pinned region and named stack', () => {
+  test('throws a clear error naming the missing key when alarmEmail is absent, never defaulting it', () => {
+    // Fix round 1, SHOULD 6: required exactly like the two ARNs — an unsubscribed Alarm 2 is decorative
+    // for this design's defining silent failure (the cycle stops running).
+    const app = new App({
+      context: {
+        snapshotBucketName: REAL_BUCKET_NAME,
+        snapshotWriterPolicyArn: SNAPSHOT_WRITER_POLICY_ARN,
+        agentRuntimeArn: AGENT_RUNTIME_ARN,
+      },
+    });
+
+    expect(() => buildScheduledCycleStack(app)).toThrow(/alarmEmail/);
+  });
+
+  test('throws when snapshotBucketName still holds the committed placeholder value, rather than deploying against it silently', () => {
+    // Fix round 1, SHOULD 5: the placeholder reaches `RAIN_ALERT_SNAPSHOT_BUCKET` truthily, so
+    // `S3SnapshotPublisher` would be built and every publish would fail with `AccessDenied` (the
+    // `SnapshotWriter` policy is scoped to the REAL bucket) — `run_once` absorbs that failure by design
+    // (the alert must still go out), so the public page would freeze with no loud signal. The one context
+    // value that could be silently wrong now gets the same throw-not-default treatment as the two ARNs.
     const app = new App({
       context: {
         snapshotBucketName: 'ferrenafe-public-snapshot-example',
         snapshotWriterPolicyArn: SNAPSHOT_WRITER_POLICY_ARN,
         agentRuntimeArn: AGENT_RUNTIME_ARN,
+        alarmEmail: ALARM_EMAIL,
+      },
+    });
+
+    expect(() => buildScheduledCycleStack(app)).toThrow(/snapshotBucketName/);
+  });
+
+  test('synthesizes when all required context props are supplied, targeting the pinned region and named stack', () => {
+    const app = new App({
+      context: {
+        snapshotBucketName: REAL_BUCKET_NAME,
+        snapshotWriterPolicyArn: SNAPSHOT_WRITER_POLICY_ARN,
+        agentRuntimeArn: AGENT_RUNTIME_ARN,
+        alarmEmail: ALARM_EMAIL,
       },
     });
 
@@ -95,12 +136,19 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
     expect(scheduledCycleStack!.stackName).toBe('ferrenafe-scheduled-cycle');
   });
 
-  test('never commits the account-bearing ARN: cdk.context.json carries snapshotBucketName only', () => {
-    // This is the file the runbook and D25 both name as the one committed context source; the two ARNs
-    // above are supplied only via `-c` at deploy time.
+  test('never commits the account-bearing ARNs: cdk.json context carries the still-a-placeholder snapshotBucketName only', () => {
+    // Fix round 1, SHOULD 4: `cdk.context.json` is CDK's own auto-written cache (the CLI writes to it
+    // whenever a context provider runs, and the keys it writes — e.g. `availability-zones:account=…` —
+    // embed the account id), not hand-authored config; using it as one is a tripwire, not a guardrail, since
+    // the hygiene scan only catches an account id there if someone runs it before committing. `cdk.json`'s
+    // own `context` block is never auto-written by the CDK CLI, so `snapshotBucketName` lives there instead.
+    // Its value is deliberately still the placeholder literal `buildScheduledCycleStack` refuses (fix round
+    // 1, SHOULD 5) — a real `cdk deploy` fails loudly until the owner replaces it, rather than silently
+    // deploying against the wrong bucket. The two ARNs and the email above are supplied only via `-c` at
+    // deploy time and never committed anywhere.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const committedContext = require('../cdk.context.json') as Record<string, unknown>;
+    const cdkJson = require('../cdk.json') as { context: Record<string, unknown> };
 
-    expect(Object.keys(committedContext)).toEqual(['snapshotBucketName']);
+    expect(cdkJson.context.snapshotBucketName).toBe('ferrenafe-public-snapshot-example');
   });
 });

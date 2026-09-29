@@ -14,7 +14,16 @@ const CONTRACT = JSON.parse(
 /** Fixture ARN, never a plausible twelve-digit account id (design D25's own trap, `tests/hygiene`). */
 const SNAPSHOT_WRITER_POLICY_ARN = 'arn:aws:iam::ACCOUNT:policy/SnapshotWriter';
 const AGENT_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:us-east-2:ACCOUNT:runtime/example-runtime-abc123';
-const SNAPSHOT_BUCKET_NAME = 'ferrenafe-public-snapshot-example';
+/** Deliberately not the placeholder literal `buildScheduledCycleStack` refuses (fix round 1, MUST/SHOULD 5) —
+ * a real synth-time bucket name, distinct from `ScheduledCycleStack`'s own placeholder-rejection test below. */
+const SNAPSHOT_BUCKET_NAME = 'ferrenafe-public-snapshot-test-fixture';
+/** `example.com` is IANA-reserved for documentation (RFC 2606) — never a real, deliverable address, and
+ * never committed to `cdk.json`/`cdk.context.json` (fix round 1, SHOULD 6: supplied only via `-c` at deploy
+ * time, exactly like `agentRuntimeArn`). Assembled in parts, matching `tests/hygiene/test_repo_hygiene.py`'s
+ * own `NPM_DEPRECATION_CONTACT` precedent: `tests/hygiene`'s secret scan is deliberately email-shape-blind
+ * to *any* committed line, with no general test-fixture exemption, so writing this as one contiguous
+ * `user` + at-sign + `domain` string would fail it, even though the address is not personal data. */
+const ALARM_EMAIL = 'rain-alert-alarms' + '@' + 'example.com';
 
 function synthesizeTemplate(overrides: Partial<ScheduledCycleStackProps> = {}): Template {
   const app = new App();
@@ -22,6 +31,7 @@ function synthesizeTemplate(overrides: Partial<ScheduledCycleStackProps> = {}): 
     snapshotBucketName: SNAPSHOT_BUCKET_NAME,
     snapshotWriterPolicyArn: SNAPSHOT_WRITER_POLICY_ARN,
     agentRuntimeArn: AGENT_RUNTIME_ARN,
+    alarmEmail: ALARM_EMAIL,
     ...overrides,
   });
   return Template.fromStack(stack);
@@ -80,6 +90,11 @@ describe('ScheduledCycleStack — the timeout contract (D31)', () => {
   test('env timeout at least the contract read timeout', () => {
     const template = synthesizeTemplate();
 
+    // Fix round 1, SHOULD 8: this used to also assert
+    // `Number(CONTRACT.agent_read_timeout_seconds) >= CONTRACT.agent_read_timeout_seconds` — an `x >= x`
+    // tautology that can never fail. Relation 1 is genuinely enforced by the `hasResourceProperties` match
+    // below, which reds under a mutation to the env var (task 3.10's mutation proof, apply-progress);
+    // nothing was actually left unguarded, but the dead assertion is deleted rather than kept as noise.
     template.hasResourceProperties('AWS::Lambda::Function', {
       Environment: {
         Variables: Match.objectLike({
@@ -87,7 +102,6 @@ describe('ScheduledCycleStack — the timeout contract (D31)', () => {
         }),
       },
     });
-    expect(Number(CONTRACT.agent_read_timeout_seconds)).toBeGreaterThanOrEqual(CONTRACT.agent_read_timeout_seconds);
   });
 
   test('function timeout exceeds the agent deadline plus headroom', () => {
@@ -129,6 +143,11 @@ describe('ScheduledCycleStack — DynamoDB table (D26, D27, D34)', () => {
         { AttributeName: 'pk', KeyType: 'HASH' },
         { AttributeName: 'sk', KeyType: 'RANGE' },
       ],
+      // Fix round 1, MUST 2: `RemovalPolicy.RETAIN` protects the table from stack-deletion only. Without
+      // point-in-time recovery there is nothing to restore from if the table's *data* is deleted through a
+      // live grant instead (see the exact-action-set assertion below) — the reviewer's point, verbatim.
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+      DeletionProtectionEnabled: true,
     });
     template.hasResource('AWS::DynamoDB::Table', { DeletionPolicy: 'Retain', UpdateReplacePolicy: 'Retain' });
 
@@ -138,14 +157,22 @@ describe('ScheduledCycleStack — DynamoDB table (D26, D27, D34)', () => {
     const [tableProps] = Object.values(tables).map((resource) => resource.Properties);
     expect(tableProps.GlobalSecondaryIndexes).toBeUndefined();
 
-    // The Lambda role's grant names this one table, never `*`.
+    // Fix round 1, MUST 2: `table.grantReadWriteData(fn)` granted 12 actions (including `Scan` and
+    // `BatchWriteItem`) against the four the adapter actually calls
+    // (`dynamodb_alert_repository.py`: Query, GetItem, PutItem, DeleteItem). `Scan` on this table reads
+    // every alert ever sent; `BatchWriteItem`/an unscoped write path can erase the dedup history in bulk —
+    // a parser bug or a compromised transitive dependency in the SENAMHI/Open-Meteo fetch path inherits
+    // this role, so "no wildcard *resource*" was not enough; the *action list* had to be exact too.
     const statements = findFunctionRoleStatements(template);
     const tableStatements = statements.filter((statement) =>
       actionsOf(statement).some((action) => action.startsWith('dynamodb:')),
     );
-    expect(tableStatements.length).toBeGreaterThan(0);
-    const wildcardResourceStatements = tableStatements.filter((statement) => statement.Resource === '*');
-    expect(wildcardResourceStatements).toEqual([]);
+    expect(tableStatements).toHaveLength(1);
+    const [tableStatement] = tableStatements;
+    expect([...actionsOf(tableStatement)].sort()).toEqual(
+      ['dynamodb:DeleteItem', 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Query'].sort(),
+    );
+    expect(tableStatement.Resource).not.toBe('*');
   });
 });
 
@@ -182,7 +209,14 @@ describe('ScheduledCycleStack — SSM grant, no parameters created (D32)', () =>
 });
 
 describe('ScheduledCycleStack — AgentCore grant (no Bedrock model permission)', () => {
-  test('agentcore grant', () => {
+  test('agentcore grant covers both the runtime and its endpoints, and no more', () => {
+    // Fix round 1, MUST 1: `bedrock-agentcore:InvokeAgentRuntime` is evaluated against BOTH the agent
+    // runtime resource and the agent endpoint resource being invoked (AWS's resource-based-policies
+    // documentation for `bedrock-agentcore`, verbatim: "must allow the action on both the agent runtime and
+    // agent endpoint resources"). `agentcore_invoker.py` passes no `qualifier`, so the DEFAULT endpoint is
+    // the target, and a grant naming only the runtime ARN denies it. The installed `aws-cdk-lib`'s own
+    // `aws-bedrockagentcore` helper (`runtime-base.js`) grants exactly
+    // `[runtimeArn, \`${runtimeArn}/*\`]` for this reason — confirmed by reading it directly.
     const template = synthesizeTemplate();
 
     const statements = findFunctionRoleStatements(template);
@@ -190,7 +224,12 @@ describe('ScheduledCycleStack — AgentCore grant (no Bedrock model permission)'
       actionsOf(statement).some((action) => action === 'bedrock-agentcore:InvokeAgentRuntime'),
     );
     expect(agentcoreStatements).toHaveLength(1);
-    expect(agentcoreStatements[0].Resource).toBe(AGENT_RUNTIME_ARN);
+    const resources = Array.isArray(agentcoreStatements[0].Resource)
+      ? agentcoreStatements[0].Resource
+      : [agentcoreStatements[0].Resource];
+    // Exact set, not merely "contains": still resource-scoped (`/*` spans only this one runtime's
+    // endpoints, never a wildcard across runtimes), and nothing broader than the two required resources.
+    expect([...resources].sort()).toEqual([AGENT_RUNTIME_ARN, `${AGENT_RUNTIME_ARN}/*`].sort());
 
     const modelStatements = everyStatement(template).filter((statement) =>
       actionsOf(statement).some((action) => action === 'bedrock:InvokeModel'),
@@ -282,8 +321,17 @@ describe('ScheduledCycleStack — Observability (D33)', () => {
     const alarms = template.findResources('AWS::CloudWatch::Alarm');
     expect(Object.keys(alarms)).toHaveLength(3);
 
-    // No subscription is created — an email address is personal data (`openspec/config.yaml → rules.archive`).
+    // Fix round 1, SHOULD 6: Alarm 2 (`Invocations`) is the only detector for this design's defining
+    // silent failure — the cycle stops running — and an alarm nobody is subscribed to is decorative. The
+    // address itself is still never committed (`ALARM_EMAIL` above is an RFC 2606 documentation address,
+    // used only in this test fixture); the real stack requires it as a context prop supplied only via
+    // `-c alarmEmail=…` at deploy time, exactly like `agentRuntimeArn` (see `bin/infra.ts`).
+    template.hasResourceProperties('AWS::SNS::Subscription', {
+      Protocol: 'email',
+      Endpoint: ALARM_EMAIL,
+      TopicArn: { Ref: topicLogicalId },
+    });
     const subscriptions = template.findResources('AWS::SNS::Subscription');
-    expect(Object.keys(subscriptions)).toHaveLength(0);
+    expect(Object.keys(subscriptions)).toHaveLength(1);
   });
 });

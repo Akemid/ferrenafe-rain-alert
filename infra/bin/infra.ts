@@ -4,36 +4,62 @@ import { PublicSnapshotStack } from '../lib/public-snapshot-stack';
 import { ScheduledCycleStack } from '../lib/scheduled-cycle-stack';
 
 /**
+ * The committed placeholder for `snapshotBucketName` (see `cdk.json`'s `context` block). Never a real
+ * bucket name — `buildScheduledCycleStack` refuses to synthesize against it (fix round 1, SHOULD 5), rather
+ * than letting it reach `RAIN_ALERT_SNAPSHOT_BUCKET` truthily and fail every publish with `AccessDenied`
+ * while the alert itself still goes out and reports success.
+ */
+const PLACEHOLDER_SNAPSHOT_BUCKET_NAME = 'ferrenafe-public-snapshot-example';
+
+/**
  * Decides whether — and how — to synthesize `ScheduledCycleStack` (design D25, task 3.24).
  *
- * `snapshotBucketName` gates the *attempt*: it is committed to `cdk.context.json` (see that file), so it
- * is present for every real `cdk synth`/`cdk deploy` but absent by default for a plain `new cdk.App()`
- * (e.g. under `npm test`, which never goes through the `cdk` CLI and therefore never reads
- * `cdk.context.json` or any `-c` flag). Its absence means "this app instance was never given the committed
- * context" and the function returns `undefined` rather than throwing — the existing `PublicSnapshotStack`
- * tests in this file must keep working with no context supplied at all.
+ * `snapshotBucketName` gates the *attempt*: it is committed to `cdk.json`'s `context` block (fix round 1,
+ * SHOULD 4 — moved off `cdk.context.json`, which is CDK's own auto-written cache and not meant to be
+ * hand-authored config), so it is present for every real `cdk synth`/`cdk deploy` but absent by default for
+ * a plain `new cdk.App()` (e.g. under `npm test`, which never goes through the `cdk` CLI and therefore
+ * never reads `cdk.json`'s context or any `-c` flag). Its absence means "this app instance was never given
+ * the committed context" and the function returns `undefined` rather than throwing — the existing
+ * `PublicSnapshotStack` tests in this file must keep working with no context supplied at all. Its presence
+ * as the still-unreplaced placeholder literal is a separate, louder failure (see below).
  *
- * `snapshotWriterPolicyArn` and `agentRuntimeArn` are never committed — both ARNs embed the twelve-digit
- * account id (`tests/hygiene/test_repo_hygiene.py` refuses that in the repository). Once the attempt is
- * underway (`snapshotBucketName` present), a missing one of these is a required-prop failure, not a
- * default: `cdk deploy ferrenafe-scheduled-cycle` with the flag forgotten fails synth loudly, naming
- * exactly which context key is missing, rather than silently deploying with the wrong ARN or none at all.
+ * `snapshotWriterPolicyArn`, `agentRuntimeArn` and `alarmEmail` are never committed — the two ARNs embed
+ * the twelve-digit account id (`tests/hygiene/test_repo_hygiene.py` refuses that in the repository), and an
+ * email address is personal data (`openspec/config.yaml → rules.archive`). Once the attempt is underway
+ * (`snapshotBucketName` present and not the placeholder), a missing one of these three is a required-prop
+ * failure, not a default: `cdk deploy ScheduledCycleStack` with a flag forgotten fails synth loudly, naming
+ * exactly which context key is missing, rather than silently deploying with the wrong value or none at all.
  *
- * Exported so `test/app.test.ts` can exercise all three outcomes (absent, throws, synthesizes) with
- * hand-built `App({ context })` instances instead of the one module-level `app` below.
+ * The CLI selects a stack by its **construct id** (`ScheduledCycleStack`, the second argument below), not
+ * by the CloudFormation `stackName` property (`ferrenafe-scheduled-cycle`) — `cdk deploy
+ * ferrenafe-scheduled-cycle` fails with "No stacks match the name(s)" (verified live, fix round 1, SHOULD
+ * 3). Every error message and docstring here uses the construct id.
+ *
+ * Exported so `test/app.test.ts` can exercise every outcome (absent, throws for each missing/placeholder
+ * value, synthesizes) with hand-built `App({ context })` instances instead of the one module-level `app`
+ * below.
  */
 export function buildScheduledCycleStack(app: cdk.App): ScheduledCycleStack | undefined {
   const snapshotBucketName = app.node.tryGetContext('snapshotBucketName') as string | undefined;
   if (snapshotBucketName === undefined) {
     return undefined;
   }
+  if (snapshotBucketName === PLACEHOLDER_SNAPSHOT_BUCKET_NAME) {
+    throw new Error(
+      "snapshotBucketName in cdk.json's context still holds the placeholder value " +
+        `'${PLACEHOLDER_SNAPSHOT_BUCKET_NAME}'. Replace it with the real deployed PublicSnapshotStack ` +
+        'bucket name before deploying ScheduledCycleStack — the placeholder would otherwise reach ' +
+        'RAIN_ALERT_SNAPSHOT_BUCKET truthily and fail every publish with AccessDenied while the alert ' +
+        'itself still goes out and reports success.',
+    );
+  }
 
   const snapshotWriterPolicyArn = app.node.tryGetContext('snapshotWriterPolicyArn') as string | undefined;
   if (!snapshotWriterPolicyArn) {
     throw new Error(
-      "snapshotWriterPolicyArn context value is required to deploy 'ferrenafe-scheduled-cycle' and is " +
+      "snapshotWriterPolicyArn context value is required to deploy 'ScheduledCycleStack' and is " +
         'never defaulted (design.md D25). Supply it at deploy time — it must never be committed to ' +
-        "cdk.context.json, because the ARN embeds the account id: cdk deploy ferrenafe-scheduled-cycle " +
+        "cdk.json/cdk.context.json, because the ARN embeds the account id: cdk deploy ScheduledCycleStack " +
         '-c snapshotWriterPolicyArn=<arn>',
     );
   }
@@ -41,9 +67,19 @@ export function buildScheduledCycleStack(app: cdk.App): ScheduledCycleStack | un
   const agentRuntimeArn = app.node.tryGetContext('agentRuntimeArn') as string | undefined;
   if (!agentRuntimeArn) {
     throw new Error(
-      "agentRuntimeArn context value is required to deploy 'ferrenafe-scheduled-cycle' and is never " +
+      "agentRuntimeArn context value is required to deploy 'ScheduledCycleStack' and is never " +
         'defaulted, for the same reason as snapshotWriterPolicyArn: the ARN embeds the account id. ' +
-        'Supply it at deploy time: cdk deploy ferrenafe-scheduled-cycle -c agentRuntimeArn=<arn>',
+        'Supply it at deploy time: cdk deploy ScheduledCycleStack -c agentRuntimeArn=<arn>',
+    );
+  }
+
+  const alarmEmail = app.node.tryGetContext('alarmEmail') as string | undefined;
+  if (!alarmEmail) {
+    throw new Error(
+      "alarmEmail context value is required to deploy 'ScheduledCycleStack' and is never defaulted — an " +
+        'unsubscribed Alarm 2 is decorative for this design\'s defining silent failure (the cycle stops ' +
+        'running). An email address is personal data and must never be committed. Supply it at deploy ' +
+        'time: cdk deploy ScheduledCycleStack -c alarmEmail=<address>',
     );
   }
 
@@ -58,6 +94,7 @@ export function buildScheduledCycleStack(app: cdk.App): ScheduledCycleStack | un
     snapshotBucketName,
     snapshotWriterPolicyArn,
     agentRuntimeArn,
+    alarmEmail,
     scheduleEnabled: scheduleEnabledContext !== 'false',
   });
 }
@@ -98,8 +135,8 @@ export const stack = new PublicSnapshotStack(app, 'PublicSnapshotStack', {
 
 /**
  * `undefined` under `npm test`/`cdk synth` with no context supplied — see `buildScheduledCycleStack`'s own
- * docstring. Populated for a real `cdk deploy ferrenafe-scheduled-cycle -c snapshotWriterPolicyArn=<arn>
- * -c agentRuntimeArn=<arn>`, which is the only way `snapshotWriterPolicyArn`/`agentRuntimeArn` ever reach
+ * docstring. Populated for a real `cdk deploy ScheduledCycleStack -c snapshotWriterPolicyArn=<arn>
+ * -c agentRuntimeArn=<arn> -c alarmEmail=<address>`, which is the only way those three values ever reach
  * this process — never committed.
  */
 export const scheduledCycleStack = buildScheduledCycleStack(app);

@@ -9,6 +9,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import * as scheduler_targets from 'aws-cdk-lib/aws-scheduler-targets';
 
@@ -55,6 +56,11 @@ export interface ScheduledCycleStackProps extends StackProps {
   /** supplied only at deploy time via `-c agentRuntimeArn=…` — never committed, for the same reason as
    * `snapshotWriterPolicyArn`: an AgentCore runtime ARN embeds the account id. */
   readonly agentRuntimeArn: string;
+  /** supplied only at deploy time via `-c alarmEmail=…` — never committed, because an email address is
+   * personal data (`openspec/config.yaml → rules.archive`). Required, not optional (fix round 1, SHOULD 6):
+   * Alarm 2 is the only detector for this design's defining silent failure (the cycle stops running), and
+   * an alarm nobody is subscribed to is decorative. */
+  readonly alarmEmail: string;
   /**
    * Whether the schedule is enabled on deploy (design D34's durable disable route:
    * `cdk deploy ferrenafe-scheduled-cycle -c scheduleEnabled=false`).
@@ -85,6 +91,12 @@ export class ScheduledCycleStack extends Stack {
       // Explicit `tableName`, per D26/D34: it is what makes `cdk import` possible after a `cdk destroy`
       // that leaves the table behind (RemovalPolicy.RETAIN on a stateful resource, per the CDK skill).
       removalPolicy: RemovalPolicy.RETAIN,
+      // Fix round 1, MUST 2: `RemovalPolicy.RETAIN` protects the table from *stack* deletion, not from
+      // *data* deletion through a live grant — without point-in-time recovery there is nothing to restore
+      // from if the dedup history is ever erased in bulk. `deletionProtection` is a second, independent
+      // guard against an accidental `cdk destroy`/console delete of this specific resource.
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      deletionProtection: true,
     });
 
     // --- CloudWatch Logs (D33) ---
@@ -96,9 +108,21 @@ export class ScheduledCycleStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
+    // --- Lambda execution role (fix round 1) ---
+    // An explicit role, built with NO managed policies, rather than letting `lambda.Function` create one
+    // for us. Letting CDK create the role attaches `AWSLambdaBasicExecutionRole` automatically, which
+    // grants `logs:CreateLogGroup`/`logs:CreateLogStream`/`logs:PutLogEvents` on `Resource: "*"` — every
+    // other grant in this stack is scoped to one named resource, and that one wildcard would make a claim
+    // of "every grant is resource-scoped" false for the role as a whole. `logGroup.grantWrite(executionRole)`
+    // below grants the same three actions, scoped to the one log group this stack itself created.
+    const executionRole = new iam.Role(this, 'ExecutionRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+    });
+
     // --- Lambda (D30, D31) ---
     const fn = new lambda.Function(this, 'ScheduledCycleFunction', {
       functionName: 'ferrenafe-rain-alert-cycle',
+      role: executionRole,
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
       handler: 'rain_alert.entrypoints.lambda_handler.handler',
@@ -125,6 +149,10 @@ export class ScheduledCycleStack extends Stack {
 
     // --- IAM grants (D25, D26, D32, and the AgentCore grant) ---
 
+    // The one grant `AWSLambdaBasicExecutionRole` would otherwise have supplied on `Resource: "*"` — scoped
+    // instead to the one log group this stack owns (fix round 1; see `ExecutionRole`'s own comment above).
+    logGroup.grantWrite(executionRole);
+
     // The imported SnapshotWriter policy, ATTACHED — never re-granted with a fresh s3:PutObject statement
     // of this stack's own (D25). `fromManagedPolicyArn` performs no ARN parsing that would reject a test
     // placeholder (confirmed against the installed aws-cdk-lib source, task 3.2).
@@ -132,8 +160,14 @@ export class ScheduledCycleStack extends Stack {
       iam.ManagedPolicy.fromManagedPolicyArn(this, 'SnapshotWriterPolicy', props.snapshotWriterPolicyArn),
     );
 
-    // One table, named, never `*` (D26).
-    table.grantReadWriteData(fn);
+    // Fix round 1, MUST 2: `table.grantReadWriteData(fn)` granted 12 actions, including `Scan` and
+    // `BatchWriteItem`, against the four the adapter actually calls
+    // (`dynamodb_alert_repository.py`: Query, GetItem, PutItem, DeleteItem). The cycle parses two
+    // unauthenticated third-party responses every run (SENAMHI HTML, Open-Meteo JSON); a parser bug or a
+    // compromised transitive dependency inherits this role, and `Scan` reads — `BatchWriteItem`/a broad
+    // write erases — the entire dedup audit trail. One table, named, and now the exact four actions, never
+    // `*` on either axis (D26).
+    table.grant(fn, 'dynamodb:Query', 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem');
 
     // Seven exact parameter ARNs, never a prefix wildcard (D32, amended fix round 1 — the Python side
     // moved from `GetParametersByPath` to `GetParameters` over exact names for the same reason: a wildcard
@@ -152,13 +186,20 @@ export class ScheduledCycleStack extends Stack {
       }),
     );
 
-    // The one AgentCore runtime ARN, no wildcard, and deliberately no `bedrock:InvokeModel` statement
-    // anywhere on this role — this Lambda calls the data-plane operation only, never a foundation model
-    // directly.
+    // Fix round 1, MUST 1: `InvokeAgentRuntime` is evaluated against BOTH the agent runtime resource and
+    // the agent endpoint resource being invoked (AWS's `bedrock-agentcore` resource-based-policies
+    // documentation, verbatim: "must allow the action on both the agent runtime and agent endpoint
+    // resources"). `agentcore_invoker.py` passes no `qualifier`, so the DEFAULT endpoint is the target, and
+    // a grant naming only the runtime ARN silently denies every invocation — confirmed against the
+    // installed `aws-cdk-lib`'s own `aws-bedrockagentcore` helper (`runtime-base.js`), which grants exactly
+    // `[runtimeArn, \`${runtimeArn}/*\`]` for this reason. Still resource-scoped (`/*` spans only this one
+    // runtime's own endpoints, never a wildcard across runtimes) and deliberately no `bedrock:InvokeModel`
+    // statement anywhere on this role — this Lambda calls the data-plane operation only, never a foundation
+    // model directly.
     fn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['bedrock-agentcore:InvokeAgentRuntime'],
-        resources: [props.agentRuntimeArn],
+        resources: [props.agentRuntimeArn, `${props.agentRuntimeArn}/*`],
       }),
     );
 
@@ -235,11 +276,16 @@ export class ScheduledCycleStack extends Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
-    // One topic. No subscription is created here — an email address is personal data
-    // (`openspec/config.yaml → rules.archive`); the runbook adds it by hand, then verifies delivery.
+    // One topic. Fix round 1, SHOULD 6: this stack used to create no subscription at all — the privacy
+    // premise (an email address is personal data, `openspec/config.yaml → rules.archive`) was right, but
+    // the conclusion left Alarm 2, the only detector of this design's defining silent failure (the cycle
+    // stops running), transitioning to ALARM in a console nobody watches. `alarmEmail` is now a required
+    // prop, supplied only via `-c alarmEmail=…` at deploy time and never committed, exactly like
+    // `agentRuntimeArn` — the address cannot be forgotten and never enters git.
     const topic = new sns.Topic(this, 'AlarmsTopic', {
       topicName: 'ferrenafe-scheduled-cycle-alarms',
     });
+    topic.addSubscription(new sns_subscriptions.EmailSubscription(props.alarmEmail));
     for (const alarm of [errorsAlarm, noInvocationsAlarm, snapshotFailureAlarm]) {
       alarm.addAlarmAction(new cw_actions.SnsAction(topic));
     }

@@ -7,6 +7,12 @@ node_modules
 .cdk.staging
 cdk.out
 
+# CDK's own auto-written context cache (fix round 1, SHOULD 4). The CLI writes to this file whenever a
+# context provider runs, and the keys it writes (e.g. `availability-zones:account=<12 digits>`) embed the
+# account id. Hand-authored config belongs in cdk.json's own `context` block instead, which the CDK CLI
+# never auto-writes to.
+cdk.context.json
+
 # The built Lambda artifact (design.md D30, infra/scripts/build-lambda.sh).
 # Rebuilt from `uv export`/`src/rain_alert`, never committed.
 build/
