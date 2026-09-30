@@ -1247,8 +1247,13 @@ deploy time — `infra/lib/public-snapshot-stack.ts:18`), so the true deployed
 name is not knowable from source and `sdd-apply` runs no AWS command to look
 it up. `cdk.context.json` currently holds `"ferrenafe-public-snapshot-example"`
 as an explicit placeholder — **the owner must replace this with the real
-deployed bucket name before running `cdk deploy ferrenafe-scheduled-cycle`**,
+deployed bucket name before running `cdk deploy ScheduledCycleStack`**,
 flagged here and should also be flagged in the PR-3 description.
+
+**Corrected, fix round 2** — twice. The stack name above was
+`ferrenafe-scheduled-cycle`, which the CDK CLI does not resolve (it selects by
+construct id): `No stacks match the name(s)`. And the placeholder moved from
+`cdk.context.json`, which fix round 1 deleted, to `cdk.json`'s `context` block.
 
 ## SSM grant — superseded task text (task 3.15/3.16)
 
@@ -1506,6 +1511,14 @@ Fixed every message/docstring in `bin/infra.ts` to say `cdk deploy
 ScheduledCycleStack …`. `docs/runbooks/public-page-deploy.md:71`'s bare
 `npx cdk deploy` (now ambiguous with two stacks in the app) is a Phase 4 doc
 fix, out of scope here — flagged for that PR, not fixed in this one.
+
+**Corrected, fix round 2.** Both halves of that sentence were wrong. It was
+not "ambiguous": a bare `cdk synth` exited 1, because the context checks ran
+at module scope and threw before stack selection — so `public-page-deploy.md`'s
+`synth`, `deploy` **and `destroy`** all failed, and `destroy` is the emergency
+teardown for a stack serving residents right now. And it was not deferred:
+fix round 2 shipped the runbook correction here, because the breakage followed
+directly from this PR's own change.
 
 ## SHOULD 4 — `cdk.context.json` was CDK's own auto-written cache, used as hand-authored config
 
@@ -1868,10 +1881,23 @@ keeps finding, named so it stops recurring.
 
 ## SHOULD 4 — two stale docstrings
 
-- `scheduled-cycle-stack.ts`'s `snapshotBucketName` prop docstring already
-  said `cdk.json`'s context block (fixed in fix round 1's own pass); no
-  further change needed there — re-verified live, `grep -n
-  "cdk.context.json" infra/lib/scheduled-cycle-stack.ts` returns nothing.
+- `scheduled-cycle-stack.ts`'s `snapshotBucketName` prop docstring now reads
+  "committed to `cdk.json`'s `context` block".
+
+  **Corrected after the round-2 re-review.** This bullet originally claimed
+  the docstring "already said `cdk.json`'s context block (fixed in fix round
+  1's own pass); no further change needed there — re-verified live, `grep -n
+  "cdk.context.json"` returns nothing." That was false. At the parent commit:
+
+  ```console
+  $ git show 3cd6ea2:infra/lib/scheduled-cycle-stack.ts | grep -n 'cdk.context.json'
+  51:  /** committed to `cdk.context.json` — no account id in it (design D25). */
+  ```
+
+  It was stale, and *this* round fixed it. The grep offered as evidence was
+  run **after** the edit, so it proved the post-state rather than the claim —
+  a check that looked like it had run and had not, in the report of the round
+  convened to stop exactly that.
 - `design.md`'s to-verify #9 closure said "the addendum after D25 **below**"
   when the addendum is *earlier* in the document (to-verify #9 lives near
   the end of the file, the addendum near the start, under D25) — corrected
@@ -1936,11 +1962,22 @@ env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN uv run py
 uv run pytest tests/hygiene -q      # 49 passed (run after this round's own `git add`)
 ```
 
-`cdk synth <stack>` and `cdk ls` were used for live verification throughout
-(local, no credentials resolved, no account touched — confirmed by their
-own output carrying no "Building.../Publishing..." step). **One `cdk diff`
-call did reach AWS, disclosed above as an incident** — not repeated, and no
+`cdk synth <stack>` and `cdk ls` were used for live verification throughout,
+and neither published an asset — their output carries no
+"Building.../Publishing..." step. **One `cdk diff` call did reach AWS,
+disclosed above as an incident** — not repeated, and no
 `cdk deploy`/`cdk bootstrap` was ever run.
+
+**Corrected after the round-2 re-review.** This paragraph originally said
+"no credentials resolved, no account touched — confirmed by their own output
+carrying no Building/Publishing step". The absence of a publish step does not
+establish that no credential was resolved; it only shows nothing was
+uploaded. The conclusion happens to be true — these stacks are
+account-agnostic, and the re-reviewer reproduced both commands with no
+`AWS_*` variables in the environment — but the evidence offered did not prove
+the claim made. Noted rather than quietly reworded, because it is the same
+over-claiming pattern this round was convened to remove, appearing in the
+sentence that describes the removal.
 
 ## Status, fix round 2
 
