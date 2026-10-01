@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -24,7 +25,12 @@ from rain_alert.adapters.agentcore_invoker import (
     AgentRuntimeSettings,
     BedrockAgentCoreInvoker,
 )
+from rain_alert.adapters.ssm_config_repository import SSM_PATH_PREFIX
 from rain_alert.domain.values import UnavailableReason
+
+#: `tests/unit/adapters/` -> `tests/unit/` -> `tests/` -> repo root.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_CONTRACT_PATH = _REPO_ROOT / "contracts" / "scheduled-cycle.json"
 
 ARN = "arn:aws:bedrock-agentcore:us-east-1:example-account-id:runtime/example-runtime-abc123"
 
@@ -426,3 +432,27 @@ class TestTheDeadlineIsSizedFromMeasurement:
         dead network into a cycle that waits half a minute to find out."""
         assert CONNECT_TIMEOUT <= 5.0
         assert CONNECT_TIMEOUT < READ_TIMEOUT / 5
+
+
+class TestScheduledCycleContract:
+    """`contracts/scheduled-cycle.json` (design.md D31, D32; task 3.5/3.6).
+
+    The golden-document pattern this repository already uses for
+    `contracts/public-snapshot.json` (design.md D31 also names a second,
+    hypothetical agent-composition contract file as a precedent; that file
+    was never actually created in this repository, so it is deliberately not
+    cited here by path — see this project's own
+    `tests/hygiene/test_docstring_citations.py`, which exists precisely to
+    catch a citation like that one).
+    This is the Python-side half of D31's Relation 1: the contract's
+    `agent_read_timeout_seconds` must equal `agentcore_invoker.READ_TIMEOUT`,
+    and its `ssm_path_prefix` must equal `ssm_config_repository.SSM_PATH_PREFIX`
+    — the TypeScript-side half is `infra/test/scheduled-cycle-stack.test.ts`
+    (task 3.7/3.8), which reads the same file with `readFileSync`.
+    """
+
+    def test_contract_matches_read_timeout(self) -> None:
+        contract = json.loads(_CONTRACT_PATH.read_text())
+
+        assert contract["agent_read_timeout_seconds"] == agentcore_invoker.READ_TIMEOUT
+        assert contract["ssm_path_prefix"] == SSM_PATH_PREFIX

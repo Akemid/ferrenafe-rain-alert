@@ -54,8 +54,16 @@ rewriting it.
 
 ```bash
 cd infra
-AWS_PROFILE=ferrenafe AWS_REGION=us-east-2 npx cdk synth
+AWS_PROFILE=ferrenafe AWS_REGION=us-east-2 npx cdk synth PublicSnapshotStack
 ```
+
+**The stack name is required as of the `scheduled-cycle` change**: `infra/`
+now synthesizes a second stack (`ScheduledCycleStack`), and a bare `cdk
+synth`/`cdk deploy` with no stack name acts on every stack the app
+constructs — including one whose required deploy-time context
+(`snapshotWriterPolicyArn`, `agentRuntimeArn`, `alarmEmail`) this runbook has
+no reason to supply. Naming `PublicSnapshotStack` explicitly keeps this
+runbook's commands scoped to the one stack it deploys.
 
 Read the generated template (`cdk.out/PublicSnapshotStack.template.json`)
 before deploying anything from it, especially after touching
@@ -68,7 +76,7 @@ correct in the source and is not.
 
 ```bash
 cd infra
-AWS_PROFILE=ferrenafe AWS_REGION=us-east-2 npx cdk deploy
+AWS_PROFILE=ferrenafe AWS_REGION=us-east-2 npx cdk deploy PublicSnapshotStack
 ```
 
 The region is pinned in `infra/bin/infra.ts`, so `cdk deploy` cannot be
@@ -164,8 +172,12 @@ Two levels, cheapest first:
    aws s3api delete-objects --bucket "<SnapshotBucketName>" \
      --delete file:///tmp/versions.json
 
-   npx cdk destroy
+   npx cdk destroy PublicSnapshotStack
    ```
+
+   The stack name is required for the same reason as Steps 2 and 3: a bare
+   `cdk destroy` with no stack name acts on every stack `infra/` synthesizes,
+   including `ScheduledCycleStack`.
 
    If `cdk destroy` reports `The bucket you tried to delete is not empty`,
    a delete marker is left; repeat the `list-object-versions` /

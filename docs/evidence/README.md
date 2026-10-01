@@ -40,3 +40,8 @@ happened.
   — CDK bootstrap, the AgentCore deploy, and the first real invocation: three
   stacked defects, a measured 9.71 s cold start, and a correct message the
   validator refuses.
+- [`2026-09-29-scheduled-cycle-pending-first-deploy-checks.md`](2026-09-29-scheduled-cycle-pending-first-deploy-checks.md)
+  — planned before the account is touched, not reconstructed afterwards:
+  whether the scheduled-cycle Lambda's execution role needs `logs:CreateLogGroup`
+  (Phase 3 fix round 2), to be confirmed at the first live invocation and this
+  entry then replaced with the real output.

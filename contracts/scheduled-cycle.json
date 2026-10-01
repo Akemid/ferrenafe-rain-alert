@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "agent_read_timeout_seconds": 35.0,
+  "cycle_headroom_seconds": 60,
+  "ssm_path_prefix": "/ferrenafe/rain-alert/"
+}
