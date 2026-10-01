@@ -250,23 +250,37 @@ class TestSourceDerivedTextIsSanitizedBeforeItEntersThePrompt:
         assert "‮" not in prompt
         assert "\\u001b" not in prompt and "\x1b" not in prompt
 
-    def test_operator_owned_text_is_not_sanitized(self) -> None:
-        """`city`, `timezone` and `checklist` come from the operator's own
-        configuration, not from a scraped page, and the spec exempts them.
-
-        Recorded cost, since this is the one place it bites: the validator's
-        verbatim-span exemption compares against the *sanitized* form of a
-        checklist item, because that is what the template renders. An operator
-        item that sanitizes to something different is therefore handed to the
-        model raw, and a faithful quotation of it will not earn the exemption.
-        The direction of error is a fallback, never a looser message."""
-        untidy = "Guarda  agua  potable en  casa"
-        request = _request(checklist=(untidy,), city="Ferre  ñafe")
+    def test_code_owned_text_is_not_sanitized(self) -> None:
+        """`city` and `timezone` are still code constants — never SSM-sourced
+        (`cloud-configuration` spec) — so they carry no untrusted-input
+        surface and stay exempt."""
+        request = _request(city="Ferre  ñafe")
 
         payload = prompt_payload(request)
 
-        assert payload["checklist"] == [untidy]
         assert payload["city"] == "Ferre  ñafe"
+
+    def test_checklist_items_are_sanitized(self) -> None:
+        """Scheduled-cycle fix round 1, SHOULD item 5. `checklist` was
+        exempted from sanitization while it was a Python code constant,
+        reviewed like any other line of source. `SsmConfigRepository`
+        (`adapters/ssm_config_repository.py`) makes it operator-editable
+        runtime input with no code review — the same trust-tier change that
+        made every other adapter in that change stricter, not looser.
+        `domain/template.py` already sanitizes each checklist item at render
+        time; sanitizing here too makes the prompt agree with what the
+        template and the validator's own verbatim-span comparison already
+        assume, and removes a previously-accepted cost: an operator item
+        that used to sanitize to something different than what the model
+        was shown could never earn the validator's verbatim-quotation
+        exemption. Now the model sees exactly what the validator compares
+        against."""
+        untidy = "Guarda\tagua potable en casa"
+        request = _request(checklist=(untidy,))
+
+        payload = prompt_payload(request)
+
+        assert payload["checklist"] == [sanitize_source_text(untidy)]
 
 
 class TestWhatTheInstructionBlockStates:

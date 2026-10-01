@@ -1,0 +1,32 @@
+------------------------------------------------------------------------
+[OPERATOR NOTICE] source_unavailable — nothing was transmitted: this build has no notifier that can deliver a message
+  sources: open_meteo
+  occurred at: 2026-09-28T12:00:00+00:00
+  subject: Source(s) unavailable: open_meteo
+  body:
+    open_meteo became unavailable as of 2026-09-28T12:00:00+00:00.
+------------------------------------------------------------------------
+
+Ferreñafe  (-6.6360, -79.7899)  [public_reference]
+Sources    senamhi: available (fetched 2026-09-28T12:00:00+00:00)
+           open_meteo: unavailable (insufficient_horizon: 0 hourly points at or after 2026-09-28T12:00:00+00:00, need 48)
+Notes      —
+Level      none   [degraded]
+Window     2026-09-28T12:00:00+00:00 → 2026-09-30T12:00:00+00:00
+Reasons    —
+Decision   NOT SENT — level none
+Message    PREVIEW (NOT SENT) [composer: template]
+           title: Alerta de lluvias — Ferreñafe — sin riesgo
+           body:
+             Ciudad: Ferreñafe
+             Nivel: sin riesgo
+             Ventana: del 28/09/2026 07:00 al 30/09/2026 07:00 (hora local, America/Lima)
+             La fuente Open-Meteo no estuvo disponible durante esta evaluación.
+             Recomendaciones:
+             - Almacena agua potable para al menos dos días.
+             - Protege documentos y aparatos eléctricos por encima del nivel del piso.
+             - Limpia canaletas, techos y desagües cercanos.
+             - Asegura objetos sueltos y calaminas.
+             - Ten a mano una linterna, un botiquín y los teléfonos de emergencia.
+Notices    1 emitted
+           - source_unavailable (open_meteo)

@@ -53,7 +53,22 @@ uv run mypy                        # files = ["src"]; tests/ and agent/ are unch
 ```
 
 The default suite is **offline**: no network, no credentials, no model calls.
-It must stay that way — verify with the AWS environment variables unset.
+It must stay that way, and two `tests/conftest.py` fixtures enforce it
+structurally rather than by convention: a session-scoped fixture forces
+dummy AWS credentials, and a session-scoped socket guard refuses any
+non-loopback **TCP** connection outright. `connect_ex`, UDP `sendto` and
+DNS resolution all pass through untouched, so this is not "any network
+egress": every HTTP call `botocore` and `urllib3` make goes through
+`socket.connect` and is blocked, but botocore's client-side monitoring
+does use UDP `sendto`. It is disabled by default, its default host is
+loopback, and nothing here enables it — so the gap is unreachable in this
+repository rather than absent. Running with the AWS environment
+variables unset is a sanity check that nothing depends on the *ambient*
+environment happening to be clean — it is not a test of whether a
+credential or a network call is required, because the credentials fixture
+supplies its own dummy values either way. What actually proves "no network"
+is the socket guard raising on a real connection attempt, verified directly
+by `tests/unit/test_conftest_fixtures.py`.
 
 ## AWS
 

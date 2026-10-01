@@ -28,6 +28,7 @@ from rain_alert.adapters.agent_composer import AgentBackedComposer
 from rain_alert.adapters.agent_prompt import build_prompt
 from rain_alert.adapters.agentcore_invoker import AgentRuntimeSettings, BedrockAgentCoreInvoker
 from rain_alert.adapters.console_notifier import ConsoleNotifier
+from rain_alert.adapters.dynamodb_alert_repository import TABLE_NAME, DynamoDbAlertRepository
 from rain_alert.adapters.http import HtmlFetcher, HttpxHtmlFetcher
 from rain_alert.adapters.local.json_alert_repository import JsonFileAlertRepository
 from rain_alert.adapters.local.json_file_snapshot_publisher import SNAPSHOT_PATH_ENV_VAR, JsonFileSnapshotPublisher
@@ -37,11 +38,13 @@ from rain_alert.adapters.local.static_contact_repository import StaticContactRep
 from rain_alert.adapters.open_meteo import OpenMeteoForecastProvider
 from rain_alert.adapters.s3_snapshot_publisher import SNAPSHOT_BUCKET_ENV_VAR, SNAPSHOT_KEY_ENV_VAR, S3SnapshotPublisher
 from rain_alert.adapters.senamhi_scraper import SenamhiWarningScraper
+from rain_alert.adapters.ssm_config_repository import SsmConfigRepository
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.risk import RiskEvaluator
 from rain_alert.domain.template import MessageComposer
 from rain_alert.domain.values import ComposerName
+from rain_alert.entrypoints.run_once import default_now
 from rain_alert.ports import ForecastProvider, Notifier, SnapshotPublisher
 from rain_alert.ports import MessageComposer as MessageComposerPort
 
@@ -176,4 +179,34 @@ def build_local_deps(
         alerts=JsonFileAlertRepository(state_file),
         evaluator_factory=RiskEvaluator,
         now=now,
+    )
+
+
+def build_cloud_deps() -> CycleDependencies:
+    """The full dependency graph for a scheduled cycle (design.md D6, D29).
+
+    The second leaf set over the same `CycleDependencies` type
+    `build_local_deps` returns — `RunAlertCycle`, `select_composer` and every
+    port are exactly the same; only the leaves differ. Takes no arguments:
+    `lambda_handler.handler` calls this with nothing from `event` (the
+    schedule payload carries no fact the cycle needs), and the clock is
+    always the real one — there is no `--offline-fixtures`/`--now` equivalent
+    here, because a scheduled cycle always runs against the real sources,
+    the real table and the real clock.
+    """
+    config_repository = SsmConfigRepository()
+    notifier = ConsoleNotifier()
+    config = config_repository.load()
+    composer = select_composer(config, notifier=notifier, now=default_now)
+
+    return CycleDependencies(
+        config=config_repository,
+        warnings=SenamhiWarningScraper(HttpxHtmlFetcher()),
+        forecast=OpenMeteoForecastProvider(),
+        composer=composer,
+        contacts=StaticContactRepository(),
+        notifier=notifier,
+        alerts=DynamoDbAlertRepository(TABLE_NAME),
+        evaluator_factory=RiskEvaluator,
+        now=default_now,
     )

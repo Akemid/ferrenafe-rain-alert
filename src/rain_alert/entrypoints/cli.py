@@ -39,26 +39,22 @@ reserved for a run that could not start (bad arguments, missing fixtures).
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
 from rain_alert.adapters.local.json_alert_repository import DEFAULT_STATE_FILE
-from rain_alert.adapters.serialization import reason_to_dict
 from rain_alert.application.dependencies import CycleDependencies
-from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
+from rain_alert.application.run_alert_cycle import CycleResult
 from rain_alert.domain.config import AlertConfig
-from rain_alert.domain.messages import AlertRecord
 from rain_alert.domain.reasons import render_reasons_en
-from rain_alert.domain.sanitize import sanitize_source_text
-from rain_alert.domain.snapshot import build_snapshot
 from rain_alert.domain.sources import Available, SourceResult
 from rain_alert.domain.template import MessageComposer
 from rain_alert.domain.values import ComposerName
+from rain_alert.entrypoints.run_once import as_json, default_now, run_once, source_notes
 from rain_alert.entrypoints.wiring import (
     OPEN_METEO_FIXTURE_NAME,
     SENAMHI_FIXTURE_NAME,
@@ -67,38 +63,18 @@ from rain_alert.entrypoints.wiring import (
 )
 from rain_alert.ports import SnapshotPublisher
 
-__all__ = ["OPEN_METEO_FIXTURE_NAME", "SENAMHI_FIXTURE_NAME", "default_now", "main", "parse_now"]
+#: `default_now` and `as_json` are defined in `entrypoints/run_once.py` now
+#: (both are needed, unchanged, by `lambda_handler.handler`, which is
+#: forbidden from importing this module at all — see `run_once.py`'s module
+#: docstring). Re-exported here so `cli.default_now`/`cli.as_json`, this
+#: `__all__` entry and every docstring citation of them still resolve.
+__all__ = ["OPEN_METEO_FIXTURE_NAME", "SENAMHI_FIXTURE_NAME", "as_json", "default_now", "main", "parse_now"]
 
 _LABEL_WIDTH = 11
 _PREVIEW_LABEL = "PREVIEW (NOT SENT)"
 
 EXIT_OK = 0
 EXIT_CANNOT_START = 2
-
-#: How many past alerts the public page shows alongside this cycle's verdict.
-#: This is a status page, not an archive: enough for a reader to see a short
-#: recent history, not the full record — the state file and the `--json`
-#: calibration output remain the complete one. Chosen, not derived from
-#: `dedup_lookback_hours`, because that window is sized for dedup
-#: correctness and can hold far more entries than belong on a page.
-MAX_RECENT_ALERTS = 5
-
-#: Prefix for the one line the cycle writes when the public snapshot could not
-#: be published.
-#:
-#: The guard around that call is deliberately forgiving — a page that cannot be
-#: updated is worth strictly less than an alert that went out — but it was also
-#: silent, and the two are separable. A frozen page and a page updating
-#: correctly looked identical from the operator's side: every cycle reported
-#: success, and the first person to learn otherwise would have been a resident
-#: reading a stale level. The guard also covers `_recent_alerts` and
-#: `build_snapshot`, so a repository read error or a domain bug read as
-#: "published fine" too.
-#:
-#: It goes to the error stream, never standard output: `--json` promises one
-#: machine-readable document there and nothing else. It does not change the
-#: exit code.
-SNAPSHOT_FAILURE_PREFIX = "[SNAPSHOT NOT PUBLISHED]"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -130,17 +106,6 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def default_now() -> datetime:
-    """The system clock, truncated to whole seconds.
-
-    Sub-second precision is noise in every consumer: it clutters the operator
-    output, and `TimeWindow.key()` — derived from the window start — becomes
-    change 3's DynamoDB sort key, where microseconds carry no meaning and only
-    make keys harder to read and compare.
-    """
-    return datetime.now(UTC).replace(microsecond=0)
-
-
 def parse_now(raw: str) -> datetime:
     """`--now` as an aware UTC instant.
 
@@ -161,10 +126,6 @@ def _source_line(name: str, result: SourceResult[Any]) -> str:
     return f"{name}: unavailable ({result.reason.value}: {result.detail})"
 
 
-def _source_notes(result: SourceResult[Any]) -> tuple[str, ...]:
-    return result.notes if isinstance(result, Available) else ()
-
-
 def _note_lines(result: CycleResult) -> list[str]:
     """What each source set aside this cycle, prefixed with the source name.
 
@@ -176,7 +137,7 @@ def _note_lines(result: CycleResult) -> list[str]:
     return [
         f"- {name}: {note}"
         for name, result in (("senamhi", result.senamhi), ("open_meteo", result.open_meteo))
-        for note in _source_notes(result)
+        for note in source_notes(result)
     ]
 
 
@@ -244,91 +205,6 @@ def render(result: CycleResult, config: AlertConfig) -> str:
     return "\n".join(lines)
 
 
-def as_json(result: CycleResult, config: AlertConfig) -> str:
-    """The same cycle as a machine-readable document, for calibration logging.
-
-    Reasons are emitted twice on purpose: `reasons` keeps the tagged,
-    numeric form a threshold review needs, `reasons_en` keeps the rendered
-    operator lines so a log is readable without a decoder.
-    """
-    message = result.message if result.message is not None else MessageComposer().compose(result.message_request)
-    document = {
-        "city": config.city,
-        "city_slug": config.city_slug,
-        "latitude": config.coordinates.latitude,
-        "longitude": config.coordinates.longitude,
-        # This document is what a calibration log or the cloud deployment reads,
-        # so the pair must not travel without saying how it was obtained.
-        "coordinates_source": config.coordinates_source.value,
-        # The cycle clock, not the window start. The two are different facts and
-        # the window start can precede the run by days on an official verdict.
-        "evaluated_at": result.evaluated_at.isoformat(),
-        "level": result.assessment.level.value,
-        "degraded": result.assessment.degraded,
-        "window_start": result.assessment.window.start.isoformat(),
-        "window_end": result.assessment.window.end.isoformat(),
-        "senamhi_status": result.assessment.senamhi_status,
-        "open_meteo_status": result.assessment.open_meteo_status,
-        # Per source rather than flattened: a calibration review needs to know
-        # *which* source filtered or lost something, not only that one did.
-        "notes": {
-            "senamhi": list(_source_notes(result.senamhi)),
-            "open_meteo": list(_source_notes(result.open_meteo)),
-        },
-        "reasons": [reason_to_dict(reason) for reason in result.assessment.reasons],
-        "reasons_en": list(render_reasons_en(result.assessment.reasons)),
-        "decision": {"send": result.decision.send, "reason": result.decision.reason},
-        "sent": result.sent,
-        "recipients_count": result.recipients_count,
-        # Provenance travels with the message for the same reason the
-        # coordinates travel with their source: this document is what a
-        # calibration log and change 3's Lambda entrypoint read, and without
-        # it a fallback is invisible here. `notices` carries outage notices
-        # only, by design — the composer's fallback notice is emitted by the
-        # adapter during composition — and under `--json` the notifier writes
-        # to standard error, so a fallback was visible to a human watching
-        # that stream and to nothing that parses this. Additive: `message`
-        # gains a key and no key changes meaning.
-        "message": {
-            "title": message.title,
-            "body": message.body,
-            "valid_until": message.valid_until.isoformat(),
-            "composed_by": message.composed_by.value,
-        },
-        "notices": [
-            {"kind": notice.kind.value, "sources": sorted(source.value for source in notice.sources)}
-            for notice in result.notices
-        ],
-    }
-    return json.dumps(document, indent=2, ensure_ascii=False, sort_keys=True)
-
-
-def _recent_alerts(deps: CycleDependencies, config: AlertConfig) -> tuple[AlertRecord, ...]:
-    """The alerts the public page shows alongside this cycle's verdict.
-
-    The query window is the configured dedup lookback
-    (`AlertConfig.dedup_lookback_hours`), ending at the cycle clock — not
-    "the last N records" (`AlertRepository` exposes no such query). Bounding
-    it at `deps.now()` guarantees nothing returned is newer than this cycle;
-    it says nothing about *display* order or count, and both are resolved
-    here explicitly rather than left as an accident of what the port
-    happens to return:
-
-    - **Newest first.** `AlertRepository.alerts_with_window_start_between`
-      is documented ascending by window start (`ports/__init__.py`). A
-      reader opening the page's "alertas enviadas" section expects the
-      latest alert at the top, the way any feed does, so the query result
-      is reversed here.
-    - **Bounded to `MAX_RECENT_ALERTS`**, applied after reordering, so the
-      kept entries are always the most recent ones — never the oldest
-      `MAX_RECENT_ALERTS` of a longer, unordered slice.
-    """
-    now = deps.now()
-    earliest_start = now - timedelta(hours=config.dedup_lookback_hours)
-    ascending = deps.alerts.alerts_with_window_start_between(config.city_slug, earliest_start, now)
-    return tuple(reversed(ascending))[:MAX_RECENT_ALERTS]
-
-
 def main(
     argv: Sequence[str] | None = None,
     stdout: TextIO | None = None,
@@ -393,20 +269,11 @@ def main(
         if publisher is None:
             publisher = select_snapshot_publisher(os.environ)
 
-    config = deps.config.load()
-    result = RunAlertCycle(deps).execute()
-
-    if publisher is not None:
-        # Reporting, not notifying (public-status-page). If the destination
-        # is unreachable the alert still went out above this line — a page
-        # that cannot be updated is worth strictly less than an alert that
-        # does not. Same posture as the operator-notice guard in
-        # `agent_composer.py::_fell_back`, including the second half of it:
-        # best-effort, but *say so*.
-        try:
-            publisher.publish(build_snapshot(result, config, _recent_alerts(deps, config)))
-        except Exception as exc:  # noqa: BLE001 — a reporting fault must not cost the cycle
-            print(f"{SNAPSHOT_FAILURE_PREFIX} {sanitize_source_text(f'{type(exc).__name__}: {exc}')}", file=err)
+    # The shared sequence (design.md D29; `scheduled-execution` spec): config
+    # load, `RunAlertCycle.execute()`, and the forgiving snapshot-publish
+    # guard, extracted into `run_once` so `lambda_handler.handler` runs the
+    # exact same steps rather than a second, independently-drifting copy.
+    result, config = run_once(deps, publisher, report=err)
 
     print(as_json(result, config) if arguments.json else render(result, config), file=out)
     return EXIT_OK
