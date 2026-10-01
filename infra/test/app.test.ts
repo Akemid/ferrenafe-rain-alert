@@ -2,6 +2,7 @@ import { App, Token } from 'aws-cdk-lib/core';
 import { Annotations, Match } from 'aws-cdk-lib/assertions';
 import { stack, buildScheduledCycleStack } from '../bin/infra';
 import { PublicSnapshotStack } from '../lib/public-snapshot-stack';
+import { PLACEHOLDER_SNAPSHOT_BUCKET_NAME } from '../lib/scheduled-cycle-stack';
 
 /**
  * Guards what `bin/infra.ts` configures, as opposed to what
@@ -172,19 +173,32 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
     expect(scheduledCycleStack!.stackName).toBe('ferrenafe-scheduled-cycle');
   });
 
-  test('never commits the account-bearing ARNs: cdk.json context carries the still-a-placeholder snapshotBucketName only', () => {
+  test('never commits the account-bearing ARNs: cdk.json context carries a real snapshotBucketName and nothing else', () => {
     // Fix round 1, SHOULD 4: `cdk.context.json` is CDK's own auto-written cache (the CLI writes to it
     // whenever a context provider runs, and the keys it writes — e.g. `availability-zones:account=…` —
     // embed the account id), not hand-authored config; using it as one is a tripwire, not a guardrail, since
     // the hygiene scan only catches an account id there if someone runs it before committing. `cdk.json`'s
     // own `context` block is never auto-written by the CDK CLI, so `snapshotBucketName` lives there instead.
-    // Its value is deliberately still the placeholder literal `buildScheduledCycleStack` refuses (fix round
-    // 1, SHOULD 5) — a real `cdk deploy` fails loudly until the owner replaces it, rather than silently
-    // deploying against the wrong bucket. The two ARNs and the email above are supplied only via `-c` at
-    // deploy time and never committed anywhere.
+    // The value is now the real deployed bucket's CloudFormation-generated name. It held the placeholder
+    // literal while that name was unknown from source, and `buildScheduledCycleStack` still refuses the
+    // placeholder (fix round 1, SHOULD 5) so a half-configured checkout fails loudly rather than deploying
+    // against the wrong bucket. What this test guards is not the literal — pinning it would now fail on
+    // every legitimate change of bucket — but the property that matters: the committed context carries a
+    // usable bucket name and nothing account-bearing. The two ARNs and the email are supplied only via `-c`
+    // at deploy time and never committed anywhere.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const cdkJson = require('../cdk.json') as { context: Record<string, unknown> };
+    const bucketName = cdkJson.context.snapshotBucketName;
 
-    expect(cdkJson.context.snapshotBucketName).toBe('ferrenafe-public-snapshot-example');
+    expect(typeof bucketName).toBe('string');
+    expect(bucketName).not.toBe(PLACEHOLDER_SNAPSHOT_BUCKET_NAME);
+    // An S3 bucket name cannot contain a colon, so an ARN here would be a category error as well as a leak.
+    expect(bucketName as string).not.toContain('arn:');
+    // The repository forbids a committed account id; a bucket name has no reason to carry a 12-digit run.
+    expect(bucketName as string).not.toMatch(/\d{12}/);
+
+    for (const forbidden of ['snapshotWriterPolicyArn', 'agentRuntimeArn', 'alarmEmail']) {
+      expect(cdkJson.context).not.toHaveProperty(forbidden);
+    }
   });
 });
