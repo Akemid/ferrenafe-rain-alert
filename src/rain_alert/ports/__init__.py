@@ -78,6 +78,44 @@ class ContactRepository(Protocol):
 
 
 class Notifier(Protocol):  # D3 — two methods, not one union method
+    """**Blocking condition on the first implementation that actually delivers.**
+
+    `ConsoleNotifier` is the only implementation that exists, deliberately, and
+    that is what makes the gap below survivable today. Writing a `Notifier`
+    that reaches a resident changes its severity, and nothing else in this
+    codebase will say so at the moment it happens — which is why it is written
+    here, on the port, rather than in a document.
+
+    The scheduled cycle's Lambda role holds `dynamodb:PutItem` on the alerts
+    table, narrowed by action but **not by item**. An attacker with code
+    execution in the function — the realistic path being a parser fault over
+    the scraped SENAMHI HTML, or a compromised transitive dependency — writes
+    one `AlertRecord` for the city's partition at `imminent`, with a window
+    start inside `dedup_lookback_hours`. Every later cycle then reads it as
+    prior state, `should_send` returns "not an escalation over prior level
+    imminent", and nothing is sent for as long as the lookback runs. One write
+    buys seventy-two hours, it outlives the attacker's access, and the three
+    CloudWatch alarms stay green throughout: no error, invocations normal,
+    snapshot published.
+
+    Today the cost is a suppressed record and a suppressed operator notice.
+    The public page keeps showing the *assessment's* level, not the sent
+    alert's, so a resident still sees the risk. With a delivering notifier the
+    cost becomes a warning that never arrives.
+
+    **It cannot be closed by narrowing IAM** — the attacker writes the
+    partition the function legitimately owns. It is not closed by a CloudWatch
+    metric filter either: a suppression at an elevated level is exactly what a
+    healthy multi-cycle rain event produces, so a filter matching it pages on
+    ordinary deduplication and gets muted. That was tried, reviewed, and
+    discarded on 2026-10-01 for that reason — see
+    `docs/blog/2026-10-01-the-alarm-that-could-not-tell-an-attack-from-the-weather.md`.
+
+    What it needs is provenance: a way to tell a record this system wrote from
+    one that appeared beside it. That is an integrity mechanism on the table,
+    not a log field — the attacker chooses a plausible `sent_at`.
+    """
+
     def send_alert(self, message: AlertMessage, recipients: tuple[Contact, ...]) -> None: ...
     def send_operator_notice(self, notice: OperatorNotice) -> None: ...
 
