@@ -13,6 +13,21 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src" / "rain_alert"
 AGENT_ROOT = REPO_ROOT / "agent"
+ENTRYPOINTS_ROOT = SRC_ROOT / "entrypoints"
+
+#: The scheduled path's own boundary (design.md D29): a cloud invocation that
+#: reached the CLI's argument parsing or either of the CLI-only local
+#: adapters would inherit `JsonFileAlertRepository` on `/tmp` or
+#: `StaticConfigRepository`'s env-var defaults — dedup and configuration
+#: would go silently inert in production, with nothing failing, logging, or
+#: looking wrong. Stated as full dotted module paths, not bare roots, so this
+#: scan does not also forbid `entrypoints.wiring` or `entrypoints.run_once`,
+#: which `lambda_handler.py` legitimately imports.
+LAMBDA_HANDLER_FORBIDDEN_MODULES = {
+    "rain_alert.entrypoints.cli",
+    "rain_alert.adapters.local.json_alert_repository",
+    "rain_alert.adapters.local.static_config_repository",
+}
 
 #: The deployment boundary, in the direction that protects the Lambda: nothing
 #: the alert path ships may reach the agent unit or a model SDK (D22). Stated
@@ -207,6 +222,58 @@ class TestTheAgentDeploymentUnitIsASeparateArtifact:
         (tmp_path / "clean.py").write_text("x = 1\n", encoding="utf-8")
 
         assert _violations(tmp_path, _agent_import_is_forbidden, package="agent") == {}
+
+
+def _forbidden_module_imports(path: Path, forbidden: frozenset[str], *, package: str) -> set[str]:
+    """Every import root in one module that exactly names, or is a
+    submodule of, one of `forbidden`'s full dotted paths.
+
+    Distinct from `_violations`/`_domain_import_is_forbidden`'s style, which
+    matches on a bare top-level root (`"boto3"`, `"strands"`) — this scan is
+    about specific *modules* within `rain_alert.entrypoints`/
+    `rain_alert.adapters.local`, not a whole third-party package, so it needs
+    the full dotted name rather than only the first segment.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    module_package = _module_package(package, Path(path.name))
+    roots = _imported_roots(tree, module_package)
+    return {root for root in roots if any(root == mod or root.startswith(f"{mod}.") for mod in forbidden)}
+
+
+class TestLambdaHandlerNeverImportsLocalOnlyModules:
+    """design.md D29: a scheduled-cycle invocation that reached the CLI's
+    argument parsing or either of its two local-only adapters would inherit
+    `JsonFileAlertRepository` on `/tmp` or `StaticConfigRepository`'s env-var
+    defaults — dedup and configuration would go silently inert in
+    production, with nothing failing, logging, or looking wrong."""
+
+    def test_lambda_handler_never_imports_local_only_modules(self) -> None:
+        path = ENTRYPOINTS_ROOT / "lambda_handler.py"
+        assert path.is_file()
+
+        found = _forbidden_module_imports(path, LAMBDA_HANDLER_FORBIDDEN_MODULES, package="rain_alert.entrypoints")
+
+        assert found == set()
+
+    def test_the_scan_detects_a_planted_violation(self, tmp_path: Path) -> None:
+        """Triangulation: a clean file passing proves nothing about a
+        scanner that was never asked a question it could answer wrongly."""
+        planted = tmp_path / "lambda_handler.py"
+        planted.write_text(
+            "import rain_alert.entrypoints.cli\n"
+            "from rain_alert.adapters.local.json_alert_repository import JsonFileAlertRepository\n"
+            "from rain_alert.adapters.local.static_config_repository import StaticConfigRepository\n"
+            "from rain_alert.entrypoints.wiring import build_cloud_deps  # allowed, must not be flagged\n",
+            encoding="utf-8",
+        )
+
+        found = _forbidden_module_imports(planted, LAMBDA_HANDLER_FORBIDDEN_MODULES, package="rain_alert.entrypoints")
+
+        assert found == {
+            "rain_alert.entrypoints.cli",
+            "rain_alert.adapters.local.json_alert_repository",
+            "rain_alert.adapters.local.static_config_repository",
+        }
 
 
 def test_scanner_resolves_relative_imports_before_checking_them(tmp_path: Path) -> None:
