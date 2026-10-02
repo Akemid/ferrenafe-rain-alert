@@ -8,7 +8,7 @@
 
 ## 1. The problem
 
-Ferreñafe is a town on the north coast of Peru, in Lambayeque. During the coastal El Niño of 2017 it was among the worst-hit districts in the region: the Taymi and Loco rivers broke their banks on the night of 13 March, and across Lambayeque that season left **41,237 people displaced, 93,486 affected, and 4,483 homes collapsed**.
+Ferreñafe is a town on the north coast of Peru, in Lambayeque. During the coastal El Niño of 2017 the whole province lived under a declared state of emergency — D.S. 011-2017-PCM put **all six districts of Ferreñafe** under it from 4 February to 4 April, alongside Chiclayo and Lambayeque. On **the night of Monday 13 March**, the Taymi and the Loco overflowed, cutting the road that links the districts of Manuel Antonio Mesones Muro and Pítipo with the city of Ferreñafe, and flooding rice and sugarcane at the Los Faiques sector. Nationally, by 23 March the figure stood at **111,283 people displaced**.
 
 The national weather service, SENAMHI, publishes official warnings — but they cover the whole department, highlands included, and a resident of Ferreñafe reading "orange warning for the coast and sierra" has no way to know whether that means them.
 
@@ -61,11 +61,13 @@ I used Claude Code throughout, with the **AWS Agent Toolkit** connecting it to m
 
 These are the findings that mattered, and none of them came from a test suite.
 
-**An IAM grant that would have killed the agent silently.** `InvokeAgentRuntime` authorizes against both the runtime *and* the endpoint; the grant named only the runtime. Every agent-composed cycle would have hit `AccessDenied`, fallen back to the deterministic template, and **reported success** — no error metric, no alarm. The agent would have been off for months with nothing to say so.
+**An IAM grant that would have killed the agent silently.** AgentCore calls it *hierarchical authorization*: `InvokeAgentRuntime` evaluates the identity-based policy against **both** the agent runtime and the agent endpoint being invoked, and denies unless both allow. My grant named only the runtime. Every agent-composed cycle would have hit `AccessDenied`, fallen back to the deterministic template, and **reported success** — no error metric, no alarm. The agent would have been off for months with nothing to say so.
 
 **A detection I built and then deleted.** A security review found one unmitigated risk: a single forged row in the dedup table suppresses alerts for 72 hours with every alarm green. I built the CloudWatch metric filter, verified the syntax, mutation-tested it — and a second review showed the signal was structurally indistinguishable from a healthy multi-cycle rain event. An alarm that fires on ordinary rain gets muted, and a muted alarm then reads as coverage. Deleting it was the right call; the finding now lives on the port where its severity will change.
 
-**A quota that reports itself as adjustable and is not.** A Lambda concurrency reservation — one line, guarding against two cycles both alerting under at-least-once delivery — failed to deploy because this account's limit is 10 against AWS's default of 1000. Service Quotas reports the quota as `Adjustable: true`, and its adjustment API refuses any value below the default. The tempting fix at that moment is to delete the line that caused the wall. I left the line out, wrote the reason in its place, and filed the support case.
+**A quota that reports itself as adjustable and is not.** A Lambda concurrency reservation — one line, guarding against two cycles both alerting under at-least-once delivery — failed to deploy. The rule is in the docs and it is arithmetic: you can reserve *up to the unreserved account concurrency minus 100*, because 100 units are held back for functions that reserve nothing. This account's limit is **10**, against AWS's default of 1,000. Ten minus one hundred is negative, so on this account **no reservation of any size is expressible** — not a tuning problem, a floor I was below.
+
+Service Quotas reports that quota as `Adjustable: true`, and the only operation it offers is `RequestServiceQuotaIncrease` — an *increase*, which 10 → 100 is, and which the API still would not take. The tempting fix at that moment is to delete the line that caused the wall. I left the line out, wrote the reason in its place, and filed the support case.
 
 **A retained table that blocked its own redeploy.** `RemovalPolicy.RETAIN` on the DynamoDB table meant a failed stack rollback left it behind as `DELETE_SKIPPED`, and the next deploy could not recreate a table that already existed. The security review had predicted exactly this before the first deploy. Reading a prediction is not the same as acting on it.
 
@@ -127,6 +129,27 @@ The next change is a fetch route that does not depend on where the machine is. T
 I live in Lambayeque. Ferreñafe is not a case study for me.
 
 The repository is Apache 2.0 and the architecture is deliberately boring in the places that matter — hexagonal, with the risk rules as pure functions and every external service behind a port. Another coastal town can swap the coordinates, the thresholds and the scraper and have the same system. That is the actual deliverable: not one town's page, but a shape that fits the next town.
+
+---
+
+## References
+
+**Ferreñafe and the 2017 coastal El Niño**
+
+- [INDECI — Compendio Estadístico 2017, Gestión Reactiva](https://portal.indeci.gob.pe/wp-content/uploads/2019/01/201802271715091.pdf) (PDF, p. 57) — the table of declared states of emergency. D.S. 011-2017-PCM, in force 4 Feb to 4 Apr 2017, listing 6 districts of Ferreñafe.
+- [RPP Noticias — *Distritos inundados en Lambayeque por desborde de ríos tras lluvias*](https://rpp.pe/peru/lambayeque/distritos-inundados-en-lambayeque-por-desborde-de-rios-tras-lluvias-noticia-1036821) (14 March 2017) — the Taymi and Loco overflowing on the night of Monday the 13th, the road to Ferreñafe cut, the Los Faiques crops.
+- [OPS/PAHO — *Emergencia por impacto del Fenómeno El Niño Costero en Perú en 2017*](https://www.paho.org/sites/default/files/noticias-web-peru-2017-emergencia-nino-costero.pdf) (PDF, p. 29) — the national SINPAD figure of 111,283 people displaced as of 23 March 2017.
+- [SENAMHI — official warnings](https://www.senamhi.gob.pe/) — the warning feed this system reads.
+- [Open-Meteo — forecast API](https://open-meteo.com/) — the second, independent signal.
+
+**AWS documentation consulted**
+
+- [Resource-based policies for Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/resource-based-policies.html) — *hierarchical authorization*: `InvokeAgentRuntime` is evaluated against both the agent runtime and the agent endpoint. This is the page that named the IAM finding.
+- [InvokeAgentRuntime — API reference](https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_InvokeAgentRuntime.html) — the permission the cycle needs, and the `InvokeAgentRuntimeForUser` pairing.
+- [Configuring reserved concurrency for a function](https://docs.aws.amazon.com/lambda/latest/dg/configuration-concurrency.html) — "you can reserve up to the unreserved account concurrency value minus 100". The arithmetic behind the failed deploy.
+- [Understanding Lambda function scaling](https://docs.aws.amazon.com/lambda/latest/dg/lambda-concurrency.html) — reserved vs. unreserved concurrency, and the 1,000-unit regional default.
+- [Service Quotas — `RequestServiceQuotaIncrease`](https://docs.aws.amazon.com/AWSJavaScriptSDK/latest/AWS/ServiceQuotas.html) — where I confirmed the API offers an *increase* operation and nothing else.
+- [`aws-cdk-lib.aws_bedrockagentcore`](https://docs.aws.amazon.com/cdk/api/v2/docs/aws-cdk-lib.aws_bedrockagentcore-readme.html) — the Runtime construct's `grantInvoke` helpers, which encode the two-resource grant correctly.
 
 ---
 
