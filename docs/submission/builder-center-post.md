@@ -118,7 +118,9 @@ Two things are deliberately switched off, and saying so is part of the deliverab
 
 **The schedule.** `scheduleEnabled` is `false` on purpose. Turning it on today would overwrite a correct page with a degraded one every six hours, because of the connectivity finding above — the cycle would faithfully publish "could not evaluate the risk" while a real orange warning is active. That is the system behaving correctly and the result being worse. Until SENAMHI is reachable from the cloud, the page is refreshed by running the same cycle from a laptop that can reach it: one command, the same code path, the same validation.
 
-**Delivery to phones.** There is no notifier in this codebase capable of sending a message to a human — only one that prints to a console. That is structural, not a flag someone can forget: real recipients are personal data, consent matters, and the WhatsApp Groups API turns out not to fit a neighbourhood group at all (business verification, the business must create the group, 8-participant cap — all verified against Meta's documentation, not assumed).
+**Delivery to phones.** There is no notifier in this codebase capable of sending a message to a human — only one that prints to a console. That is structural, not a flag someone can forget: real recipients are personal data, and consent matters.
+
+The obvious channel also does not fit, and I read the documentation rather than assume. Meta's Groups API requires an **Official Business Account**; groups are *"an invite-only experience where participants join using a group invite link you send them"*, so no endpoint adds a neighbour to a group; and the documented ceiling is *"Max group participants: 8"*. Ferreñafe has tens of thousands of residents. Eight per group, each one having to accept a link from a business account, is not a town's warning channel — it is a feature for a work crew.
 
 So today the public page *is* the channel.
 
@@ -150,6 +152,10 @@ The repository is Apache 2.0 and the architecture is deliberately boring in the 
 - [Understanding Lambda function scaling](https://docs.aws.amazon.com/lambda/latest/dg/lambda-concurrency.html) — reserved vs. unreserved concurrency, and the 1,000-unit regional default.
 - [Service Quotas — `RequestServiceQuotaIncrease`](https://docs.aws.amazon.com/AWSJavaScriptSDK/latest/AWS/ServiceQuotas.html) — where I confirmed the API offers an *increase* operation and nothing else.
 - [`aws-cdk-lib.aws_bedrockagentcore`](https://docs.aws.amazon.com/cdk/api/v2/docs/aws-cdk-lib.aws_bedrockagentcore-readme.html) — the Runtime construct's `grantInvoke` helpers, which encode the two-resource grant correctly.
+
+**Delivery channel**
+
+- [Meta — WhatsApp Groups API](https://developers.facebook.com/documentation/business-messaging/whatsapp/groups) — the Official Business Account requirement, the invite-link-only joining model, and the documented limits (`Max group participants: 8`, 10,000 groups per business number). This is the page that ruled the channel out.
 
 ---
 
