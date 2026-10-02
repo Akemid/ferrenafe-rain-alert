@@ -509,3 +509,45 @@ class TestAFailingOnReadCallbackNeverChangesTheResult:
         noisy = _fetch(self._object(scenario), on_read=_raising_callback)
 
         assert noisy == quiet
+
+
+class TestNaiveTimestampsNeverEscape:
+    """Mixing naive and aware datetimes raises `TypeError`. The provider has no
+    handler above it, so each naive input must degrade, not escape."""
+
+    NAIVE = datetime(2026, 9, 4, 11, 0, 0)  # noqa: DTZ001 - the point of the test
+
+    def test_a_naive_last_modified_is_relay_unreadable(self) -> None:
+        records: list[RelayReadRecord] = []
+        obj = _relay_object(text=_page(SENAMHI_HISTORY_ONLY), last_modified=self.NAIVE)
+
+        result = _fetch(FakeRelayReader(result=obj), on_read=records.append)
+
+        assert isinstance(result, Unavailable)
+        assert result.reason is UnavailableReason.RELAY_UNREADABLE
+        assert "timezone" in result.detail
+        assert [(r.degraded, r.reason) for r in records] == [(1, UnavailableReason.RELAY_UNREADABLE)]
+
+    def test_a_naive_claimed_fetched_at_is_ignored_as_informational(self) -> None:
+        modified = PARSE_NOW - timedelta(hours=1)
+        obj = _relay_object(text=_page(SENAMHI_HISTORY_ONLY), last_modified=modified, claimed_fetched_at=self.NAIVE)
+
+        result = _fetch(FakeRelayReader(result=obj))
+
+        assert isinstance(result, Available)
+        assert not any("skew" in note for note in result.notes)
+
+    def test_a_naive_claim_on_a_stale_object_adds_no_skew_to_the_detail(self) -> None:
+        obj = _relay_object(last_modified=PARSE_NOW - timedelta(hours=5), claimed_fetched_at=self.NAIVE)
+
+        result = _fetch(FakeRelayReader(result=obj))
+
+        assert isinstance(result, Unavailable)
+        assert result.reason is UnavailableReason.STALE_RELAY
+        assert "skew=" not in result.detail
+
+    def test_a_naive_cycle_clock_is_relay_unreadable(self) -> None:
+        result = _fetch(FakeRelayReader(result=_relay_object()), now=self.NAIVE)
+
+        assert isinstance(result, Unavailable)
+        assert result.reason is UnavailableReason.RELAY_UNREADABLE

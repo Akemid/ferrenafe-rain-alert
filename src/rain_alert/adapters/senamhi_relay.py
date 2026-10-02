@@ -140,6 +140,10 @@ def relay_detail(
     return " ".join(parts)[:MAX_DETAIL_LENGTH]
 
 
+def _is_aware(moment: datetime) -> bool:
+    return moment.tzinfo is not None and moment.utcoffset() is not None
+
+
 def _whole_seconds(delta: timedelta) -> int:
     return int(delta.total_seconds())
 
@@ -185,9 +189,15 @@ class RelayWarningProvider:
     def fetch_current_warnings(self, region: str, now: datetime) -> SourceResult[tuple[Warning, ...]]:
         """Read, freshness-check and parse the relay object. No exception escapes.
 
+        Timestamps must be timezone-aware. A naive cycle clock or a naive
+        `last_modified` is `RELAY_UNREADABLE`; a naive `claimed_fetched_at` is
+        informational only and is ignored (no skew computed).
+
         Every path emits exactly one `RelayReadRecord` through `on_read`, so a
         degraded cycle is always visible to the alarm.
         """
+        if not _is_aware(now):
+            return self._failed(now, UnavailableReason.RELAY_UNREADABLE, "cycle clock has no timezone")
         try:
             obj = self._reader.read()
         except FetchError as exc:
@@ -195,8 +205,13 @@ class RelayWarningProvider:
         except Exception as exc:  # noqa: BLE001 - nothing may escape: the cycle has no handler
             return self._failed(now, UnavailableReason.RELAY_UNREADABLE, f"unexpected {type(exc).__name__}: {exc}")
 
+        if not _is_aware(obj.last_modified):
+            return self._failed(now, UnavailableReason.RELAY_UNREADABLE, "relay LastModified has no timezone")
+        # A naive producer claim is informational and cannot be compared with
+        # S3's clock, so it is ignored: no skew is computed or reported.
+        claimed = obj.claimed_fetched_at if obj.claimed_fetched_at and _is_aware(obj.claimed_fetched_at) else None
         age = relay_age(obj.last_modified, now)
-        drift = skew(obj.claimed_fetched_at, obj.last_modified)
+        drift = skew(claimed, obj.last_modified)
         if is_stale(age, self._max_age):
             detail = relay_detail(
                 version_id=obj.version_id,
@@ -217,7 +232,7 @@ class RelayWarningProvider:
             )
 
         notes = parse_notes(outcome)
-        extra = skew_note(obj.claimed_fetched_at, obj.last_modified, self._skew_tolerance)
+        extra = skew_note(claimed, obj.last_modified, self._skew_tolerance)
         if extra is not None:
             notes = (*notes, extra)
         self._emit(
