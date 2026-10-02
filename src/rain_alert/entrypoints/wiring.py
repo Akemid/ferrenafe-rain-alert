@@ -17,10 +17,11 @@ anywhere in this codebase — which is why there is deliberately no
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
 
@@ -44,6 +45,7 @@ from rain_alert.adapters.ssm_config_repository import SsmConfigRepository
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.risk import RiskEvaluator
+from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.template import MessageComposer
 from rain_alert.domain.values import ComposerName
 from rain_alert.entrypoints.run_once import default_now
@@ -117,6 +119,36 @@ def select_snapshot_publisher(env: Mapping[str, str]) -> SnapshotPublisher | Non
         return S3SnapshotPublisher(bucket, key=env.get(SNAPSHOT_KEY_ENV_VAR, "status.json"))
     path = env.get(SNAPSHOT_PATH_ENV_VAR)
     return JsonFileSnapshotPublisher(Path(path)) if path else None
+
+
+RELAY_LOG_EVENT = "senamhi_relay"
+
+_MAX_LOGGED_VERSION_ID_LENGTH = 100
+
+
+def log_relay_read(record: RelayReadRecord) -> None:
+    """Print one relay read as exactly one compact JSON line (design D40).
+
+    The CloudWatch metric filter keys on this record, and Lambda's Python
+    runtime ships `print` output as plain text with undocumented multi-line
+    handling, so the record must stay a single line. The whole record goes
+    through `json.dumps` (never string formatting), and the one value S3
+    supplies, `version_id`, is sanitized and capped first, so it can neither
+    split the line nor forge a second record.
+    """
+    version_id = None if record.version_id is None else sanitize_source_text(record.version_id)
+    payload = {
+        "event": RELAY_LOG_EVENT,
+        "degraded": record.degraded,
+        "reason": None if record.reason is None else record.reason.value,
+        "version_id": None if version_id is None else version_id[:_MAX_LOGGED_VERSION_ID_LENGTH],
+        "last_modified": None
+        if record.last_modified is None
+        else record.last_modified.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "age_seconds": record.age_seconds,
+        "skew_seconds": record.skew_seconds,
+    }
+    print(json.dumps(payload, separators=(",", ":")))
 
 
 def select_warning_provider(
@@ -232,7 +264,7 @@ def build_cloud_deps(env: Mapping[str, str] | None = None) -> CycleDependencies:
 
     return CycleDependencies(
         config=config_repository,
-        warnings=select_warning_provider(os.environ if env is None else env),
+        warnings=select_warning_provider(os.environ if env is None else env, on_read=log_relay_read),
         forecast=OpenMeteoForecastProvider(),
         composer=composer,
         contacts=StaticContactRepository(),

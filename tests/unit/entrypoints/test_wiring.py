@@ -19,17 +19,17 @@ from rain_alert.adapters.dynamodb_alert_repository import TABLE_NAME, DynamoDbAl
 from rain_alert.adapters.local.json_file_snapshot_publisher import SNAPSHOT_PATH_ENV_VAR, JsonFileSnapshotPublisher
 from rain_alert.adapters.local.static_contact_repository import StaticContactRepository
 from rain_alert.adapters.open_meteo import OpenMeteoForecastProvider
+from rain_alert.adapters.s3_relay_reader import RELAY_BUCKET_ENV_VAR
 from rain_alert.adapters.s3_snapshot_publisher import (
     SNAPSHOT_BUCKET_ENV_VAR,
     SNAPSHOT_KEY_ENV_VAR,
     S3SnapshotPublisher,
 )
-from rain_alert.adapters.s3_relay_reader import RELAY_BUCKET_ENV_VAR
 from rain_alert.adapters.senamhi_relay import RelayWarningProvider
 from rain_alert.adapters.senamhi_scraper import SenamhiWarningScraper
 from rain_alert.domain.config import AlertConfig, CoordinatesSource, RiskThresholds
-from rain_alert.domain.template import MessageComposer as TemplateMessageComposer
 from rain_alert.domain.sources import Unavailable
+from rain_alert.domain.template import MessageComposer as TemplateMessageComposer
 from rain_alert.domain.values import ComposerName, Coordinates, UnavailableReason, WarningLevel
 from rain_alert.entrypoints.wiring import select_composer, select_snapshot_publisher
 from tests.support.fake_s3 import FakeS3Client, client_error
