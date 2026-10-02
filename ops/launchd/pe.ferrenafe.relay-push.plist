@@ -7,8 +7,17 @@
     <repo>    absolute path of this repository checkout
     <bucket>  relay bucket name (the RelayBucketName stack output)
     <home>    your home directory (launchd does not expand "~")
-  Create <home>/Library/Logs/ferrenafe-relay/ first. Credentials come from the
+  Create <home>/Library/Logs/ferrenafe-relay/ first and run
+  `chmod 700` on it: the log records the bucket name and push versions.
+  The frozen flag stops uv re-resolving the lockfile over the network every hour. Credentials come from the
   AWS profile (a credential_process entry); nothing secret belongs in this file.
+
+  Optional hardening: add RAIN_ALERT_RELAY_BUCKET_OWNER to EnvironmentVariables
+  with your 12-digit AWS account id (shown here only as <account>; never commit
+  the real value). When set, every PUT carries ExpectedBucketOwner.
+
+  RunAtLoad is intentional: push immediately at login or load, for example
+  after the Mac was off, instead of waiting for the next :00.
 
   Schedule: StartCalendarInterval, never StartInterval. Per `man launchd.plist`
   a StartInterval run that falls during sleep is missed, while calendar runs
@@ -23,6 +32,7 @@
   <array>
     <string>&lt;uv&gt;</string>
     <string>run</string>
+    <string>--frozen</string>
     <string>--directory</string>
     <string>&lt;repo&gt;</string>
     <string>rain-alert-relay-push</string>

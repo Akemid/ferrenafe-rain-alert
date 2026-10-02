@@ -43,6 +43,44 @@ def configured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(RELAY_BUCKET_ENV_VAR, BUCKET)
 
 
+OWNER_ENV_VAR = relay_push.BUCKET_OWNER_ENV_VAR
+#: Built at runtime so no literal twelve-digit string sits in the tree (hygiene scan).
+A_TWELVE_DIGIT_ID = "7" * 12
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_owner_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(OWNER_ENV_VAR, raising=False)
+
+
+@pytest.mark.usefixtures("configured")
+class TestTheExpectedBucketOwner:
+    def test_an_unset_variable_omits_the_parameter(self) -> None:
+        client = FakeS3Client()
+
+        assert relay_push.main([], fetcher=FakeHtmlFetcher(_valid_page()), client=client, now=NOW) == 0
+        assert "ExpectedBucketOwner" not in client.put_calls[0]
+
+    def test_a_twelve_digit_value_is_passed_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(OWNER_ENV_VAR, A_TWELVE_DIGIT_ID)
+        client = FakeS3Client()
+
+        assert relay_push.main([], fetcher=FakeHtmlFetcher(_valid_page()), client=client, now=NOW) == 0
+        assert client.put_calls[0]["ExpectedBucketOwner"] == A_TWELVE_DIGIT_ID
+
+    @pytest.mark.parametrize("value", ["12345", "abcdefghijkl", "7" * 13, A_TWELVE_DIGIT_ID + "\n9"])
+    def test_an_invalid_value_exits_1_without_fetching_or_putting(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv(OWNER_ENV_VAR, value)
+        client = FakeS3Client()
+        fetcher = FakeHtmlFetcher(_valid_page())
+
+        assert relay_push.main([], fetcher=fetcher, client=client, now=NOW) == 1
+        assert client.put_calls == []
+        assert fetcher.urls == []
+
+
 class TestTheBucketVariable:
     def test_an_absent_variable_exits_1_without_a_put(self) -> None:
         client = FakeS3Client()

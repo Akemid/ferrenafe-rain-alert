@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -35,6 +36,11 @@ from rain_alert.adapters.senamhi_scraper import parse_warnings_page, warnings_ur
 from rain_alert.domain.sanitize import sanitize_source_text
 
 __all__ = ["main"]
+
+#: Optional. When set, every PUT carries `ExpectedBucketOwner` so a misconfigured
+#: bucket name can never write into another account's bucket.
+BUCKET_OWNER_ENV_VAR = "RAIN_ALERT_RELAY_BUCKET_OWNER"
+_ACCOUNT_ID = re.compile(r"[0-9]{12}")
 
 EXIT_OK = 0
 EXIT_NOT_CONFIGURED = 1
@@ -110,6 +116,10 @@ def main(
     if not bucket:
         print(f"relay push: {RELAY_BUCKET_ENV_VAR} is not set", file=sys.stderr)
         return EXIT_NOT_CONFIGURED
+    owner = os.environ.get(BUCKET_OWNER_ENV_VAR, "").strip()
+    if owner and not _ACCOUNT_ID.fullmatch(owner):
+        print(f"relay push: {BUCKET_OWNER_ENV_VAR} is not a 12-digit account id", file=sys.stderr)
+        return EXIT_NOT_CONFIGURED
 
     moment = now if now is not None else datetime.now(UTC)
     try:
@@ -134,7 +144,9 @@ def main(
 
     try:
         s3 = client if client is not None else _build_client(args.profile, args.region)
+        extra = {"ExpectedBucketOwner": owner} if owner else {}
         response = s3.put_object(
+            **extra,
             Bucket=bucket,
             Key=OBJECT_KEY,
             Body=body,

@@ -47,7 +47,21 @@ def test_it_pushes_once_at_load() -> None:
 
 def test_it_runs_the_producer_through_uv_in_the_repo() -> None:
     """`<uv>` is a placeholder: launchd starts jobs with a minimal PATH, so a bare `uv` would not resolve."""
-    assert _load()["ProgramArguments"] == ["<uv>", "run", "--directory", "<repo>", "rain-alert-relay-push"]
+    assert _load()["ProgramArguments"] == [
+        "<uv>",
+        "run",
+        "--frozen",
+        "--directory",
+        "<repo>",
+        "rain-alert-relay-push",
+    ]
+
+
+def test_the_template_documents_the_intentional_run_at_load_and_log_directory_mode() -> None:
+    text = PLIST.read_text(encoding="utf-8")
+
+    assert "RunAtLoad is intentional" in text
+    assert "chmod 700" in text
 
 
 def test_the_environment_names_the_profile_region_and_bucket_placeholder() -> None:
