@@ -196,6 +196,9 @@ direct scrape), `weather-sources` (relay selected by
 
 ### Close-out
 
+- [ ] 2.17a [RED/GREEN] The structured `on_read` log writer JSON-encodes the whole record (never string-formats it) and sanitizes + caps `version_id` before encoding (log-injection guard). Test: a `version_id` containing a newline and a forged `{"event":...}` fragment still prints exactly one line, and the decoded `version_id` has no newline and is length-capped.
+- [ ] 2.17b [RED/GREEN] The S3 reader enforces `MAX_OBJECT_BYTES` before reading or decoding: check `ContentLength` first, then a bounded read of at most `cap + 1` bytes. Tests: an oversized `ContentLength` -> `RELAY_UNREADABLE` with `TrackingBody.read` never called; a lying small `ContentLength` with a body larger than the cap -> `RELAY_UNREADABLE` (extends 2.9/2.10).
+
 - [ ] 2.18 PR-2 gate: full project gate (as 1.26).
 - [ ] 2.19 **Security review** (fresh context) on the PR-2 branch diff. Scope: exceptions never carry object content into logs; the env-var-empty path cannot reach a direct scrape; no account id in fixtures.
 

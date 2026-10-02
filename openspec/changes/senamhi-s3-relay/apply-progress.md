@@ -58,7 +58,7 @@ belongs to the orchestrator and is open.
 - `skew` sign convention: claimed minus S3 `LastModified`; positive means the producer clock runs ahead.
 - `relay_detail` bounds a hostile VersionId to 100 chars and the whole string to 160, so the VersionId always survives the notice cap.
 - `docs/architecture/domain.md` reason table updated (one line) with the three members. Other docs are PR 5.
-- `on_read` raising would escape `fetch_current_warnings`. Not specified, not guarded; the cloud writer in PR 2 is a `print`.
+- `on_read` raising would escape `fetch_current_warnings`. Originally unguarded; now guarded, see the judgment-day fixes below.
 - V.* items: none were needed by Phase 1 tasks (V.1/V.5 gate task 2.9, V.4 gates 2.13).
 
 ## Gotcha
@@ -68,3 +68,16 @@ A same-length `sed` mutation within one second leaves a stale `.pyc` (mtime and 
 ## Gate (PR 1)
 
 `uv run pytest` 1217 passed, 15 deselected. `uv run --directory agent pytest` 32 passed. `uv run ruff check` clean. `uv run ruff format --check` 118 files formatted. `uv run mypy` no issues in 48 files. `cd infra && npm test` 27 passed.
+
+## Judgment-day fixes (PR 1, two independent reviewers)
+
+One work-unit commit each, test first, RED confirmed for the intended reason.
+
+1. HIGH `on_read` unguarded. RED: `RuntimeError: log sink exploded` escaped `_failed` (`senamhi_relay.py:243`). Fix: private `_emit` swallows `Exception` (one stderr line). Commit 47aeffc. Tests: `TestAFailingOnReadCallbackNeverChangesTheResult` (available, stale, reader-failure).
+2. HIGH naive/aware mixing. RED: `TypeError: can't subtract offset-naive and offset-aware datetimes`. Fix: naive `now` or `last_modified` is `RELAY_UNREADABLE`; naive `claimed_fetched_at` is ignored (no skew). Documented in the `fetch_current_warnings` docstring. Commit 59fe34a. Tests: `TestNaiveTimestampsNeverEscape` (all three fields).
+3. MEDIUM future `LastModified`. RED: `+61 s` returned `Available`. Fix: `FUTURE_TOLERANCE` 60 s, also in `contracts/senamhi-relay.json` (`future_tolerance_seconds`) and pinned by the contract test; beyond it `RELAY_UNREADABLE` with a capped detail. Commit ce5797d. Tests: `TestAFutureLastModifiedIsBoundedNotFresh` (+59 s fresh, +61 s unreadable). Gotcha: the `_relay_object` default `last_modified` was built from `NOW` (October) while tests parse at `PARSE_NOW` (September); the old clamp hid it, the bound exposed it, so the default now derives from `PARSE_NOW`.
+4. MEDIUM unbounded exception message in detail. RED: newline survived in `unexpected RuntimeError: ...`. Fix: `_unexpected` runs the message through `sanitize_source_text` and a 100-char cap, keeping the `unexpected <Type>: ` prefix. Short clean messages are byte-identical (scraper parity kept); long or dirty ones diverge on purpose. Commit 41b44e6. Tests: `TestAnUnexpectedExceptionMessageIsSanitizedAndCapped`.
+
+Tasks 2.17a (log writer JSON-encodes and sanitizes `version_id`) and 2.17b (reader enforces `MAX_OBJECT_BYTES` before read/decode) were added to Phase 2 in tasks.md.
+
+Gate after fixes: `uv run pytest` 1230 passed, 15 deselected; `uv run --directory agent pytest` 32 passed; `ruff check` clean; `ruff format --check` 118 files formatted; `mypy` no issues in 48 files.
