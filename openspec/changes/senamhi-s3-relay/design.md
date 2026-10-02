@@ -220,7 +220,7 @@ Write audit for this bucket: see D46.
 
 The old object is only ever replaced by a page that parsed. A failing producer leaves the last good object to age out into `STALE_RELAY` (R5).
 
-launchd: a template at `ops/launchd/pe.ferrenafe.relay-push.plist` with placeholders (repo path, bucket name, no secret). It contains `StartCalendarInterval` `{Minute: 0}` (hourly, on the hour; see D47, which replaced `StartInterval 3600` after Phase 0), `RunAtLoad true`, `ProgramArguments` `uv run --directory <repo> rain-alert-relay-push`, `EnvironmentVariables` `AWS_PROFILE=ferrenafe-relay`, `AWS_REGION=us-east-2`, `RAIN_ALERT_RELAY_BUCKET=<bucket>`, and stdout/stderr to `~/Library/Logs/ferrenafe-relay/push.log`. An hourly push against a 3 h limit tolerates two missed pushes. Sleep and wake behaviour: D47.
+launchd: a template at `ops/launchd/pe.ferrenafe.relay-push.plist` with placeholders (repo path, bucket name, no secret). It contains `StartCalendarInterval` `{Minute: 0}` (hourly, on the hour; see D47, which replaced `StartInterval 3600` after Phase 0), `RunAtLoad true`, `ProgramArguments` `uv run --frozen --directory <repo> rain-alert-relay-push`, `EnvironmentVariables` `AWS_PROFILE=ferrenafe-relay`, `AWS_REGION=us-east-2`, `RAIN_ALERT_RELAY_BUCKET=<bucket>`, and stdout/stderr to `~/Library/Logs/ferrenafe-relay/push.log`. An hourly push against a 3 h limit tolerates two missed pushes. Sleep and wake behaviour: D47.
 
 ### D43: Wiring: presence of the variable selects relay mode, and there is never a fallback (R7)
 
@@ -318,6 +318,15 @@ The plist key is a single dictionary, `<key>StartCalendarInterval</key><dict><ke
 **Residual risk, not removed by this decision.** A Mac that is powered off, logged out (a LaunchAgent needs the user session, D36), or asleep for long still lets the relay go stale. Nothing on the Mac can fix that. R1 (freshness) and R2 (the alarm after 2 consecutive degraded cycles) make it visible, and R4's always-on producer before 2026-12-01 is the real remedy. The deadline stands.
 
 **Still to observe live (L.4).** The coalesced run on wake, and the log line it writes.
+
+**Review amendments to D42/D47 (PR-3 security review).**
+
+- **(a) `RunAtLoad true` is intentional.** The producer pushes at once on login or load, for example after the Mac was off, instead of waiting for the next `:00`. The plist says so in a comment.
+- **(b) `uv run --frozen`.** The job never re-resolves the lockfile over the network each hour. The plist also recommends `chmod 700` on the log directory.
+- **(c) Optional `ExpectedBucketOwner`.** `RAIN_ALERT_RELAY_BUCKET_OWNER`, when set to a 12-digit account id, is passed to `put_object`; when unset the parameter is omitted; an invalid value exits 1 (not configured) before any fetch or PUT. The plist shows only an `<account>` placeholder.
+- **(d) Other review fixes.** Any non-`FetchError` exception from the parse gate exits 2 with only the exception type name (no traceback, no page text). The download is capped in flight at `MAX_OBJECT_BYTES` with a 30 s overall deadline (`HttpxHtmlFetcher(max_bytes=, deadline_seconds=)`; default `None` leaves the scraper unchanged).
+- **(e) ACCEPTED RISK: the parse gate validates structure, not authenticity or SENAMHI-side freshness.** A frozen-but-valid SENAMHI page gets a fresh `fetched-at` every hour. An "unchanged content" alarm is rejected: warning pages legitimately stay unchanged for many hours, so it would raise false alarms. TLS to the hardcoded `https://www.senamhi.gob.pe/` is the integrity control. Revisit with the second producer (cross-check), consistent with R5.
+
 
 ---
 

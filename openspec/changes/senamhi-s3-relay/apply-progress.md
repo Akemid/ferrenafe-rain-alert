@@ -143,3 +143,14 @@ Tasks 3.1-3.12 done. 3.13 (security review) open. Strict TDD, RED confirmed per 
 ## Gate (PR 3)
 
 `uv run pytest` 1335 passed, 15 deselected. `uv run --directory agent pytest` 32 passed. `ruff check` clean. `ruff format --check` 127 files formatted. `mypy` no issues in 50 files. `uv run rain-alert-relay-push --help` exits 0 offline; with no bucket variable it exits 1.
+
+## PR-3 review fixes (post security review of 3.13)
+
+Commits, each RED first:
+- c6d0103 any gate exception exits 2 naming only the type. RED: `_PageDerivedError` propagated out of `main` (tests/support/fakes.py:351 raise).
+- 2dcacc2 in-flight cap and overall deadline. RED: `TypeError ... unexpected keyword argument 'max_bytes'` / `'deadline_seconds'` (test_http.py), then `AttributeError ... no attribute 'FETCH_DEADLINE_SECONDS'` (test_relay_push.py). `HttpxHtmlFetcher` streams only when a bound is set; default path unchanged. Cap breach is TRANSPORT_ERROR, deadline is TIMEOUT.
+- 9a42986 `uv run --frozen`, optional `RAIN_ALERT_RELAY_BUCKET_OWNER` -> `ExpectedBucketOwner`, plist comments. RED: `AttributeError ... no attribute 'BUCKET_OWNER_ENV_VAR'` plus plist assertions. Tests build the 12-digit id at runtime because the hygiene scan rejects literals.
+- b069d05 unused argparse `message` deleted deliberately (`del message`).
+- design.md D42/D47 amended (RunAtLoad intentional, --frozen, ExpectedBucketOwner, accepted structure-not-authenticity risk).
+
+Gate: pytest 1349 passed, 15 deselected; agent 32 passed; ruff check clean; ruff format 127 files formatted; mypy no issues in 50 files.
