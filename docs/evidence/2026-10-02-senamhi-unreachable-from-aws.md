@@ -117,3 +117,25 @@ Recorded because they are reusable, not because they changed the result:
 | sa-east-1 | function `ferrenafe-senamhi-probe-tmp` | `GetFunction` | `ResourceNotFoundException` |
 | global | role (recreated for sa-east-1) | `GetRole` | `NoSuchEntity` |
 | sa-east-1 | temporary bucket `ferrenafe-probe-tmp-f6d2c7f67a` | `HeadBucket` | `404 Not Found` |
+
+## 9. Live response charset and size (task V.6 of `senamhi-s3-relay`)
+
+Read-only check from the developer's machine, plain GET, no AWS. It used
+`curl` and the Python standard library, not `HttpxHtmlFetcher`:
+
+```bash
+curl -s -m 15 -D - -o senamhi.html "https://www.senamhi.gob.pe/?dp=lambayeque&p=aviso-meteorologico" | grep -iE "^HTTP|content-type"
+grep -ioE '<meta[^>]*charset[^>]*>' senamhi.html
+python3 -c "b=open('senamhi.html','rb').read(); print('bytes',len(b)); b.decode('utf-8'); print('strict utf-8: OK')"
+```
+
+```
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=UTF-8
+<meta charset="utf-8">
+bytes 523653
+strict utf-8: OK
+```
+
+The page is UTF-8 by header and by meta tag. It decodes strictly, and at
+523,653 bytes it is about 12 % of the relay's 4 MiB size cap.

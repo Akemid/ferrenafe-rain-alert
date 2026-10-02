@@ -6,6 +6,8 @@ This design exceeds the 800-word SDD budget on purpose, as `scheduled-cycle/desi
 
 **Verification status, stated up front.** The AWS documentation tools (`aws-mcp`) were not reachable from this phase. Every AWS behaviour below that the design depends on is cited by URL and listed under *To verify at apply*, with the check that has to run. Nothing here is load-bearing on memory without being flagged.
 
+**Phase 0 amendment, 2026-10-02.** Phase 0 checked the To-verify list (Engram observation 2706, topic `sdd/senamhi-s3-relay/phase0-verification`; tasks.md Phase 0 has the verdicts). Three results contradicted this design, and the design now reflects them: D40 (a 6 h alarm uses a sliding window, not a wall-clock-aligned one), D42/D47 (`StartInterval` misses runs while the Mac sleeps, so the producer now uses `StartCalendarInterval`), and D46 (the CDK `Trail` L2 emits classic event selectors only). Section 5 records each item's verdict.
+
 ---
 
 ## 1. Technical Approach
@@ -164,10 +166,23 @@ The mapping uses `ClientError.response["Error"]["Code"]`, not `client.exceptions
 |---|---|---|
 | Filter | `FilterPattern.stringValue('$.event', '=', 'senamhi_relay')`, `metricValue: '$.degraded'`, no `defaultValue` | Healthy cycles publish `0`. A cycle that never ran publishes **nothing** |
 | Metric | `FerrenafeRainAlert/SenamhiRelayDegraded`, statistic **Maximum** | A Scheduler retry can put two records in one period. Maximum keeps "any degraded" and does not double-count |
-| Period | 6 h | One cycle per period. The cron fires at 05/11/17/23 UTC, an hour before each 6 h UTC boundary, and `maxEventAge` is 1 h, so a retry cannot cross into the next period (*To verify* 3: alignment) |
+| Period | 6 h (21600 s), **a sliding window** | One schedule interval per window. See *Window semantics* below. Amended after Phase 0: the earlier claim that windows line up with 6 h UTC boundaries was wrong |
 | `evaluationPeriods` / `datapointsToAlarm` | 2 / 2 | "Two consecutive degraded cycles" (R2). Mixed reasons count, because the value is 1 either way |
 | `treatMissingData` | **BREACHING** | A stopped Lambda, a disabled schedule or a missing env var must never read as OK. This duplicates `NoInvocationsAlarm` on purpose: the cost is a second email, and the alternative is silence |
 | Action | existing `AlarmsTopic` | Reuses the `alarmEmail` subscription (R2) |
+
+**Window semantics (amended after Phase 0, Engram 2706).** CloudWatch offers wall-clock-aligned alarm windows only for 60, 300, 3600, 86400 and 604800 s periods. A 21600 s alarm therefore evaluates a *sliding* 6 h window. Nothing in the documentation says when those windows start, so this design no longer assumes they line up with the 00/06/12/18 America/Lima schedule (05/11/17/23 UTC). The configuration still holds without that assumption. The argument:
+- The schedule has `TimeWindow.off()`, `maxEventAge` 1 h and 2 retries (`scheduled-cycle-stack.ts`). Two consecutive healthy records are therefore between 5 h and 7 h apart.
+- Two consecutive 6 h windows cover 12 h. When every cycle runs, any 12 h span holds at least one record, so both windows can never be empty or breaching at once. **Normal operation cannot alarm.** Ingestion delay on the metric filter does not change this, because a datapoint keeps its log-event timestamp.
+- A single late or missing cycle empties one window at most, and 2/2 tolerates that.
+- Two consecutive degraded records (value 1), or one degraded record next to one missing cycle, breach both windows. That gives the R2 meaning, with "never ran" counted as degraded. This is the same accepted behaviour as before the amendment.
+
+**Unproven, carried to Phase L (L.9):** how often a 21600 s alarm is evaluated, and the observed transition delay. A template test proves configuration only.
+
+Alternatives for the period, considered after Phase 0:
+- *3600 s, wall-clock-aligned, larger M/N* (for example 2 of 12). Rejected. Five of every six hourly windows hold no cycle, so `treatMissingData: breaching` would keep the alarm permanently in ALARM. Switching to `notBreaching` or `ignore` would drop the "a cycle that never ran is degraded" signal, which this alarm duplicates from `NoInvocationsAlarm` on purpose.
+- *86400 s, aligned.* Rejected. One window holds four cycles, so 2 consecutive periods would mean about 48 h before anyone hears about it.
+- *21600 s sliding, 2/2, breaching.* **Kept**, for the reasons above.
 
 Alternatives rejected: an EMF metric (needs the same stdout discipline plus the EMF envelope, with nothing gained over a filter on our own record); `put_metric_data` from the Lambda (a new IAM grant and a network call on the cycle path); `Sum >= 2` over one 12 h period (fires on one degraded cycle plus one missing period, and loses the "consecutive" meaning).
 
@@ -205,7 +220,7 @@ Write audit for this bucket: see D46.
 
 The old object is only ever replaced by a page that parsed. A failing producer leaves the last good object to age out into `STALE_RELAY` (R5).
 
-launchd: a template at `ops/launchd/pe.ferrenafe.relay-push.plist` with placeholders (repo path, bucket name, no secret). It contains `StartInterval 3600`, `RunAtLoad true`, `ProgramArguments` `uv run --directory <repo> rain-alert-relay-push`, `EnvironmentVariables` `AWS_PROFILE=ferrenafe-relay`, `AWS_REGION=us-east-2`, `RAIN_ALERT_RELAY_BUCKET=<bucket>`, and stdout/stderr to `~/Library/Logs/ferrenafe-relay/push.log`. An hourly push against a 3 h limit tolerates two missed pushes. Sleep behaviour is under *To verify* 7.
+launchd: a template at `ops/launchd/pe.ferrenafe.relay-push.plist` with placeholders (repo path, bucket name, no secret). It contains `StartCalendarInterval` `{Minute: 0}` (hourly, on the hour; see D47, which replaced `StartInterval 3600` after Phase 0), `RunAtLoad true`, `ProgramArguments` `uv run --directory <repo> rain-alert-relay-push`, `EnvironmentVariables` `AWS_PROFILE=ferrenafe-relay`, `AWS_REGION=us-east-2`, `RAIN_ALERT_RELAY_BUCKET=<bucket>`, and stdout/stderr to `~/Library/Logs/ferrenafe-relay/push.log`. An hourly push against a 3 h limit tolerates two missed pushes. Sleep and wake behaviour: D47.
 
 ### D43: Wiring: presence of the variable selects relay mode, and there is never a fallback (R7)
 
@@ -237,7 +252,7 @@ Red-first order:
 | 7 | Outage notice names `stale_relay` plus the VersionId; resident message for `STALE_RELAY` is byte-identical to `TIMEOUT` | domain |
 | 8 | `relay_push.main`: fetch fail, parse fail and oversized each give zero `put_object` calls and the right exit code; success gives exactly one PUT with the D37 headers and metadata | entrypoint |
 | 9 | CDK: BLOCK_ALL, versioning, SSE, lifecycle 90 d, `DeletionPolicy: Retain`, SSL deny; Lambda role relay statements are exactly `GetObject` on `<bucket>/senamhi/lambayeque/latest.html` and `ListBucket` on the bucket; `RelayWriter` has `PutObject` only on that key; user has exactly one policy; `AWS::IAM::AccessKey` count 0; no `BucketName`; env var present; filter pattern and `metricValue`; alarm `Maximum`/21600/2/2/`breaching`/topic; `relayEnabled=false` removes the env var and the alarm | `infra/test` |
-| 10 | CDK (D46): exactly one trail; one advanced selector `Data` / `AWS::S3::Object` / `readOnly=false` / ARN prefix = relay bucket; management events off; file validation on; log bucket BLOCK_ALL, SSL deny, expiry 400 d, `Retain`, no `BucketName`; trail still present with `relayEnabled=false` | `infra/test` |
+| 10 | CDK (D46, classic selectors): exactly one trail; `IsMultiRegionTrail: false`; `IncludeGlobalServiceEvents: false`; exactly one `EventSelectors` entry `{ReadWriteType: WriteOnly, IncludeManagementEvents: false, DataResources: [{Type: AWS::S3::Object, Values: [<relay bucket ARN>/]}]}`; no `AdvancedEventSelectors`; no CloudWatch Logs delivery; file validation on; log bucket BLOCK_ALL, SSL deny, expiry 400 d, `Retain`, no `BucketName`; trail still present with `relayEnabled=false` | `infra/test` |
 
 The architecture test is extended so that `adapters/senamhi_relay.py` and `adapters/s3_relay_reader.py` import nothing from `entrypoints`.
 
@@ -272,15 +287,37 @@ The bucket is retained as the audit trail. A console edit of the env var is drif
 | Add data-event selectors to an existing account trail | Rejected. That trail is outside this stack, so the selector would be console or CLI drift (the D34 trap), invisible to `cdk diff` and untestable by a template assertion |
 | **Dedicated trail in `ScheduledCycleStack`** | **Chosen.** Declarative, asserted in `infra/test`, removed or kept with the rest of the relay. If an account trail already exists, it keeps its management events and this trail adds nothing to it |
 
-Trail settings:
-- `cloudtrail.Trail` with `includeGlobalServiceEvents: false`, `isMultiRegionTrail: false`, `enableFileValidation: true`, and **management events off** (`managementEvents: ReadWriteType.NONE`), so it never pays for a second copy of management events.
-- One advanced event selector: `eventCategory = Data`, `resources.type = AWS::S3::Object`, `readOnly = false`, `resources.ARN StartsWith <relay bucket ARN>/`. Write-only means `PutObject` and `CopyObject` (the D36 restore) are recorded, and the Lambda's hourly reads are not.
+Trail settings (amended after Phase 0, Engram 2706: **classic event selectors, not advanced**):
+- `cloudtrail.Trail` with `isMultiRegionTrail: false` and `includeGlobalServiceEvents: false`, both set explicitly because the L2 defaults are `true` (`cloudtrail.d.ts`). Also `enableFileValidation: true`, `sendToCloudWatchLogs: false`, and **management events off** (`managementEvents: ReadWriteType.NONE`), so it never pays for a second copy of management events. With `NONE`, the L2 adds no management selector, forces `includeManagementEvents` to `false` on data selectors, and fails validation unless at least one selector exists (`cloudtrail.js`).
+- One classic selector: `trail.addS3EventSelector([{ bucket: relayBucket }], { readWriteType: ReadWriteType.WRITE_ONLY, includeManagementEvents: false })`. There is no `objectPrefix`, so the value is `<relay bucket ARN>/` and it covers the whole bucket. Every write to the bucket is recorded, including writes to a key other than the contract key. The synthesized CFN is `EventSelectors: [{ReadWriteType: WriteOnly, IncludeManagementEvents: false, DataResources: [{Type: AWS::S3::Object, Values: [<bucketArn>/]}]}]`, with no `AdvancedEventSelectors`. Write-only means `PutObject` and `CopyObject` (the D36 restore) are recorded, and the Lambda's hourly reads are not.
+- **Why classic, not advanced.** The pinned `aws-cdk-lib` `Trail` L2 only ever pushes classic `{dataResources, includeManagementEvents, readWriteType}` selectors; advanced selectors exist only on `CfnTrail`/`CfnEventDataStore`. CloudFormation rejects a trail that mixes the two. Advanced selectors would add filtering by `eventName` or `resources.ARN` operators, and no requirement here needs that: write-only plus bucket scope is fully expressible in classic form. A `CfnTrail` escape hatch would mean hand-writing the bucket policy and losing the L2's validation, for no requirement gained. Rejected.
 - Log bucket: its own `s3.Bucket`, `BLOCK_ALL`, `enforceSSL`, `S3_MANAGED`, `BUCKET_OWNER_ENFORCED`, lifecycle expiry 400 days (one full rainy season plus margin), `removalPolicy: RETAIN`, no `bucketName`. CDK adds the CloudTrail bucket policy. No CloudWatch Logs delivery (nothing alarms on it; it is read after an incident).
 - No KMS key: same reasoning as D41.
 
 **Cost.** About 28 write events a day (24 hourly pushes plus manual pushes and restores), roughly 850 a month. Data events are billed per 100,000 events, so this is well under one cent a month, plus negligible S3 storage (https://aws.amazon.com/cloudtrail/pricing/, to confirm at apply).
 
 **Not affected by `relayEnabled=false`.** The trail stays with the bucket, because the audit record must outlive a rollback.
+
+### D47: The producer runs on `StartCalendarInterval`, not `StartInterval` (Phase 0)
+
+**Evidence.** From `man launchd.plist` on the producer Mac (`/usr/share/man/man5/launchd.plist.5`, lines 441-459, read 2026-10-02):
+
+> StartInterval <integer> — This optional key causes the job to be started every N seconds. If the system is asleep during the time of the next scheduled interval firing, that interval will be missed due to shortcomings in kqueue(3). If the job is running during an interval firing, that interval firing will likewise be missed.
+
+> StartCalendarInterval — Unlike cron which skips job invocations when the computer is asleep, launchd will start the job the next time the computer wakes up. If multiple intervals transpire before the computer is woken, those events will be coalesced into one event upon wake from sleep.
+
+| Option | Behaviour after sleep | Decision |
+|---|---|---|
+| `StartInterval 3600` | Every interval that falls during sleep is **missed**. The next run waits for the next firing after wake, up to 1 h, plus whatever drift the interval timer carries | Rejected |
+| **`StartCalendarInterval` `{Minute: 0}`** (hour and day wildcard, so hourly on the hour) | Missed firings coalesce into **one run on wake** | **Chosen** |
+
+The plist key is a single dictionary, `<key>StartCalendarInterval</key><dict><key>Minute</key><integer>0</integer></dict>`. There is no `StartInterval` key. The man page says the two keys are evaluated independently, so carrying both would double-fire. `RunAtLoad true` stays, so a fresh `bootstrap` pushes at once.
+
+**What the operator should expect.** After wake there is one push within seconds. If the network is not up yet, that push fails at the fetch step (exit 2, no PUT, the old object stays), and the next push comes at the next `:00`. The relay therefore goes fresh again within 1 h of wake at the latest. A Mac that sleeps longer than about 3 h makes cycles read `STALE_RELAY`, which is the designed fail-safe direction.
+
+**Residual risk, not removed by this decision.** A Mac that is powered off, logged out (a LaunchAgent needs the user session, D36), or asleep for long still lets the relay go stale. Nothing on the Mac can fix that. R1 (freshness) and R2 (the alarm after 2 consecutive degraded cycles) make it visible, and R4's always-on producer before 2026-12-01 is the real remedy. The deadline stands.
+
+**Still to observe live (L.4).** The coalesced run on wake, and the log line it writes.
 
 ---
 
@@ -314,6 +351,13 @@ Trail settings:
 No open questions remain.
 
 ## 5. To Verify at Apply
+
+**Phase 0 verdicts (2026-10-02, Engram 2706; the per-item table is in tasks.md Phase 0):**
+- Contradicted, then amended: #3 (the alarm window slides, D40), #7 (`StartInterval` misses runs during sleep, D47), #10a (the L2 emits classic selectors only, D46).
+- Partial, with the rest carried to Phase L: #2 (`credential_process` under launchd, L.3), #4 (the single-line record shipped in PR 2; a real event is matched in L.5), #10e/f (denied `PutObject` logged, and `versionId` in the event, L.7).
+- Confirmed: the rest.
+
+The original list follows, unedited.
 
 1. `GetObject` returns 403 rather than 404 for a missing key without `s3:ListBucket`, and whether an `s3:prefix` condition would satisfy it (API_GetObject.html).
 2. The `credential_process` JSON shape and that boto3 honours it from `~/.aws/config`. Also the `security -T` pre-authorization under launchd.
