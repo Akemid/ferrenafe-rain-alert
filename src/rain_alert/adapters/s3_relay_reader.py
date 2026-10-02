@@ -11,6 +11,8 @@ above also guards, but the reader does not rely on it).
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,7 +21,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from rain_alert.adapters.http import FetchError
-from rain_alert.adapters.senamhi_relay import OBJECT_KEY, RelayObject
+from rain_alert.adapters.senamhi_relay import MAX_OBJECT_BYTES, OBJECT_KEY, RelayObject
 from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.values import UnavailableReason
 
@@ -33,6 +35,19 @@ _MAX_TOKEN_LENGTH = 60
 
 def _token(value: str) -> str:
     return sanitize_source_text(value)[:_MAX_TOKEN_LENGTH]
+
+
+def _unreadable(detail: str) -> FetchError:
+    return FetchError(UnavailableReason.RELAY_UNREADABLE, detail)
+
+
+def _charset(content_type: str) -> str | None:
+    """The declared charset of a `Content-Type` value, lowercased, or `None`."""
+    for part in content_type.split(";")[1:]:
+        name, _, value = part.partition("=")
+        if name.strip().lower() == "charset":
+            return value.strip().strip('"').lower()
+    return None
 
 
 def _parse_claim(raw: str | None) -> datetime | None:
@@ -91,12 +106,44 @@ class S3RelayReader:
 
         body = response["Body"]
         try:
-            data: bytes = body.read()
+            return self._decode(response, body)
         finally:
             body.close()
+
+    @staticmethod
+    def _decode(response: dict[str, Any], body: Any) -> RelayObject:
+        """Validate and decode one response. The caller closes `body`.
+
+        Order matters: the size is checked from `ContentLength` before a single
+        byte is read, then the read itself is bounded to `cap + 1` bytes in
+        case `ContentLength` lies, so a hostile object never reaches memory,
+        the decoder or the parser.
+        """
+        if response.get("ContentLength", 0) > MAX_OBJECT_BYTES:
+            raise _unreadable(f"relay object is over the {MAX_OBJECT_BYTES}-byte cap (ContentLength)")
+        charset = _charset(str(response.get("ContentType", "")))
+        if charset != "utf-8":
+            raise _unreadable(f"relay object charset is not utf-8: {_token(charset or 'absent')}")
+        try:
+            data: bytes = body.read(MAX_OBJECT_BYTES + 1)
+        except (BotoCoreError, OSError) as exc:
+            raise _unreadable(f"relay object body read failed: {type(exc).__name__}") from exc
+        if len(data) > MAX_OBJECT_BYTES:
+            raise _unreadable(f"relay object is over the {MAX_OBJECT_BYTES}-byte cap (body)")
+        if not data:
+            raise _unreadable("relay object is empty")
         metadata = response.get("Metadata", {})
+        expected = str(metadata.get("sha256", "")).lower()
+        if not expected:
+            raise _unreadable("relay object has no sha256 metadata")
+        if not hmac.compare_digest(expected, hashlib.sha256(data).hexdigest()):
+            raise _unreadable("relay object sha256 does not match its body")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise _unreadable("relay object is not valid utf-8") from exc
         return RelayObject(
-            text=data.decode("utf-8"),
+            text=text,
             last_modified=response["LastModified"],
             version_id=response.get("VersionId"),
             claimed_fetched_at=_parse_claim(metadata.get("fetched-at")),

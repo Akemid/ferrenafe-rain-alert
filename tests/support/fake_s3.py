@@ -23,14 +23,17 @@ def client_error(code: str, operation: str = "GetObject") -> ClientError:
 class TrackingBody:
     """A `StreamingBody` stand-in recording how it was used."""
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, error: Exception | None = None) -> None:
         self._data = data
+        self._error = error
         self._offset = 0
         self.read_sizes: list[int | None] = []
         self.closed = False
 
     def read(self, amt: int | None = None) -> bytes:
         self.read_sizes.append(amt)
+        if self._error is not None:
+            raise self._error
         end = len(self._data) if amt is None else self._offset + amt
         chunk = self._data[self._offset : end]
         self._offset += len(chunk)
@@ -53,6 +56,7 @@ class FakeS3Client:
         version_id: str | None = "v1",
         metadata: dict[str, str] | None = None,
         error: Exception | None = None,
+        body_error: Exception | None = None,
     ) -> None:
         self._body = body
         self._content_length = len(body) if content_length is None else content_length
@@ -61,6 +65,7 @@ class FakeS3Client:
         self._version_id = version_id
         self._metadata = {} if metadata is None else metadata
         self._error = error
+        self._body_error = body_error
         self.body: TrackingBody | None = None
         self.get_calls: list[dict[str, Any]] = []
         self.put_calls: list[dict[str, Any]] = []
@@ -69,7 +74,7 @@ class FakeS3Client:
         self.get_calls.append(kwargs)
         if self._error is not None:
             raise self._error
-        self.body = TrackingBody(self._body)
+        self.body = TrackingBody(self._body, self._body_error)
         response: dict[str, Any] = {
             "Body": self.body,
             "ContentLength": self._content_length,
