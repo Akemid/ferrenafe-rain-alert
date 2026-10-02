@@ -24,6 +24,8 @@ cdk.out/
 
 # Local agent tooling (machine-specific paths)
 .atl/
+# Browser-automation session artifacts (console logs, snapshots)
+.playwright-mcp/
 
 # OS
 .DS_Store
