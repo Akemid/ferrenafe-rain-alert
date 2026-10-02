@@ -31,7 +31,7 @@ The vocabulary. Five `StrEnum` types and two frozen dataclasses.
 | `WarningLevel` | `YELLOW`, `ORANGE`, `RED` |
 | `SourceName` | `SENAMHI`, `OPEN_METEO` |
 | `NoticeKind` | `SOURCE_UNAVAILABLE`, `SOURCES_RECOVERED` |
-| `UnavailableReason` | `TRANSPORT_ERROR`, `TIMEOUT`, `BAD_STATUS`, `MALFORMED_PAYLOAD`, `STRUCTURE_UNRECOGNIZED`, `NO_ROWS_EXTRACTED`, `INSUFFICIENT_HORIZON` |
+| `UnavailableReason` | `TRANSPORT_ERROR`, `TIMEOUT`, `BAD_STATUS`, `MALFORMED_PAYLOAD`, `STRUCTURE_UNRECOGNIZED`, `NO_ROWS_EXTRACTED`, `INSUFFICIENT_HORIZON`, `STALE_RELAY`, `RELAY_MISSING`, `RELAY_UNREADABLE` |
 | `Coordinates` | `latitude`, `longitude` |
 | `TimeWindow` | `start`, `end` |
 
