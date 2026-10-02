@@ -49,3 +49,8 @@ happened.
   — both SENAMHI hosts (scrape page and OGC API) time out at TCP from
   `us-east-2` and `sa-east-1`, answer from outside AWS; probe method, raw
   output, verified cleanup.
+- [`2026-10-02-agent-composer-switched-on.md`](2026-10-02-agent-composer-switched-on.md)
+  — task O.8: the agent composer switched on in SSM with no deploy, the first
+  agent-composed message (a dry run against the production runtime), the
+  owner's acceptance of its wording, and a first attempt that hit the stale
+  `us-east-1` runtime because boto3 ignored `AWS_REGION`.
