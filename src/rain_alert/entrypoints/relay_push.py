@@ -53,6 +53,9 @@ CONNECT_TIMEOUT = 3.0
 READ_TIMEOUT = 10.0
 TOTAL_MAX_ATTEMPTS = 2
 
+#: Overall wall-clock bound on the page download (the httpx read timeout is per chunk).
+FETCH_DEADLINE_SECONDS = 30.0
+
 _MAX_TOKEN_LENGTH = 60
 
 
@@ -110,7 +113,11 @@ def main(
 
     moment = now if now is not None else datetime.now(UTC)
     try:
-        html = (fetcher if fetcher is not None else HttpxHtmlFetcher()).fetch(warnings_url_for(REGION))
+        html = (
+            fetcher
+            if fetcher is not None
+            else HttpxHtmlFetcher(max_bytes=MAX_OBJECT_BYTES, deadline_seconds=FETCH_DEADLINE_SECONDS)
+        ).fetch(warnings_url_for(REGION))
         outcome = parse_warnings_page(html, REGION, moment)
         body = html.encode("utf-8")
     except FetchError as exc:

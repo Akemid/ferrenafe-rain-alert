@@ -14,7 +14,8 @@ Two rules carry this module:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from typing import Protocol
 
 import httpx
@@ -68,12 +69,55 @@ def fetch_text(client: httpx.Client, url: str, params: QueryParams | None = None
 
 class HttpxHtmlFetcher:
     """`HtmlFetcher` over `httpx`. The transport is injectable so the same
-    class is exercised offline through `httpx.MockTransport`."""
+    class is exercised offline through `httpx.MockTransport`.
 
-    def __init__(self, transport: httpx.BaseTransport | None = None, timeout: httpx.Timeout = DEFAULT_TIMEOUT) -> None:
+    By default the body is buffered whole, exactly as `fetch_text` does. Setting
+    `max_bytes` and/or `deadline_seconds` switches to a streamed read that
+    aborts as soon as the (decoded) body exceeds the cap or the overall deadline
+    passes, so a hostile or runaway server cannot make the caller buffer an
+    unbounded body or hold a per-chunk timeout open forever.
+    """
+
+    def __init__(
+        self,
+        transport: httpx.BaseTransport | None = None,
+        timeout: httpx.Timeout = DEFAULT_TIMEOUT,
+        *,
+        max_bytes: int | None = None,
+        deadline_seconds: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._transport = transport
         self._timeout = timeout
+        self._max_bytes = max_bytes
+        self._deadline_seconds = deadline_seconds
+        self._clock = clock
 
     def fetch(self, url: str) -> str:
         with httpx.Client(transport=self._transport, timeout=self._timeout) as client:
-            return fetch_text(client, url)
+            if self._max_bytes is None and self._deadline_seconds is None:
+                return fetch_text(client, url)
+            return self._fetch_bounded(client, url)
+
+    def _fetch_bounded(self, client: httpx.Client, url: str) -> str:
+        started = self._clock()
+        try:
+            with client.stream("GET", url) as response:
+                if not response.is_success:
+                    raise FetchError(UnavailableReason.BAD_STATUS, f"HTTP {response.status_code} from {url}")
+                received = bytearray()
+                for chunk in response.iter_bytes():
+                    received += chunk
+                    if self._max_bytes is not None and len(received) > self._max_bytes:
+                        raise FetchError(
+                            UnavailableReason.TRANSPORT_ERROR, f"response body exceeds {self._max_bytes} bytes"
+                        )
+                    if self._deadline_seconds is not None and self._clock() - started > self._deadline_seconds:
+                        raise FetchError(
+                            UnavailableReason.TIMEOUT, f"download exceeded the {self._deadline_seconds}s deadline"
+                        )
+                return bytes(received).decode(response.encoding or "utf-8", errors="replace")
+        except httpx.TimeoutException as exc:
+            raise FetchError(UnavailableReason.TIMEOUT, f"{type(exc).__name__}: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise FetchError(UnavailableReason.TRANSPORT_ERROR, f"{type(exc).__name__}: {exc}") from exc

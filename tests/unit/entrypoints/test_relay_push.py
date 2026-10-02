@@ -122,6 +122,23 @@ def test_an_unexpected_gate_exception_exits_2_naming_only_the_type(capsys: pytes
     assert err.count("\n") == 1
 
 
+@pytest.mark.usefixtures("configured")
+def test_the_default_fetcher_is_capped_at_the_object_limit_with_an_overall_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: list[dict[str, Any]] = []
+
+    class _RecordingFetcher(FakeHtmlFetcher):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(_valid_page())
+            built.append(kwargs)
+
+    monkeypatch.setattr(relay_push, "HttpxHtmlFetcher", _RecordingFetcher)
+
+    assert relay_push.main([], client=FakeS3Client(), now=NOW) == 0
+    assert built == [{"max_bytes": MAX_OBJECT_BYTES, "deadline_seconds": relay_push.FETCH_DEADLINE_SECONDS}]
+
+
 def _valid_page() -> str:
     return SENAMHI_ACTIVE_WARNING.read_text(encoding="utf-8")
 
