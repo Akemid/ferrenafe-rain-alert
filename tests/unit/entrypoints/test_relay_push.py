@@ -353,3 +353,14 @@ class TestTheProducerReaderRoundTrip:
 
         assert code == 2
         assert S3RelayReader(BUCKET, client=client).read().text == "<html>last good</html>"
+
+
+def test_the_console_script_is_registered_and_points_at_main() -> None:
+    import tomllib
+
+    from tests.hygiene.test_repo_hygiene import REPO_ROOT
+
+    scripts = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
+
+    assert scripts["rain-alert-relay-push"] == "rain_alert.entrypoints.relay_push:main"
+    assert scripts["rain-alert-cycle"] == "rain_alert.entrypoints.cli:main"
