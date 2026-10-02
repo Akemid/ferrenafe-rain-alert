@@ -9,9 +9,17 @@ fails as `AccessDenied` on every cycle (design.md D37).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
+from rain_alert.adapters.http import FetchError
+from rain_alert.adapters.senamhi_scraper import parse_notes, parse_warnings_page
+from rain_alert.domain.entities import Warning
 from rain_alert.domain.sanitize import sanitize_source_text
+from rain_alert.domain.sources import Available, SourceResult, Unavailable
+from rain_alert.domain.values import SourceName, UnavailableReason
 
 #: The single object the Lambda may read. Not configurable by env: the IAM grant
 #: names exactly this key, so an override could only ever produce a denial.
@@ -25,6 +33,31 @@ MAX_OBJECT_BYTES = 4194304
 
 #: Producer-vs-S3 clock disagreement above which the operator is told.
 SKEW_TOLERANCE = timedelta(seconds=900)
+
+
+@dataclass(frozen=True, slots=True)
+class RelayObject:
+    """What one read of the relay object produced.
+
+    `last_modified` is S3's server clock and is the only authority on
+    freshness (R1). `claimed_fetched_at` is what the producer says it fetched
+    at: informational, used only for the skew note.
+    """
+
+    text: str
+    last_modified: datetime
+    version_id: str | None
+    claimed_fetched_at: datetime | None
+
+
+class RelayObjectReader(Protocol):
+    """The adapter-internal seam under `RelayWarningProvider`, like `HtmlFetcher`.
+
+    Raises:
+        FetchError: `RELAY_MISSING` or `RELAY_UNREADABLE`.
+    """
+
+    def read(self) -> RelayObject: ...
 
 
 def relay_age(last_modified: datetime, now: datetime) -> timedelta:
@@ -104,3 +137,117 @@ def relay_detail(
     if skew is not None:
         parts.append(f"skew={_signed_minutes(skew)}")
     return " ".join(parts)[:MAX_DETAIL_LENGTH]
+
+
+def _whole_seconds(delta: timedelta) -> int:
+    return int(delta.total_seconds())
+
+
+def _optional_seconds(delta: timedelta | None) -> int | None:
+    return None if delta is None else _whole_seconds(delta)
+
+
+@dataclass(frozen=True, slots=True)
+class RelayReadRecord:
+    """The facts of one relay read, handed to `on_read` exactly once.
+
+    `degraded` is `1` for **every** `Unavailable` the provider returns,
+    including a parse failure of a fresh object (design.md D40). It is the
+    value the CloudWatch metric filter publishes, so the object facts stay
+    `None` when the read never produced an object.
+    """
+
+    degraded: int
+    reason: UnavailableReason | None
+    version_id: str | None
+    last_modified: datetime | None
+    age_seconds: int | None
+    skew_seconds: int | None
+
+
+class RelayWarningProvider:
+    """`WarningProvider` over one S3 object that an off-AWS producer keeps fresh."""
+
+    def __init__(
+        self,
+        reader: RelayObjectReader,
+        *,
+        on_read: Callable[[RelayReadRecord], None] = lambda _: None,
+        max_age: timedelta = MAX_AGE,
+        skew_tolerance: timedelta = SKEW_TOLERANCE,
+    ) -> None:
+        self._reader = reader
+        self._on_read = on_read
+        self._max_age = max_age
+        self._skew_tolerance = skew_tolerance
+
+    def fetch_current_warnings(self, region: str, now: datetime) -> SourceResult[tuple[Warning, ...]]:
+        """Read, freshness-check and parse the relay object. No exception escapes.
+
+        Every path emits exactly one `RelayReadRecord` through `on_read`, so a
+        degraded cycle is always visible to the alarm.
+        """
+        try:
+            obj = self._reader.read()
+        except FetchError as exc:
+            return self._failed(now, exc.reason, exc.detail)
+        except Exception as exc:  # noqa: BLE001 - nothing may escape: the cycle has no handler
+            return self._failed(now, UnavailableReason.RELAY_UNREADABLE, f"unexpected {type(exc).__name__}: {exc}")
+
+        age = relay_age(obj.last_modified, now)
+        drift = skew(obj.claimed_fetched_at, obj.last_modified)
+        if is_stale(age, self._max_age):
+            detail = relay_detail(
+                version_id=obj.version_id,
+                age=age,
+                max_age=self._max_age,
+                last_modified=obj.last_modified,
+                skew=drift,
+            )
+            return self._failed(now, UnavailableReason.STALE_RELAY, detail, obj, age, drift)
+
+        try:
+            outcome = parse_warnings_page(obj.text, region, now)
+        except FetchError as exc:
+            return self._failed(now, exc.reason, exc.detail, obj, age, drift)
+        except Exception as exc:  # noqa: BLE001 - a parser bug must degrade the cycle, not abort it
+            return self._failed(
+                now, UnavailableReason.TRANSPORT_ERROR, f"unexpected {type(exc).__name__}: {exc}", obj, age, drift
+            )
+
+        notes = parse_notes(outcome)
+        extra = skew_note(obj.claimed_fetched_at, obj.last_modified, self._skew_tolerance)
+        if extra is not None:
+            notes = (*notes, extra)
+        self._on_read(
+            RelayReadRecord(
+                degraded=0,
+                reason=None,
+                version_id=obj.version_id,
+                last_modified=obj.last_modified,
+                age_seconds=_whole_seconds(age),
+                skew_seconds=_optional_seconds(drift),
+            )
+        )
+        return Available(data=outcome.warnings, fetched_at=min(obj.last_modified, now), notes=notes)
+
+    def _failed(
+        self,
+        now: datetime,
+        reason: UnavailableReason,
+        detail: str,
+        obj: RelayObject | None = None,
+        age: timedelta | None = None,
+        drift: timedelta | None = None,
+    ) -> Unavailable:
+        self._on_read(
+            RelayReadRecord(
+                degraded=1,
+                reason=reason,
+                version_id=obj.version_id if obj is not None else None,
+                last_modified=obj.last_modified if obj is not None else None,
+                age_seconds=_optional_seconds(age),
+                skew_seconds=_optional_seconds(drift),
+            )
+        )
+        return Unavailable(source=SourceName.SENAMHI, reason=reason, detail=detail, observed_at=now)
