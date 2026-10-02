@@ -59,11 +59,12 @@ def _parse_claim(raw: str | None) -> datetime | None:
         return None
     try:
         claimed = datetime.fromisoformat(raw)
-    except ValueError:
+        if claimed.tzinfo is None or claimed.utcoffset() is None:
+            return None
+        # Near datetime.min/max the UTC conversion overflows; the claim is informational, so ignore it.
+        return claimed.astimezone(UTC)
+    except (ValueError, OverflowError):
         return None
-    if claimed.tzinfo is None or claimed.utcoffset() is None:
-        return None
-    return claimed.astimezone(UTC)
 
 
 class S3RelayReader:

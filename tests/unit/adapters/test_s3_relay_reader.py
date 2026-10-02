@@ -89,7 +89,10 @@ def test_a_missing_version_id_and_claim_are_none() -> None:
     assert obj.claimed_fetched_at is None
 
 
-@pytest.mark.parametrize("claim", ["not a timestamp", "2026-10-02T04:59:30", ""])
+@pytest.mark.parametrize(
+    "claim",
+    ["not a timestamp", "2026-10-02T04:59:30", "", "0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"],
+)
 def test_an_unparseable_or_naive_claim_is_ignored(claim: str) -> None:
     obj = _reader(_client(metadata={"sha256": SHA, "fetched-at": claim})).read()
 
