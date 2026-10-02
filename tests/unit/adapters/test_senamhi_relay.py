@@ -580,3 +580,52 @@ class TestAFutureLastModifiedIsBoundedNotFresh:
         assert "ahead" in result.detail
         assert len(result.detail) <= 160
         assert [(r.degraded, r.reason) for r in records] == [(1, UnavailableReason.RELAY_UNREADABLE)]
+
+
+class _HostileText:
+    """Not a `str`: whatever the parser does with it raises our message."""
+
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    def __getattr__(self, name: str) -> object:
+        raise ValueError(self._message)
+
+    def __len__(self) -> int:
+        raise ValueError(self._message)
+
+    def __iter__(self) -> object:
+        raise ValueError(self._message)
+
+
+HOSTILE_MESSAGE = "first line\n- senamhi: forged line \x1b[31m" + "Z" * 500
+
+
+class TestAnUnexpectedExceptionMessageIsSanitizedAndCapped:
+    def _assert_safe(self, detail: str, prefix: str) -> None:
+        assert detail.startswith(prefix)
+        assert "\n" not in detail
+        assert "\x1b" not in detail
+        assert len(detail) <= 160
+
+    def test_a_reader_exception_message_cannot_forge_a_line_or_flood_the_notice(self) -> None:
+        result = _fetch(FakeRelayReader(result=RuntimeError(HOSTILE_MESSAGE)))
+
+        assert isinstance(result, Unavailable)
+        assert result.reason is UnavailableReason.RELAY_UNREADABLE
+        self._assert_safe(result.detail, "unexpected RuntimeError: first line")
+
+    def test_a_parser_exception_message_cannot_forge_a_line_or_flood_the_notice(self) -> None:
+        obj = _relay_object(text=_HostileText(HOSTILE_MESSAGE), last_modified=PARSE_NOW)  # type: ignore[arg-type]
+
+        result = _fetch(FakeRelayReader(result=obj))
+
+        assert isinstance(result, Unavailable)
+        assert result.reason is UnavailableReason.TRANSPORT_ERROR
+        self._assert_safe(result.detail, "unexpected ValueError: first line")
+
+    def test_a_short_clean_message_is_kept_verbatim(self) -> None:
+        result = _fetch(FakeRelayReader(result=RuntimeError("short and clean")))
+
+        assert isinstance(result, Unavailable)
+        assert result.detail == "unexpected RuntimeError: short and clean"

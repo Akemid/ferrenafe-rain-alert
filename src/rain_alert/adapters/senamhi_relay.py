@@ -148,6 +148,21 @@ def _is_aware(moment: datetime) -> bool:
     return moment.tzinfo is not None and moment.utcoffset() is not None
 
 
+#: Room for the exception message inside `MAX_DETAIL_LENGTH` after the
+#: `unexpected <Type>: ` prefix. A short clean message passes through unchanged.
+_MAX_EXCEPTION_MESSAGE_LENGTH = 100
+
+
+def _unexpected(exc: Exception) -> str:
+    """`unexpected <Type>: <message>` with the message sanitized and bounded.
+
+    The message can carry anything a library chose to put in it, and it lands
+    in the operator notice, so it is treated like any other source text.
+    """
+    message = sanitize_source_text(str(exc))[:_MAX_EXCEPTION_MESSAGE_LENGTH]
+    return f"unexpected {type(exc).__name__}: {message}"
+
+
 def _whole_seconds(delta: timedelta) -> int:
     return int(delta.total_seconds())
 
@@ -209,7 +224,7 @@ class RelayWarningProvider:
         except FetchError as exc:
             return self._failed(now, exc.reason, exc.detail)
         except Exception as exc:  # noqa: BLE001 - nothing may escape: the cycle has no handler
-            return self._failed(now, UnavailableReason.RELAY_UNREADABLE, f"unexpected {type(exc).__name__}: {exc}")
+            return self._failed(now, UnavailableReason.RELAY_UNREADABLE, _unexpected(exc))
 
         if not _is_aware(obj.last_modified):
             return self._failed(now, UnavailableReason.RELAY_UNREADABLE, "relay LastModified has no timezone")
@@ -240,9 +255,7 @@ class RelayWarningProvider:
         except FetchError as exc:
             return self._failed(now, exc.reason, exc.detail, obj, age, drift)
         except Exception as exc:  # noqa: BLE001 - a parser bug must degrade the cycle, not abort it
-            return self._failed(
-                now, UnavailableReason.TRANSPORT_ERROR, f"unexpected {type(exc).__name__}: {exc}", obj, age, drift
-            )
+            return self._failed(now, UnavailableReason.TRANSPORT_ERROR, _unexpected(exc), obj, age, drift)
 
         notes = parse_notes(outcome)
         extra = skew_note(claimed, obj.last_modified, self._skew_tolerance)
