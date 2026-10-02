@@ -51,7 +51,7 @@ If the claimed producer time differs from `LastModified` by more than 15 minutes
 
 ### Requirement: Distinct unavailable reasons for unreadable relay
 
-A missing key (`NoSuchKey`, HTTP 404) MUST yield `RELAY_MISSING`. Access denied, throttling, or any other S3 or client error MUST yield `RELAY_UNREADABLE`, never `RELAY_MISSING` and never `Available`. An object larger than the size cap, a charset other than UTF-8, a failed strict decode, or a missing or mismatched content hash MUST yield `RELAY_UNREADABLE`, and an oversized body MUST NOT be read. The reader MUST use bounded timeouts and attempts. None of these outcomes may trigger a direct scrape.
+A missing key (S3 error code `NoSuchKey`; a bare HTTP 404 is not sufficient, since `NoSuchBucket` is also a 404) MUST yield `RELAY_MISSING`. Access denied, throttling, or any other S3 or client error MUST yield `RELAY_UNREADABLE`, never `RELAY_MISSING` and never `Available`. An object larger than the size cap, a charset other than UTF-8, a failed strict decode, or a missing or mismatched content hash MUST yield `RELAY_UNREADABLE`, and an oversized body MUST NOT be read. The reader MUST use bounded timeouts and attempts. None of these outcomes may trigger a direct scrape.
 
 #### Scenario: Missing key
 - GIVEN S3 answers `NoSuchKey`

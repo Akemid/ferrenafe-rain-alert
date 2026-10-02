@@ -24,6 +24,7 @@ _STATUS_BY_CODE = {
     "InternalError": 500,
 }
 
+
 def client_error(code: str, operation: str = "GetObject") -> ClientError:
     """A real `ClientError` carrying `code`, shaped as botocore builds it."""
     status = _STATUS_BY_CODE.get(code, 400)

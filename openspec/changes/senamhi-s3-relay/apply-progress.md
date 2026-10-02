@@ -106,3 +106,13 @@ Tasks 2.1-2.18 done (including 2.17a and 2.17b). 2.19 (security review) open. St
 ## Gate (PR 2)
 
 `uv run pytest` 1282 passed, 15 deselected. `uv run --directory agent pytest` 32 passed. `ruff check` clean. `ruff format --check` 124 files formatted. `mypy` no issues in 49 files.
+
+## Review fixes (judgment-day round 1, PR 2)
+
+1. Whitespace bucket: `select_warning_provider` strips the value, so blank goes to `UnconfiguredRelayReader`. RED: `'relay bucket not configured' in 'S3 GetObject failed: ParamValidationError'` (test_wiring.py:306). Commit 04e9394.
+2. `_parse_claim` catches `(ValueError, OverflowError)` around parse and `astimezone`. RED: `OverflowError: date value out of range` (s3_relay_reader.py:66). Commit 5e95ac9.
+3. Body read maps any `Exception` to RELAY_UNREADABLE with the sanitized type name only; module docstring aligned. RED: raw `_TransportBoom` escaped. Commit 9d04829.
+4. `client_error` adds `ResponseMetadata.HTTPStatusCode`. RED: `KeyError: 'ResponseMetadata'`. Commit 1246d00.
+5. Doc: reader keeps `Error.Code == "NoSuchKey"` only; design D39 note and spec wording updated; `NoSuchBucket` -> RELAY_UNREADABLE test added (parametrized with fix 4).
+
+Task 2.19 annotated "review fixes applied"; the security-review checkbox is left open.

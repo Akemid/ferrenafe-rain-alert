@@ -200,7 +200,7 @@ direct scrape), `weather-sources` (relay selected by
 - [x] 2.17b [RED/GREEN] The S3 reader enforces `MAX_OBJECT_BYTES` before reading or decoding: check `ContentLength` first, then a bounded read of at most `cap + 1` bytes. Tests: an oversized `ContentLength` -> `RELAY_UNREADABLE` with `TrackingBody.read` never called; a lying small `ContentLength` with a body larger than the cap -> `RELAY_UNREADABLE` (extends 2.9/2.10).
 
 - [x] 2.18 PR-2 gate: full project gate (as 1.26).
-- [ ] 2.19 **Security review** (fresh context) on the PR-2 branch diff. Scope: exceptions never carry object content into logs; the env-var-empty path cannot reach a direct scrape; no account id in fixtures.
+- [ ] 2.19 **Security review** (fresh context) on the PR-2 branch diff. Scope: exceptions never carry object content into logs; the env-var-empty path cannot reach a direct scrape; no account id in fixtures. Note: review fixes applied (judgment-day round 1); security review still open.
 
 ---
 
