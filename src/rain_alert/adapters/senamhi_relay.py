@@ -9,6 +9,7 @@ fails as `AccessDenied` on every cycle (design.md D37).
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -219,7 +220,7 @@ class RelayWarningProvider:
         extra = skew_note(obj.claimed_fetched_at, obj.last_modified, self._skew_tolerance)
         if extra is not None:
             notes = (*notes, extra)
-        self._on_read(
+        self._emit(
             RelayReadRecord(
                 degraded=0,
                 reason=None,
@@ -240,7 +241,7 @@ class RelayWarningProvider:
         age: timedelta | None = None,
         drift: timedelta | None = None,
     ) -> Unavailable:
-        self._on_read(
+        self._emit(
             RelayReadRecord(
                 degraded=1,
                 reason=reason,
@@ -251,3 +252,14 @@ class RelayWarningProvider:
             )
         )
         return Unavailable(source=SourceName.SENAMHI, reason=reason, detail=detail, observed_at=now)
+
+    def _emit(self, record: RelayReadRecord) -> None:
+        """Hand the record to `on_read`; a failing callback never escapes.
+
+        The callback is observability. If it raised, the cycle would abort and
+        skip Open-Meteo, so the failure is reduced to one line on stderr.
+        """
+        try:
+            self._on_read(record)
+        except Exception as exc:  # noqa: BLE001 - observability must not abort the cycle
+            print(f"senamhi relay on_read callback failed: {type(exc).__name__}", file=sys.stderr)

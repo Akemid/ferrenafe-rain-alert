@@ -485,3 +485,27 @@ class TestOnReadIsCalledExactlyOncePerRead:
         result = _fetch(FakeRelayReader(result=_relay_object(text=_page(SENAMHI_HISTORY_ONLY))))
 
         assert isinstance(result, Available)
+
+
+def _raising_callback(record: RelayReadRecord) -> None:
+    raise RuntimeError("log sink exploded")
+
+
+class TestAFailingOnReadCallbackNeverChangesTheResult:
+    """`on_read` is observability. A raising callback must not abort the cycle
+    (it would skip Open-Meteo) nor change what the provider returns."""
+
+    def _object(self, scenario: str) -> FakeRelayReader:
+        if scenario == "available":
+            return FakeRelayReader(result=_relay_object(text=_page(SENAMHI_HISTORY_ONLY)))
+        if scenario == "stale":
+            return FakeRelayReader(result=_relay_object(last_modified=PARSE_NOW - timedelta(hours=5)))
+        return FakeRelayReader(result=FetchError(UnavailableReason.RELAY_MISSING, "no such key"))
+
+    @pytest.mark.parametrize("scenario", ["available", "stale", "reader-failure"])
+    def test_the_result_equals_the_one_from_a_quiet_callback(self, scenario: str) -> None:
+        quiet = _fetch(self._object(scenario))
+
+        noisy = _fetch(self._object(scenario), on_read=_raising_callback)
+
+        assert noisy == quiet
