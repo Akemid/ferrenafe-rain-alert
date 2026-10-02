@@ -116,3 +116,30 @@ Tasks 2.1-2.18 done (including 2.17a and 2.17b). 2.19 (security review) open. St
 5. Doc: reader keeps `Error.Code == "NoSuchKey"` only; design D39 note and spec wording updated; `NoSuchBucket` -> RELAY_UNREADABLE test added (parametrized with fix 4).
 
 Task 2.19 annotated "review fixes applied"; the security-review checkbox is left open.
+
+
+---
+
+# Phase 3 / PR 3 (branch feat/senamhi-relay-3-producer, stacked on feat/senamhi-relay-2-reader)
+
+Tasks 3.1-3.12 done. 3.13 (security review) open. Strict TDD, RED confirmed per cycle. Commits: cb1f74e (producer + fakes), 9161a2e (script registration + plist).
+
+## Work units
+
+1. `relay_push.main(argv, *, fetcher, client, now)`. RED: `ImportError cannot import name 'relay_push'` (test_relay_push.py:13); then `TypeError main() got an unexpected keyword argument 'now'` (gate tests), then 7 failing on absent PUT / `PRODUCER_ID`, then `AttributeError ... no attribute 'boto3'` + `DID NOT RAISE SystemExit` (client/usage tests).
+2. Gate: fetch failure and parse failure exit 2, oversize (measured in encoded bytes, exactly-cap passes) exit 3, S3 failure exit 4 (ClientError code only, other exceptions by type name only), no bucket exit 1; none PUT. Success: one PUT, `Content-Type: text/html; charset=utf-8`, `ChecksumAlgorithm SHA256`, Metadata `sha256`/`fetched-at` (UTC ISO-8601)/`producer`. sha256 asserted against `hashlib` independently.
+3. Client: `boto3.Session(profile_name, region_name).client("s3", Config(3 s connect, 10 s read, 2 attempts))`, built only after the gate passes; `--profile`/`--region` args, otherwise the default chain. Session/profile errors map to exit 4.
+4. `FakeS3Client` extended: `put_error`, and a successful PUT replaces the stored object (so get returns it), a failed PUT leaves it. RED: `TypeError put_error`, `b'' == b'<p>hi</p>'`.
+5. Round trip (3.9/3.10): producer -> FakeS3Client -> `S3RelayReader` -> `RelayWarningProvider` equals `SenamhiWarningScraper` on the coast fixture (one in-force warning, non-empty). No drift found. Mutation proof: renaming the `sha256` metadata key turned 4 tests red; reverted.
+6. 3.11: console script registered; `ops/launchd/pe.ferrenafe.relay-push.plist`, tested with `plistlib` (`StartCalendarInterval == {"Minute": 0}`, `StartInterval` absent, `RunAtLoad`, env, log paths, placeholders, no secrets). RED: `FileNotFoundError`. Mutation proof: injecting `StartInterval 3600` turned `test_start_interval_is_absent...` red; reverted.
+
+## Deviations
+
+- Plist `ProgramArguments[0]` is the placeholder `<uv>` (launchd's minimal PATH cannot resolve a bare `uv`), and the log path is `<home>/Library/Logs/ferrenafe-relay/push.log` (launchd documents no tilde expansion; `man launchd.plist` StandardOutPath). The operator also creates the log directory first. Both noted in the plist comment.
+- `argparse` usage errors exit 1, not argparse's 2, because 2 means "gate refused the page".
+- Summary line is `relay push: ok version=<id> bytes=<n> rows_seen=<n>` with the S3-supplied version id sanitized and capped.
+- `READ_TIMEOUT` is 10 s for the producer (a 4 MiB upload), versus 5 s for the reader.
+
+## Gate (PR 3)
+
+`uv run pytest` 1335 passed, 15 deselected. `uv run --directory agent pytest` 32 passed. `ruff check` clean. `ruff format --check` 127 files formatted. `mypy` no issues in 50 files. `uv run rain-alert-relay-push --help` exits 0 offline; with no bucket variable it exits 1.
