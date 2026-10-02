@@ -112,12 +112,15 @@ def main(
     try:
         html = (fetcher if fetcher is not None else HttpxHtmlFetcher()).fetch(warnings_url_for(REGION))
         outcome = parse_warnings_page(html, REGION, moment)
+        body = html.encode("utf-8")
     except FetchError as exc:
         # Only the reason enum is printed: the detail may quote the page.
         print(f"relay push: refused to push, {exc.reason.value}", file=sys.stderr)
         return EXIT_GATE_FAILED
+    except Exception as exc:  # noqa: BLE001 - a parser or encoder crash must not leave a traceback quoting the page
+        print(f"relay push: refused to push, gate crashed: {_token(type(exc).__name__)}", file=sys.stderr)
+        return EXIT_GATE_FAILED
 
-    body = html.encode("utf-8")
     if len(body) > MAX_OBJECT_BYTES:
         print(f"relay push: refused to push, page is over the {MAX_OBJECT_BYTES}-byte cap", file=sys.stderr)
         return EXIT_TOO_LARGE

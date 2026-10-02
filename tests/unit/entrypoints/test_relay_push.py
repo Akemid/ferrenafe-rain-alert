@@ -103,6 +103,25 @@ class TestTheGateBeforeThePut:
         assert page[:200] not in err
 
 
+class _PageDerivedError(Exception):
+    """Stands in for a RecursionError or a parser bug whose message quotes the page."""
+
+
+@pytest.mark.usefixtures("configured")
+def test_an_unexpected_gate_exception_exits_2_naming_only_the_type(capsys: pytest.CaptureFixture[str]) -> None:
+    client = FakeS3Client()
+    fetcher = FakeHtmlFetcher(_PageDerivedError("<td>page text</td>\nforged: line"))
+
+    code = relay_push.main([], fetcher=fetcher, client=client, now=NOW)
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert client.put_calls == []
+    assert "_PageDerivedError" in err
+    assert "page text" not in err
+    assert err.count("\n") == 1
+
+
 def _valid_page() -> str:
     return SENAMHI_ACTIVE_WARNING.read_text(encoding="utf-8")
 
