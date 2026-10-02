@@ -271,7 +271,7 @@ in `docs/evidence/` per that directory's convention.
 - [ ] O.5 [Owner, AWS] Deliberately supply a bad agent ARN in one invocation; confirm the template fallback still sends, still publishes, and logs exactly one `AGENT_FALLBACK_USED` notice.
 - [ ] O.6 [Owner, AWS] Enable the schedule; watch several real cycles across the six-hourly boundary.
 - [ ] O.7 [Owner, AWS] Subscribe an operator email to the SNS topic; send a test notification; confirm delivery.
-- [ ] O.8 [Owner, AWS] Flip `composer=agent` in SSM (no deploy); record the first agent-composed message in the change artifacts for the owner to judge.
+- [x] O.8 [Owner, AWS] Flip `composer=agent` in SSM (no deploy); record the first agent-composed message in the change artifacts for the owner to judge. **Done 2026-10-02**: recorded in `docs/evidence/2026-10-02-agent-composer-switched-on.md` (dry run against the production runtime; no real cycle had an authorized send yet). Owner accepted the wording.
 - [ ] O.9 [Owner, AWS] Confirm a standing `prepare` across two consecutive real cycles sends once.
 - [ ] O.10 [Owner, AWS] Confirm Alarm 3's filter pattern matches a real `SNAPSHOT_FAILURE_PREFIX` log event (D33's stated gap — not provable in the CDK suite).
 - [ ] O.11 [Owner, AWS] Run `cdk drift` and confirm the deployed function's `Timeout` and `RAIN_ALERT_AGENT_TIMEOUT_S` match the template with no console edit.
