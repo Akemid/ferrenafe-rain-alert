@@ -253,29 +253,29 @@ V.10, V.11 recorded.
 
 ### Bucket and grants (D41, design test 9)
 
-- [ ] 4.1 [RED] `"relay bucket"` -- `BlockPublicAccess` all four true; versioning enabled; SSE `AES256`; `OwnershipControls` `BucketOwnerEnforced`; lifecycle `NoncurrentVersionExpiration` 90 days and `AbortIncompleteMultipartUpload` 1 day; `DeletionPolicy: Retain`/`UpdateReplacePolicy: Retain`; SSL-deny bucket policy statement; **no `BucketName`**. Expected failure: no relay bucket resource in the template.
-- [ ] 4.2 [GREEN] Add the bucket to `ScheduledCycleStack`.
-- [ ] 4.3 [RED] `"lambda relay grants"` -- the Lambda role's relay statements are exactly `s3:GetObject` on `<bucket>/senamhi/lambayeque/latest.html` and `s3:ListBucket` on the bucket ARN, and nothing else touches the relay bucket (no `s3:GetObjectVersion`, no `s3:*`, no Put). The object key is **read from `contracts/senamhi-relay.json`**, not retyped (the D32 prefix lesson). Expected failure: statements absent. Re-check V.8 headroom relation 2 unchanged.
-- [ ] 4.4 [GREEN] `bucket.grantRead`-style grant replaced by two explicit `PolicyStatement`s so the action set is exact.
-- [ ] 4.5 [RED] `"relay writer and producer user"` -- a `ManagedPolicy` `RelayWriter` with `s3:PutObject` only, on that one key; an `iam.User` `ferrenafe-relay-producer` with exactly one attached policy (`RelayWriter`) and no inline policy; `resourceCountIs('AWS::IAM::AccessKey', 0)`. Expected failure: no user or policy.
-- [ ] 4.6 [GREEN] Add policy and user. Mutation proof for the zero-AccessKey assertion: temporarily add `new iam.AccessKey(...)` and record the test red; revert.
-- [ ] 4.7 [RED] `"relay env and outputs"` -- `RAIN_ALERT_RELAY_BUCKET` equals the bucket ref; outputs `RelayBucketName`, `RelayProducerUserName`, `RelayObjectKey` exist; **no output or resource property contains an ARN** (account-id rule). Expected failure: env var and outputs absent.
-- [ ] 4.8 [GREEN] Env var and outputs.
+- [x] 4.1 [RED] `"relay bucket"` -- `BlockPublicAccess` all four true; versioning enabled; SSE `AES256`; `OwnershipControls` `BucketOwnerEnforced`; lifecycle `NoncurrentVersionExpiration` 90 days and `AbortIncompleteMultipartUpload` 1 day; `DeletionPolicy: Retain`/`UpdateReplacePolicy: Retain`; SSL-deny bucket policy statement; **no `BucketName`**. Expected failure: no relay bucket resource in the template.
+- [x] 4.2 [GREEN] Add the bucket to `ScheduledCycleStack`.
+- [x] 4.3 [RED] `"lambda relay grants"` -- the Lambda role's relay statements are exactly `s3:GetObject` on `<bucket>/senamhi/lambayeque/latest.html` and `s3:ListBucket` on the bucket ARN, and nothing else touches the relay bucket (no `s3:GetObjectVersion`, no `s3:*`, no Put). The object key is **read from `contracts/senamhi-relay.json`**, not retyped (the D32 prefix lesson). Expected failure: statements absent. Re-check V.8 headroom relation 2 unchanged.
+- [x] 4.4 [GREEN] `bucket.grantRead`-style grant replaced by two explicit `PolicyStatement`s so the action set is exact.
+- [x] 4.5 [RED] `"relay writer and producer user"` -- a `ManagedPolicy` `RelayWriter` with `s3:PutObject` only, on that one key; an `iam.User` `ferrenafe-relay-producer` with exactly one attached policy (`RelayWriter`) and no inline policy; `resourceCountIs('AWS::IAM::AccessKey', 0)`. Expected failure: no user or policy.
+- [x] 4.6 [GREEN] Add policy and user. Mutation proof for the zero-AccessKey assertion: temporarily add `new iam.AccessKey(...)` and record the test red; revert.
+- [x] 4.7 [RED] `"relay env and outputs"` -- `RAIN_ALERT_RELAY_BUCKET` equals the bucket ref; outputs `RelayBucketName`, `RelayProducerUserName`, `RelayObjectKey` exist; **no output or resource property contains an ARN** (account-id rule). Expected failure: env var and outputs absent.
+- [x] 4.8 [GREEN] Env var and outputs.
 
 ### Alarm (D40, design test 9)
 
-- [ ] 4.9 [RED] `"relay filter"` -- metric filter on the Lambda log group with `FilterPattern` `{ $.event = "senamhi_relay" }`, metric namespace `FerrenafeRainAlert`, name `SenamhiRelayDegraded`, `MetricValue` `$.degraded`, **no `DefaultValue`**. Expected failure: no such filter.
-- [ ] 4.10 [GREEN] Add the filter.
-- [ ] 4.11 [RED] `"relay alarm"` -- `Statistic: Maximum`, `Period: 21600`, `EvaluationPeriods: 2`, `DatapointsToAlarm: 2`, `TreatMissingData: breaching`, `AlarmActions` includes the existing `AlarmsTopic`. Expected failure: no alarm. (D40, amended: 21600 s is a **sliding** window. The 2/2 plus breaching semantics do not depend on alignment, because any 12 h span holds at least one cycle in normal operation. Do not add a comment or ADR claim that windows align with the 0/6/12/18 America/Lima schedule.)
-- [ ] 4.12 [GREEN] Add the alarm. The code comment states the sliding-window argument from D40 in one or two lines, not an alignment claim.
-- [ ] 4.13 Mutation proofs: change `treatMissingData` to `notBreaching` and `datapointsToAlarm` to 1 in turn; record each assertion red; revert. Also assert the metric filter has **no** `DefaultValue` (a default of 0 would fill the missing windows and defeat `breaching`), with a mutation proof. State plainly in apply-progress that a template test proves configuration, not window alignment, evaluation cadence or a live transition (carried to L.9).
+- [x] 4.9 [RED] `"relay filter"` -- metric filter on the Lambda log group with `FilterPattern` `{ $.event = "senamhi_relay" }`, metric namespace `FerrenafeRainAlert`, name `SenamhiRelayDegraded`, `MetricValue` `$.degraded`, **no `DefaultValue`**. Expected failure: no such filter.
+- [x] 4.10 [GREEN] Add the filter.
+- [x] 4.11 [RED] `"relay alarm"` -- `Statistic: Maximum`, `Period: 21600`, `EvaluationPeriods: 2`, `DatapointsToAlarm: 2`, `TreatMissingData: breaching`, `AlarmActions` includes the existing `AlarmsTopic`. Expected failure: no alarm. (D40, amended: 21600 s is a **sliding** window. The 2/2 plus breaching semantics do not depend on alignment, because any 12 h span holds at least one cycle in normal operation. Do not add a comment or ADR claim that windows align with the 0/6/12/18 America/Lima schedule.)
+- [x] 4.12 [GREEN] Add the alarm. The code comment states the sliding-window argument from D40 in one or two lines, not an alignment claim.
+- [x] 4.13 Mutation proofs: change `treatMissingData` to `notBreaching` and `datapointsToAlarm` to 1 in turn; record each assertion red; revert. Also assert the metric filter has **no** `DefaultValue` (a default of 0 would fill the missing windows and defeat `breaching`), with a mutation proof. State plainly in apply-progress that a template test proves configuration, not window alignment, evaluation cadence or a live transition (carried to L.9).
 
 ### `relayEnabled` rollback switch (D41, D45)
 
-- [ ] 4.14 [RED] `"relayEnabled=false"` -- with `-c relayEnabled=false` the Lambda has **no** `RAIN_ALERT_RELAY_BUCKET`, the relay filter's alarm is absent, while the bucket, user, policy **and (after 4.20) the trail** remain; default is enabled; parsing mirrors `scheduleEnabled` (the string `'false'` only). Expected failure: the env var is still present.
-- [ ] 4.15 [GREEN] Context parsing and conditional env var/alarm.
-- [ ] 4.16 Update `infra/bin/infra.ts` only if context plumbing needs it; extend `infra/test/app.test.ts` for `relayEnabled` passthrough if touched.
-- [ ] 4.17 PR-4a gate: `cd infra && npm test`; `uv run pytest tests/hygiene` after `git add`; full Python gate unchanged.
+- [x] 4.14 [RED] `"relayEnabled=false"` -- with `-c relayEnabled=false` the Lambda has **no** `RAIN_ALERT_RELAY_BUCKET`, the relay filter's alarm is absent, while the bucket, user, policy **and (after 4.20) the trail** remain; default is enabled; parsing mirrors `scheduleEnabled` (the string `'false'` only). Expected failure: the env var is still present.
+- [x] 4.15 [GREEN] Context parsing and conditional env var/alarm.
+- [x] 4.16 Update `infra/bin/infra.ts` only if context plumbing needs it; extend `infra/test/app.test.ts` for `relayEnabled` passthrough if touched.
+- [x] 4.17 PR-4a gate: `cd infra && npm test`; `uv run pytest tests/hygiene` after `git add`; full Python gate unchanged.
 
 ### Audit trail (D46, design test 10) -- may be PR 4b
 

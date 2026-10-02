@@ -56,6 +56,9 @@ export function buildScheduledCycleStack(app: cdk.App): ScheduledCycleStack | un
   // absence, means enabled. Never a boolean context value — CDK context values from the CLI are strings.
   const scheduleEnabledContext = app.node.tryGetContext('scheduleEnabled') as string | undefined;
 
+  // `-c relayEnabled=false` is the declarative relay rollback (design D41/D45); same parsing as above.
+  const relayEnabledContext = app.node.tryGetContext('relayEnabled') as string | undefined;
+
   return new ScheduledCycleStack(app, 'ScheduledCycleStack', {
     stackName: 'ferrenafe-scheduled-cycle',
     // Same region as `PublicSnapshotStack` and the AgentCore runtime (design D25).
@@ -65,6 +68,7 @@ export function buildScheduledCycleStack(app: cdk.App): ScheduledCycleStack | un
     agentRuntimeArn,
     alarmEmail,
     scheduleEnabled: scheduleEnabledContext !== 'false',
+    relayEnabled: relayEnabledContext !== 'false',
   });
 }
 

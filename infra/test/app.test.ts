@@ -1,5 +1,5 @@
 import { App, Token } from 'aws-cdk-lib/core';
-import { Annotations, Match } from 'aws-cdk-lib/assertions';
+import { Annotations, Match, Template } from 'aws-cdk-lib/assertions';
 import { stack, buildScheduledCycleStack } from '../bin/infra';
 import { PublicSnapshotStack } from '../lib/public-snapshot-stack';
 import { PLACEHOLDER_SNAPSHOT_BUCKET_NAME } from '../lib/scheduled-cycle-stack';
@@ -199,5 +199,27 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
     for (const forbidden of ['snapshotWriterPolicyArn', 'agentRuntimeArn', 'alarmEmail']) {
       expect(cdkJson.context).not.toHaveProperty(forbidden);
     }
+  });
+
+  test('passes `-c relayEnabled=false` through, and leaves the relay on for any other value or none', () => {
+    // Design D41/D45: the string 'false' only, same parsing as `scheduleEnabled`.
+    const relayVariable = (relayEnabled: string | undefined): unknown => {
+      const app = new App({
+        context: {
+          snapshotBucketName: REAL_BUCKET_NAME,
+          snapshotWriterPolicyArn: SNAPSHOT_WRITER_POLICY_ARN,
+          agentRuntimeArn: AGENT_RUNTIME_ARN,
+          alarmEmail: ALARM_EMAIL,
+          ...(relayEnabled === undefined ? {} : { relayEnabled }),
+        },
+      });
+      const template = Template.fromStack(buildScheduledCycleStack(app)!);
+      const [fn] = Object.values(template.findResources('AWS::Lambda::Function'));
+      return fn.Properties.Environment.Variables.RAIN_ALERT_RELAY_BUCKET;
+    };
+
+    expect(relayVariable('false')).toBeUndefined();
+    expect(relayVariable('true')).toBeDefined();
+    expect(relayVariable(undefined)).toBeDefined();
   });
 });
