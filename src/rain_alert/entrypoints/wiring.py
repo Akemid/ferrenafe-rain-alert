@@ -171,7 +171,7 @@ def select_warning_provider(
     """
     if RELAY_BUCKET_ENV_VAR not in env:
         return SenamhiWarningScraper(HttpxHtmlFetcher())
-    bucket = env[RELAY_BUCKET_ENV_VAR]
+    bucket = env[RELAY_BUCKET_ENV_VAR].strip()
     reader = S3RelayReader(bucket) if bucket else UnconfiguredRelayReader()
     return RelayWarningProvider(reader, on_read=on_read)
 

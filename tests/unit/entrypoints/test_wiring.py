@@ -291,6 +291,20 @@ class TestSelectWarningProvider:
         assert result.reason is UnavailableReason.RELAY_UNREADABLE
         assert "relay bucket not configured" in result.detail
 
+    @pytest.mark.parametrize("blank", ["   ", "\t", " \t\n "])
+    def test_a_whitespace_bucket_is_a_degraded_relay_never_a_scrape(
+        self, monkeypatch: pytest.MonkeyPatch, blank: str
+    ) -> None:
+        monkeypatch.setattr(wiring, "HttpxHtmlFetcher", _FailingHtmlFetcher)
+
+        provider = wiring.select_warning_provider({RELAY_BUCKET_ENV_VAR: blank})
+        result = provider.fetch_current_warnings("lambayeque", NOW)
+
+        assert isinstance(provider, RelayWarningProvider)
+        assert isinstance(result, Unavailable)
+        assert result.reason is UnavailableReason.RELAY_UNREADABLE
+        assert "relay bucket not configured" in result.detail
+
     def test_the_relay_branch_builds_no_html_fetcher(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(wiring, "HttpxHtmlFetcher", _FailingHtmlFetcher)
 
