@@ -5,8 +5,11 @@ otherwise built lazily with an explicit, bounded `Config`, so the offline suite
 never needs a region and the SDK's minute-scale defaults never decide how long
 a cycle may hang. `GetObject` is idempotent, so the single retry is safe.
 
-Every failure leaves as a `FetchError`; nothing else escapes (the provider
-above also guards, but the reader does not rely on it).
+Every failure of the `GetObject` call and of the body read leaves as a
+`FetchError`; the reader does not rely on the provider's catch-all for those.
+Validation and decoding failures are `FetchError` too. The one deliberately
+tolerant spot is the informational `fetched-at` claim: an invalid value is
+ignored rather than failing an otherwise valid object.
 """
 
 from __future__ import annotations
@@ -130,8 +133,8 @@ class S3RelayReader:
             raise _unreadable(f"relay object charset is not utf-8: {_token(charset or 'absent')}")
         try:
             data: bytes = body.read(MAX_OBJECT_BYTES + 1)
-        except (BotoCoreError, OSError) as exc:
-            raise _unreadable(f"relay object body read failed: {type(exc).__name__}") from exc
+        except Exception as exc:  # noqa: BLE001 - urllib3 mid-read errors (SSL, protocol, decode) are not OSError
+            raise _unreadable(f"relay object body read failed: {_token(type(exc).__name__)}") from exc
         if len(data) > MAX_OBJECT_BYTES:
             raise _unreadable(f"relay object is over the {MAX_OBJECT_BYTES}-byte cap (body)")
         if not data:

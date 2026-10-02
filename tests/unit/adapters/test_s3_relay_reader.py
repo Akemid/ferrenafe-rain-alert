@@ -229,7 +229,23 @@ class TestIntegrityAndCharset:
         assert raised.value.reason is UnavailableReason.RELAY_UNREADABLE
 
 
+class _TransportBoom(Exception):  # noqa: N818 - stands in for urllib3's SSLError/ProtocolError (not OSError)
+    pass
+
+
 class TestMidStreamFailure:
+    def test_a_non_oserror_body_failure_is_unreadable_names_only_the_type_and_closes(self) -> None:
+        client = _client(body_error=_TransportBoom("secret\n[FORGED] detail"))
+
+        with pytest.raises(FetchError) as raised:
+            _reader(client).read()
+
+        assert raised.value.reason is UnavailableReason.RELAY_UNREADABLE
+        assert "_TransportBoom" in raised.value.detail
+        assert "secret" not in raised.value.detail
+        assert "\n" not in raised.value.detail
+        assert client.body is not None and client.body.closed
+
     @pytest.mark.parametrize(
         "error",
         [ReadTimeoutError(endpoint_url="https://s3.invalid"), OSError("connection reset")],
