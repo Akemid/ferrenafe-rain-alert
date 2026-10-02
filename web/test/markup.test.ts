@@ -56,6 +56,37 @@ describe('index.astro stylesheet — every class the renderer emits must be defi
   });
 });
 
+describe('index.astro stylesheet — the risk scale', () => {
+  // Colour is one of two signals (the other is `aria-current`), but it is the
+  // fast one, and each of these is a state where the wrong colour is a lie.
+  it.each(['none', 'prepare', 'imminent'])('fills the current "%s" segment', (level) => {
+    expect(markup).toContain(`.scale-segment.is-current.segment-${level} .scale-bar`);
+  });
+
+  it('hatches an incomplete "none" instead of filling it green', () => {
+    expect(markup).toContain('.scale-hatched');
+    expect(markup).toContain('repeating-linear-gradient');
+  });
+
+  it('draws a blind scale as dashed outlines and a stale one as a solid outline', () => {
+    expect(markup).toContain('.scale-blind .scale-bar');
+    expect(markup).toContain('.scale-outlined');
+  });
+
+  it('has a desktop layout, constrained and in a single column', () => {
+    expect(markup).toContain('@media (min-width: 48rem)');
+    expect(markup).toContain('70rem');
+  });
+});
+
+describe('index.astro — the loading state', () => {
+  it('keeps the #status-loading hook and renders a skeleton scale', () => {
+    expect(markup).toContain('id="status-loading"');
+    expect(markup).toContain('skeleton-scale');
+    expect(markup).toContain('Cargando el estado actual…');
+  });
+});
+
 describe('index.astro — the page must resolve even when its script never runs', () => {
   // Every state is rendered by a module script. If the bundle 404s or
   // JavaScript is off, "Cargando el estado actual…" stays on screen forever:
