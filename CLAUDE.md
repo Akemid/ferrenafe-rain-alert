@@ -72,7 +72,7 @@ by `tests/unit/test_conftest_fixtures.py`.
 
 ## AWS
 
-Deployment target is `us-east-1`. The AWS CLI profile for this project is
+Deployment target is `us-east-2`. The AWS CLI profile for this project is
 `ferrenafe`, authenticated with `aws login` (short-lived credentials, not
 access keys).
 

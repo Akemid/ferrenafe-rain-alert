@@ -55,9 +55,8 @@ network, no deploy.
 to carry, and a wrong-region deploy of a deliberately world-readable bucket
 leaves one somewhere nobody is watching while appearing to have succeeded.
 
-`us-east-2` is where the AgentCore composer runtime already lives. `CLAUDE.md`
-still names `us-east-1`; that line predates the AgentCore deploy, and the
-runbook explains the divergence.
+`us-east-2` is where the AgentCore composer runtime already lives, so the
+whole application stays in one region, as `CLAUDE.md` records.
 
 The **account** is deliberately not pinned: a twelve-digit account id in a
 public repository is what `tests/hygiene/test_repo_hygiene.py` exists to

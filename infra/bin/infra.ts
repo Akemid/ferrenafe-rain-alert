@@ -91,9 +91,7 @@ export const stack = new PublicSnapshotStack(app, 'PublicSnapshotStack', {
   // have succeeded.
   //
   // us-east-2 is where the AgentCore composer runtime already lives, so the
-  // whole application stays in one region. CLAUDE.md still names us-east-1
-  // as this project's target; that line predates the AgentCore deploy and
-  // `docs/runbooks/public-page-deploy.md` explains the divergence.
+  // whole application stays in one region, as CLAUDE.md records.
   //
   // The account is deliberately left unpinned: writing it here would put a
   // twelve-digit account id in a public repository, which
