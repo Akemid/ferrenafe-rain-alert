@@ -74,6 +74,7 @@ class FakeS3Client:
         metadata: dict[str, str] | None = None,
         error: Exception | None = None,
         body_error: Exception | None = None,
+        put_error: Exception | None = None,
     ) -> None:
         self._body = body
         self._content_length = len(body) if content_length is None else content_length
@@ -83,6 +84,7 @@ class FakeS3Client:
         self._metadata = {} if metadata is None else metadata
         self._error = error
         self._body_error = body_error
+        self._put_error = put_error
         self.body: TrackingBody | None = None
         self.get_calls: list[dict[str, Any]] = []
         self.put_calls: list[dict[str, Any]] = []
@@ -105,4 +107,12 @@ class FakeS3Client:
 
     def put_object(self, **kwargs: Any) -> dict[str, Any]:
         self.put_calls.append(kwargs)
-        return {}
+        if self._put_error is not None:
+            raise self._put_error
+        # A successful PUT replaces the stored object, as S3 does; a failed
+        # one (above) leaves the previous object in place.
+        self._body = kwargs.get("Body", b"")
+        self._content_length = len(self._body)
+        self._content_type = kwargs.get("ContentType", self._content_type)
+        self._metadata = dict(kwargs.get("Metadata", {}))
+        return {} if self._version_id is None else {"VersionId": self._version_id}

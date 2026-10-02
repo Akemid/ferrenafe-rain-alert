@@ -332,3 +332,21 @@ class FakeRelayReader:
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result
+
+
+@dataclass
+class FakeHtmlFetcher:
+    """`HtmlFetcher` that returns a programmed page or raises a programmed error.
+
+    `result` is either the page text (returned) or an exception instance
+    (raised unchanged). Every requested URL is recorded.
+    """
+
+    result: str | BaseException
+    urls: list[str] = field(default_factory=list)
+
+    def fetch(self, url: str) -> str:
+        self.urls.append(url)
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
