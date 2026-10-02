@@ -292,3 +292,35 @@ def test_scanner_resolves_relative_imports_before_checking_them(tmp_path: Path) 
         "sneaky.py": {"rain_alert.adapters"},
         "rules/deeper.py": {"rain_alert.adapters"},
     }
+
+
+class TestRelayAdaptersNeverImportEntrypoints:
+    """design.md D44: the relay provider is an adapter. Wiring chooses it; it
+    must never reach back into `entrypoints`, or the layering inverts and
+    `lambda_handler` could pull in the CLI through the back door."""
+
+    RELAY_ADAPTERS = ("senamhi_relay.py",)
+
+    def test_the_relay_adapters_import_nothing_from_entrypoints(self) -> None:
+        for name in self.RELAY_ADAPTERS:
+            path = SRC_ROOT / "adapters" / name
+            assert path.is_file(), f"{name} is not where this scan looks for it"
+
+            found = _forbidden_module_imports(
+                path, frozenset({"rain_alert.entrypoints"}), package="rain_alert.adapters"
+            )
+
+            assert found == set(), f"{name} imports {sorted(found)}"
+
+    def test_the_scan_detects_a_planted_violation(self, tmp_path: Path) -> None:
+        planted = tmp_path / "senamhi_relay.py"
+        planted.write_text(
+            "from rain_alert.entrypoints.wiring import build_cloud_deps\n"
+            "import rain_alert.entrypoints\n"
+            "from rain_alert.domain.sources import Available  # allowed, must not be flagged\n",
+            encoding="utf-8",
+        )
+
+        found = _forbidden_module_imports(planted, frozenset({"rain_alert.entrypoints"}), package="rain_alert.adapters")
+
+        assert found == {"rain_alert.entrypoints.wiring", "rain_alert.entrypoints"}
