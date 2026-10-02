@@ -81,3 +81,28 @@ One work-unit commit each, test first, RED confirmed for the intended reason.
 Tasks 2.17a (log writer JSON-encodes and sanitizes `version_id`) and 2.17b (reader enforces `MAX_OBJECT_BYTES` before read/decode) were added to Phase 2 in tasks.md.
 
 Gate after fixes: `uv run pytest` 1230 passed, 15 deselected; `uv run --directory agent pytest` 32 passed; `ruff check` clean; `ruff format --check` 118 files formatted; `mypy` no issues in 48 files.
+
+---
+
+# Phase 2 / PR 2 (branch `feat/senamhi-relay-2-reader`, stacked on `feat/senamhi-relay-1-domain`)
+
+Tasks 2.1-2.18 done (including 2.17a and 2.17b). 2.19 (security review) open. Strict TDD, RED confirmed per cycle.
+
+## Work units
+
+1. `FakeS3Client` + `TrackingBody` + `client_error` (real `ClientError`). RED: `ModuleNotFoundError tests.support.fake_s3` (test_fake_s3.py:12).
+2. `S3RelayReader` bounded `Config` (3/5/2), lazy client, fixed key, error mapping (`NoSuchKey` -> MISSING; everything else, incl. BotoCoreError -> UNREADABLE, code sanitized and capped). RED: `ImportError s3_relay_reader` (test file line 12).
+3. Size cap (`ContentLength` before read, bounded read of cap+1), charset, sha256, strict decode, empty body, mid-stream body read failure. RED: `AttributeError MAX_OBJECT_BYTES`, `DID NOT RAISE FetchError`, `UnicodeDecodeError`, raw `ReadTimeoutError`/`OSError`. Mutation proof: `errors="replace"` turned `test_invalid_utf8_is_unreadable` red; reverted.
+4. Wiring: `select_warning_provider` by presence of `RAIN_ALERT_RELAY_BUCKET`; empty value -> `UnconfiguredRelayReader` (RELAY_UNREADABLE, "relay bucket not configured"), no `HtmlFetcher` built; `build_cloud_deps(env=None)`; `build_local_deps` unchanged. Architecture boundary test extended to `s3_relay_reader.py` (characterisation, green on arrival). RED: `ImportError RELAY_BUCKET_ENV_VAR`.
+5. `log_relay_read` (2.15-2.17a): one `json.dumps(separators=(",",":"))` line, `version_id` sanitized and capped at 100. RED: `AttributeError log_relay_read`, nothing printed.
+
+## Deviations
+
+- `UnconfiguredRelayReader` lives in `adapters/s3_relay_reader.py`; `log_relay_read` lives in `entrypoints/wiring.py` (it is cloud wiring, and adapters may not import entrypoints).
+- Reader requires a present `charset=utf-8` (absent charset is UNREADABLE), per design "requires charset=utf-8".
+- Reader catches `BotoCoreError`/`OSError` on the body stream read, not only on `get_object`.
+- `version_id` is not sanitized in the reader; the provider and the log writer sanitize at their sinks.
+
+## Gate (PR 2)
+
+`uv run pytest` 1282 passed, 15 deselected. `uv run --directory agent pytest` 32 passed. `ruff check` clean. `ruff format --check` 124 files formatted. `mypy` no issues in 49 files.

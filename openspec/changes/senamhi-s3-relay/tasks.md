@@ -170,36 +170,36 @@ direct scrape), `weather-sources` (relay selected by
 
 ### `FakeS3Client` (D44)
 
-- [ ] 2.1 [RED] `tests/unit/support/test_fake_s3.py` (or inside the reader tests) -- `FakeS3Client.get_object` returns `Body` (a `TrackingBody` recording `read`/`close`), `ContentLength`, `ContentType`, `LastModified`, `VersionId`, `Metadata`; programmed failures raise **real** `botocore.exceptions.ClientError` / `EndpointConnectionError` / `ReadTimeoutError`; `put_object` records kwargs. Expected failure: `ModuleNotFoundError`.
-- [ ] 2.2 [GREEN] Create `tests/support/fake_s3.py`. Verify: `uv run pytest tests/unit/support`.
+- [x] 2.1 [RED] `tests/unit/support/test_fake_s3.py` (or inside the reader tests) -- `FakeS3Client.get_object` returns `Body` (a `TrackingBody` recording `read`/`close`), `ContentLength`, `ContentType`, `LastModified`, `VersionId`, `Metadata`; programmed failures raise **real** `botocore.exceptions.ClientError` / `EndpointConnectionError` / `ReadTimeoutError`; `put_object` records kwargs. Expected failure: `ModuleNotFoundError`.
+- [x] 2.2 [GREEN] Create `tests/support/fake_s3.py`. Verify: `uv run pytest tests/unit/support`.
 
 ### `S3RelayReader` -- one RED/GREEN pair per row of D39's table
 
-- [ ] 2.3 [RED] Bounded `Config` pinned: `connect_timeout=3`, `read_timeout=5`, `retries={"total_max_attempts": 2}` (copy the `s3_snapshot_publisher` test's `boto3.client` monkeypatch); client built lazily on first `read()`. Expected failure: `ModuleNotFoundError` (`adapters/s3_relay_reader.py`).
-- [ ] 2.4 [GREEN] Skeleton with the lazy client and the bounded `Config`.
-- [ ] 2.5 [RED] Happy path: returns `RelayObject` with text decoded UTF-8, `last_modified`, `version_id`, `claimed_fetched_at` from metadata; body closed in `finally`. Expected failure: `NotImplementedError`/missing `read`.
-- [ ] 2.6 [GREEN] Implement `read` with `GetObject` on `OBJECT_KEY` only (the key is **not** an env override, D37).
-- [ ] 2.7 [RED] `ClientError` `NoSuchKey` -> `FetchError(RELAY_MISSING)`; `AccessDenied`, `403`, an arbitrary code, `BotoCoreError` (`EndpointConnectionError`, `ReadTimeoutError`) -> `RELAY_UNREADABLE` with the code in the detail. Parametrized, asserting by `ClientError.response["Error"]["Code"]` (D39). Expected failure: exceptions propagate raw.
-- [ ] 2.8 [GREEN] Error mapping.
-- [ ] 2.9 [RED] Size cap: `ContentLength > MAX_OBJECT_BYTES` -> `RELAY_UNREADABLE` with `TrackingBody.read` **never called** and body closed; `ContentLength` lying (small) with a body over cap+1 bytes read -> `RELAY_UNREADABLE`. Expected failure: the oversize body is read. Depends on V.1, V.5.
-- [ ] 2.10 [GREEN] Check `ContentLength` before reading; read at most `cap + 1`.
-- [ ] 2.11 [RED] Integrity and charset: `Content-Type` charset not utf-8 -> UNREADABLE; invalid UTF-8 bytes -> UNREADABLE (strict decode); `sha256` metadata absent or mismatched -> UNREADABLE; empty body -> UNREADABLE. Expected failure: bad objects are returned as `RelayObject`.
-- [ ] 2.12 [GREEN] Charset check, strict decode, sha256 verification. Mutation proof: switch to `errors="replace"` and record the invalid-bytes row red; revert.
+- [x] 2.3 [RED] Bounded `Config` pinned: `connect_timeout=3`, `read_timeout=5`, `retries={"total_max_attempts": 2}` (copy the `s3_snapshot_publisher` test's `boto3.client` monkeypatch); client built lazily on first `read()`. Expected failure: `ModuleNotFoundError` (`adapters/s3_relay_reader.py`).
+- [x] 2.4 [GREEN] Skeleton with the lazy client and the bounded `Config`.
+- [x] 2.5 [RED] Happy path: returns `RelayObject` with text decoded UTF-8, `last_modified`, `version_id`, `claimed_fetched_at` from metadata; body closed in `finally`. Expected failure: `NotImplementedError`/missing `read`.
+- [x] 2.6 [GREEN] Implement `read` with `GetObject` on `OBJECT_KEY` only (the key is **not** an env override, D37).
+- [x] 2.7 [RED] `ClientError` `NoSuchKey` -> `FetchError(RELAY_MISSING)`; `AccessDenied`, `403`, an arbitrary code, `BotoCoreError` (`EndpointConnectionError`, `ReadTimeoutError`) -> `RELAY_UNREADABLE` with the code in the detail. Parametrized, asserting by `ClientError.response["Error"]["Code"]` (D39). Expected failure: exceptions propagate raw.
+- [x] 2.8 [GREEN] Error mapping.
+- [x] 2.9 [RED] Size cap: `ContentLength > MAX_OBJECT_BYTES` -> `RELAY_UNREADABLE` with `TrackingBody.read` **never called** and body closed; `ContentLength` lying (small) with a body over cap+1 bytes read -> `RELAY_UNREADABLE`. Expected failure: the oversize body is read. Depends on V.1, V.5.
+- [x] 2.10 [GREEN] Check `ContentLength` before reading; read at most `cap + 1`.
+- [x] 2.11 [RED] Integrity and charset: `Content-Type` charset not utf-8 -> UNREADABLE; invalid UTF-8 bytes -> UNREADABLE (strict decode); `sha256` metadata absent or mismatched -> UNREADABLE; empty body -> UNREADABLE. Expected failure: bad objects are returned as `RelayObject`.
+- [x] 2.12 [GREEN] Charset check, strict decode, sha256 verification. Mutation proof: switch to `errors="replace"` and record the invalid-bytes row red; revert.
 
 ### Wiring (D43, design test 6)
 
-- [ ] 2.13 [RED] `tests/unit/entrypoints/test_wiring.py` -- `select_warning_provider({})` returns `SenamhiWarningScraper`; `{"RAIN_ALERT_RELAY_BUCKET": "b"}` returns `RelayWarningProvider`; `{"RAIN_ALERT_RELAY_BUCKET": ""}` returns a provider whose `fetch_current_warnings` yields `Unavailable(RELAY_UNREADABLE)` ("relay bucket not configured") and **no `HtmlFetcher` exists in the graph** (assert by walking the object graph or by a fetcher fake that fails the test if constructed). Expected failure: `ImportError` (`select_warning_provider` absent).
-- [ ] 2.14 [GREEN] Implement presence-not-truthiness selection; `build_cloud_deps(env: Mapping[str, str] | None = None)` defaulting to `os.environ`; the handler stays unchanged. `build_local_deps` untouched.
-- [ ] 2.15 [RED] `on_read` in cloud wiring prints exactly **one** compact line (`separators=(",", ":")`, no newline inside) with `"event":"senamhi_relay"` and `"degraded"`, via `capsys`. Expected failure: nothing printed. Shape confirmed by V.4.
-- [ ] 2.16 [GREEN] Cloud `on_read` writer.
-- [ ] 2.17 [RED] Characterisation: existing `test_build_cloud_deps_constructs_only_console_notifier` and the architecture boundary tests still pass; `lambda_handler` never imports `entrypoints.cli` (unchanged). Extend the architecture test: `adapters/s3_relay_reader.py` imports nothing from `entrypoints`, with a planted-violation case.
+- [x] 2.13 [RED] `tests/unit/entrypoints/test_wiring.py` -- `select_warning_provider({})` returns `SenamhiWarningScraper`; `{"RAIN_ALERT_RELAY_BUCKET": "b"}` returns `RelayWarningProvider`; `{"RAIN_ALERT_RELAY_BUCKET": ""}` returns a provider whose `fetch_current_warnings` yields `Unavailable(RELAY_UNREADABLE)` ("relay bucket not configured") and **no `HtmlFetcher` exists in the graph** (assert by walking the object graph or by a fetcher fake that fails the test if constructed). Expected failure: `ImportError` (`select_warning_provider` absent).
+- [x] 2.14 [GREEN] Implement presence-not-truthiness selection; `build_cloud_deps(env: Mapping[str, str] | None = None)` defaulting to `os.environ`; the handler stays unchanged. `build_local_deps` untouched.
+- [x] 2.15 [RED] `on_read` in cloud wiring prints exactly **one** compact line (`separators=(",", ":")`, no newline inside) with `"event":"senamhi_relay"` and `"degraded"`, via `capsys`. Expected failure: nothing printed. Shape confirmed by V.4.
+- [x] 2.16 [GREEN] Cloud `on_read` writer.
+- [x] 2.17 [RED] Characterisation: existing `test_build_cloud_deps_constructs_only_console_notifier` and the architecture boundary tests still pass; `lambda_handler` never imports `entrypoints.cli` (unchanged). Extend the architecture test: `adapters/s3_relay_reader.py` imports nothing from `entrypoints`, with a planted-violation case.
 
 ### Close-out
 
-- [ ] 2.17a [RED/GREEN] The structured `on_read` log writer JSON-encodes the whole record (never string-formats it) and sanitizes + caps `version_id` before encoding (log-injection guard). Test: a `version_id` containing a newline and a forged `{"event":...}` fragment still prints exactly one line, and the decoded `version_id` has no newline and is length-capped.
-- [ ] 2.17b [RED/GREEN] The S3 reader enforces `MAX_OBJECT_BYTES` before reading or decoding: check `ContentLength` first, then a bounded read of at most `cap + 1` bytes. Tests: an oversized `ContentLength` -> `RELAY_UNREADABLE` with `TrackingBody.read` never called; a lying small `ContentLength` with a body larger than the cap -> `RELAY_UNREADABLE` (extends 2.9/2.10).
+- [x] 2.17a [RED/GREEN] The structured `on_read` log writer JSON-encodes the whole record (never string-formats it) and sanitizes + caps `version_id` before encoding (log-injection guard). Test: a `version_id` containing a newline and a forged `{"event":...}` fragment still prints exactly one line, and the decoded `version_id` has no newline and is length-capped.
+- [x] 2.17b [RED/GREEN] The S3 reader enforces `MAX_OBJECT_BYTES` before reading or decoding: check `ContentLength` first, then a bounded read of at most `cap + 1` bytes. Tests: an oversized `ContentLength` -> `RELAY_UNREADABLE` with `TrackingBody.read` never called; a lying small `ContentLength` with a body larger than the cap -> `RELAY_UNREADABLE` (extends 2.9/2.10).
 
-- [ ] 2.18 PR-2 gate: full project gate (as 1.26).
+- [x] 2.18 PR-2 gate: full project gate (as 1.26).
 - [ ] 2.19 **Security review** (fresh context) on the PR-2 branch diff. Scope: exceptions never carry object content into logs; the env-var-empty path cannot reach a direct scrape; no account id in fixtures.
 
 ---
