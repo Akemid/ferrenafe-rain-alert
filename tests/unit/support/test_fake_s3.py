@@ -60,6 +60,13 @@ def test_a_programmed_client_error_is_a_real_client_error() -> None:
 
 
 @pytest.mark.parametrize(
+    ("code", "status"),
+    [("NoSuchKey", 404), ("NoSuchBucket", 404), ("AccessDenied", 403), ("SlowDown", 503), ("InternalError", 500)],
+)
+def test_client_error_carries_the_http_status_botocore_would(code: str, status: int) -> None:
+    assert client_error(code).response["ResponseMetadata"]["HTTPStatusCode"] == status
+
+@pytest.mark.parametrize(
     "error",
     [EndpointConnectionError(endpoint_url="https://s3.invalid"), ReadTimeoutError(endpoint_url="https://s3.invalid")],
 )

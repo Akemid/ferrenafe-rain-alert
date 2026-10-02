@@ -15,9 +15,25 @@ from botocore.exceptions import ClientError
 _DEFAULT_MODIFIED = datetime(2026, 10, 2, 5, 0, tzinfo=UTC)
 
 
+_STATUS_BY_CODE = {
+    "NoSuchKey": 404,
+    "NoSuchBucket": 404,
+    "AccessDenied": 403,
+    "403": 403,
+    "SlowDown": 503,
+    "InternalError": 500,
+}
+
 def client_error(code: str, operation: str = "GetObject") -> ClientError:
     """A real `ClientError` carrying `code`, shaped as botocore builds it."""
-    return ClientError({"Error": {"Code": code, "Message": f"fake {code}"}}, operation)
+    status = _STATUS_BY_CODE.get(code, 400)
+    return ClientError(
+        {
+            "Error": {"Code": code, "Message": f"fake {code}"},
+            "ResponseMetadata": {"HTTPStatusCode": status},
+        },
+        operation,
+    )
 
 
 class TrackingBody:

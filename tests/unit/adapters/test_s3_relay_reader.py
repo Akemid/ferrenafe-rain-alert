@@ -106,7 +106,9 @@ def test_a_missing_key_is_relay_missing() -> None:
     assert raised.value.reason is UnavailableReason.RELAY_MISSING
 
 
-@pytest.mark.parametrize("code", ["AccessDenied", "403", "SlowDown", "InternalError"])
+@pytest.mark.parametrize("code", ["AccessDenied", "403", "SlowDown", "InternalError", "NoSuchBucket"])
+# Missing means `Error.Code == "NoSuchKey"` only. A bare HTTP 404 check would
+# misread NoSuchBucket (also 404) as "the producer has not published yet".
 def test_any_other_client_error_is_unreadable_and_names_the_code(code: str) -> None:
     with pytest.raises(FetchError) as raised:
         _reader(FakeS3Client(error=client_error(code))).read()
