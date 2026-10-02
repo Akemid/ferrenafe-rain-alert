@@ -25,8 +25,7 @@ import { PLACEHOLDER_SNAPSHOT_BUCKET_NAME } from '../lib/scheduled-cycle-stack';
 describe('bin/infra.ts — the deploy target', () => {
   test('pins the region, so `cdk deploy` cannot follow whatever the shell happens to carry', () => {
     // us-east-2 is where the AgentCore composer runtime already lives, so the
-    // whole application stays in one region. `docs/runbooks/public-page-deploy.md`
-    // records why this diverges from the us-east-1 named in CLAUDE.md.
+    // whole application stays in one region, as CLAUDE.md records.
     expect(stack.region).toBe('us-east-2');
   });
 

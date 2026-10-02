@@ -25,11 +25,13 @@ notice forever.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from rain_alert.domain.messages import OperatorNotice, OutageRecord
+from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.sources import SourceResult, Unavailable
 from rain_alert.domain.values import NoticeKind, SourceName
 
@@ -59,12 +61,47 @@ def _recovery_notice(sources: frozenset[SourceName], now: datetime) -> OperatorN
     )
 
 
-def _unavailable_notice(sources: frozenset[SourceName], now: datetime) -> OperatorNotice:
+#: Per-source failure detail is third-party text — an exception message, and
+#: sometimes a server's own response — so it is bounded before it reaches an
+#: operator's log, the same treatment `ssm_config_repository.py::_echo` gives
+#: an operator-supplied parameter value. 160 characters is enough for an HTTP
+#: status with a host, or a TLS error with a reason, and far short of a page
+#: of HTML pasted into CloudWatch.
+_MAX_DETAIL_LENGTH = 160
+
+
+def _failure_lines(sources: frozenset[SourceName], results: Mapping[SourceName, SourceResult[Any]]) -> str:
+    """One line per source, naming the reason and the detail it carried.
+
+    `Unavailable` has always held both — `adapters/http.py` translates every
+    transport fault into one precisely so the cause survives the seam — and
+    this notice discarded them, so an operator read "senamhi became
+    unavailable" and could not tell a timeout from a block from a parse
+    failure. The first live Lambda invocation degraded on SENAMHI three times
+    out of three, and the logs could not say why.
+    """
+    lines = []
+    for source in sorted(sources, key=lambda s: s.value):
+        result = results.get(source)
+        if not isinstance(result, Unavailable):
+            continue
+        detail = sanitize_source_text(result.detail)[:_MAX_DETAIL_LENGTH]
+        lines.append(f"- {source.value}: {result.reason.value} — {detail}")
+    return "\n".join(lines)
+
+
+def _unavailable_notice(
+    sources: frozenset[SourceName], now: datetime, results: Mapping[SourceName, SourceResult[Any]]
+) -> OperatorNotice:
     names = _source_list(sources)
+    body = f"{names} became unavailable as of {now.isoformat()}."
+    lines = _failure_lines(sources, results)
+    if lines:
+        body = f"{body}\n{lines}"
     return OperatorNotice(
         kind=NoticeKind.SOURCE_UNAVAILABLE,
         subject=f"Source(s) unavailable: {names}",
-        body=f"{names} became unavailable as of {now.isoformat()}.",
+        body=body,
         sources=sources,
         occurred_at=now,
     )
@@ -83,6 +120,7 @@ def evaluate_outage(
         for source, result in ((SourceName.SENAMHI, senamhi), (SourceName.OPEN_METEO, open_meteo))
         if isinstance(result, Unavailable)
     )
+    results: Mapping[SourceName, SourceResult[Any]] = {SourceName.SENAMHI: senamhi, SourceName.OPEN_METEO: open_meteo}
     previously_unavailable = active.unavailable_sources if active is not None else frozenset[SourceName]()
     recovered = previously_unavailable - unavailable_now
     newly_down = unavailable_now - previously_unavailable
@@ -102,7 +140,7 @@ def evaluate_outage(
             # adapter writes state and sends notices as separate steps), so an
             # un-notified record means "still owed a notice", not "already
             # told the operator".
-            notice = _unavailable_notice(unavailable_now, now)
+            notice = _unavailable_notice(unavailable_now, now, results)
             notified = OutageRecord(
                 city_slug=active.city_slug,
                 unavailable_sources=active.unavailable_sources,
@@ -118,7 +156,7 @@ def evaluate_outage(
     if recovered:
         notices.append(_recovery_notice(recovered, now))
     unavailable_notice_sources = unavailable_now if recovered else newly_down
-    notices.append(_unavailable_notice(unavailable_notice_sources, now))
+    notices.append(_unavailable_notice(unavailable_notice_sources, now, results))
 
     opened_at = active.opened_at if active is not None else now
     next_state = OutageRecord(

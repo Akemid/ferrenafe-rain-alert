@@ -45,3 +45,7 @@ happened.
   whether the scheduled-cycle Lambda's execution role needs `logs:CreateLogGroup`
   (Phase 3 fix round 2), to be confirmed at the first live invocation and this
   entry then replaced with the real output.
+- [`2026-10-02-senamhi-unreachable-from-aws.md`](2026-10-02-senamhi-unreachable-from-aws.md)
+  — both SENAMHI hosts (scrape page and OGC API) time out at TCP from
+  `us-east-2` and `sa-east-1`, answer from outside AWS; probe method, raw
+  output, verified cleanup.

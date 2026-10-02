@@ -192,3 +192,45 @@ def test_notices_use_a_distinct_kind_from_a_community_alert() -> None:
 
     assert decision.notices[0].kind is NoticeKind.SOURCE_UNAVAILABLE
     assert {kind.value for kind in NoticeKind}.isdisjoint({level.value for level in Level})
+
+
+class TestTheNoticeCarriesWhyTheSourceFailed:
+    """An operator reading "senamhi became unavailable" cannot act on it.
+
+    `Unavailable` carries a `reason` and a `detail` — the whole point of
+    `adapters/http.py` translating every transport fault into one — and the
+    notice discarded both. The first live Lambda invocation degraded on
+    SENAMHI three times out of three and the logs could not say why, because
+    the system had the answer and told nobody.
+
+    The detail is third-party text (an exception message, possibly a server
+    response), so it goes through `sanitize_source_text` and is bounded, the
+    same treatment operator-supplied SSM values already get before reaching
+    CloudWatch.
+    """
+
+    def test_the_unavailable_notice_names_the_reason_and_the_detail(self) -> None:
+        senamhi = Unavailable(
+            source=SourceName.SENAMHI,
+            reason=UnavailableReason.BAD_STATUS,
+            detail="HTTP 403 from www.senamhi.gob.pe",
+            observed_at=NOW,
+        )
+        decision = evaluate_outage(senamhi, _available(), None, CITY_SLUG, NOW)
+
+        body = decision.notices[0].body
+        assert "bad_status" in body
+        assert "HTTP 403 from www.senamhi.gob.pe" in body
+
+    def test_a_hostile_detail_is_sanitized_and_bounded(self) -> None:
+        senamhi = Unavailable(
+            source=SourceName.SENAMHI,
+            reason=UnavailableReason.TRANSPORT_ERROR,
+            detail="line one\nline two​" + "x" * 5000,
+            observed_at=NOW,
+        )
+        decision = evaluate_outage(senamhi, _available(), None, CITY_SLUG, NOW)
+
+        body = decision.notices[0].body
+        assert "line one line two" in body
+        assert len(body) < 600
