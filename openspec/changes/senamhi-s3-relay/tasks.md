@@ -114,50 +114,50 @@ VersionId, skew, resident text byte-identical). Design D37, D38, D40
 
 ### Contract file (D37)
 
-- [ ] 1.1 [RED] `tests/unit/adapters/test_senamhi_relay_contract.py` -- loads `contracts/senamhi-relay.json` and asserts `object_key`, `max_age_seconds`, `max_object_bytes`, `skew_tolerance_seconds` equal the Python constants; asserts the key's second segment equals `region_slug(REGION)`. Expected failure: `FileNotFoundError` on the contract file (then `ImportError` for the constants), not an assertion typo.
-- [ ] 1.2 [GREEN] Create `contracts/senamhi-relay.json` (D37 values: `senamhi/lambayeque/latest.html`, 10800, 4194304, 900) and constants `OBJECT_KEY`, `MAX_AGE`, `MAX_OBJECT_BYTES`, `SKEW_TOLERANCE` in `adapters/senamhi_relay.py`. Mutation proof: change one constant, record the test red, revert. Verify: `uv run pytest tests/unit/adapters/test_senamhi_relay_contract.py`.
+- [x] 1.1 [RED] `tests/unit/adapters/test_senamhi_relay_contract.py` -- loads `contracts/senamhi-relay.json` and asserts `object_key`, `max_age_seconds`, `max_object_bytes`, `skew_tolerance_seconds` equal the Python constants; asserts the key's second segment equals `region_slug(REGION)`. Expected failure: `FileNotFoundError` on the contract file (then `ImportError` for the constants), not an assertion typo.
+- [x] 1.2 [GREEN] Create `contracts/senamhi-relay.json` (D37 values: `senamhi/lambayeque/latest.html`, 10800, 4194304, 900) and constants `OBJECT_KEY`, `MAX_AGE`, `MAX_OBJECT_BYTES`, `SKEW_TOLERANCE` in `adapters/senamhi_relay.py`. Mutation proof: change one constant, record the test red, revert. Verify: `uv run pytest tests/unit/adapters/test_senamhi_relay_contract.py`.
 
 ### Domain reasons (D38)
 
-- [ ] 1.3 [RED] `tests/unit/domain/test_values.py` (or the existing reasons test) -- `UnavailableReason.STALE_RELAY/RELAY_MISSING/RELAY_UNREADABLE` exist with values `stale_relay`, `relay_missing`, `relay_unreadable`; `fallback_reason_for` stays total over every member (parametrized over `UnavailableReason`). Expected failure: `AttributeError` on the new members.
-- [ ] 1.4 [GREEN] Add the three members to `domain/values.py`. Verify: `uv run pytest tests/unit/domain` plus `uv run mypy`. Confirm no `contracts/` or `web/` file enumerates reasons (design says checked; re-check with `git grep`).
+- [x] 1.3 [RED] `tests/unit/domain/test_values.py` (or the existing reasons test) -- `UnavailableReason.STALE_RELAY/RELAY_MISSING/RELAY_UNREADABLE` exist with values `stale_relay`, `relay_missing`, `relay_unreadable`; `fallback_reason_for` stays total over every member (parametrized over `UnavailableReason`). Expected failure: `AttributeError` on the new members.
+- [x] 1.4 [GREEN] Add the three members to `domain/values.py`. Verify: `uv run pytest tests/unit/domain` plus `uv run mypy`. Confirm no `contracts/` or `web/` file enumerates reasons (design says checked; re-check with `git grep`).
 
 ### Pure helpers (D38, design tests 1 and 2)
 
-- [ ] 1.5 [RED] `test_senamhi_relay.py` `is_stale`/`relay_age` table: 2h59m59s fresh, **exactly 3h stale**, 4h stale; future `last_modified` clamps age to 0 and `fetched_at = min(last_modified, now)`. Expected failure: `ImportError` (`is_stale` absent).
-- [ ] 1.6 [GREEN] Implement `relay_age`, `is_stale(age, max_age)` with `>=`. Mutation proof: swap `>=` for `>` and record the "exactly 3h" row red; revert.
-- [ ] 1.7 [RED] `skew(claimed, last_modified)` table: within 15 min unflagged, over 15 min flagged with signed minutes; absent claim gives no note. Expected failure: `ImportError`.
-- [ ] 1.8 [GREEN] Implement `skew` and the skew note text.
-- [ ] 1.9 [RED] `relay_detail(...)`: VersionId first; at most 160 chars after `_failure_lines` sanitising; no `version=` segment when VersionId is `None`; truncation drops the tail not the VersionId. Expected failure: `ImportError`.
-- [ ] 1.10 [GREEN] Implement `relay_detail`. Verify: `uv run pytest tests/unit/adapters/test_senamhi_relay.py -k "stale or skew or detail"`.
+- [x] 1.5 [RED] `test_senamhi_relay.py` `is_stale`/`relay_age` table: 2h59m59s fresh, **exactly 3h stale**, 4h stale; future `last_modified` clamps age to 0 and `fetched_at = min(last_modified, now)`. Expected failure: `ImportError` (`is_stale` absent).
+- [x] 1.6 [GREEN] Implement `relay_age`, `is_stale(age, max_age)` with `>=`. Mutation proof: swap `>=` for `>` and record the "exactly 3h" row red; revert.
+- [x] 1.7 [RED] `skew(claimed, last_modified)` table: within 15 min unflagged, over 15 min flagged with signed minutes; absent claim gives no note. Expected failure: `ImportError`.
+- [x] 1.8 [GREEN] Implement `skew` and the skew note text.
+- [x] 1.9 [RED] `relay_detail(...)`: VersionId first; at most 160 chars after `_failure_lines` sanitising; no `version=` segment when VersionId is `None`; truncation drops the tail not the VersionId. Expected failure: `ImportError`.
+- [x] 1.10 [GREEN] Implement `relay_detail`. Verify: `uv run pytest tests/unit/adapters/test_senamhi_relay.py -k "stale or skew or detail"`.
 
 ### Test support
 
-- [ ] 1.11 Add `FakeRelayReader` to `tests/support/fakes.py` (returns a programmed `RelayObject` or raises a programmed `FetchError`). Hand-written, no `unittest.mock`. Covered by the provider tests below (a fake with no test is a defect in this project, per the `FileHtmlFetcher` precedent): add one self-test that it returns and raises as programmed.
+- [x] 1.11 Add `FakeRelayReader` to `tests/support/fakes.py` (returns a programmed `RelayObject` or raises a programmed `FetchError`). Hand-written, no `unittest.mock`. Covered by the provider tests below (a fake with no test is a defect in this project, per the `FileHtmlFetcher` precedent): add one self-test that it returns and raises as programmed.
 
 ### `RelayWarningProvider` (D38, design test 5)
 
-- [ ] 1.12 [RED] Fresh `tests/fixtures/senamhi/warnings_table.html` through `FakeRelayReader` yields `Available` equal to the scraper's result on the same fixture except `fetched_at == last_modified` and notes. Expected failure: `ImportError` (`RelayWarningProvider` absent).
-- [ ] 1.13 [GREEN] Implement `RelayObject`, `RelayObjectReader` Protocol, `RelayReadRecord`, `RelayWarningProvider.fetch_current_warnings` steps 2-4. The module imports nothing from `entrypoints`.
-- [ ] 1.14 [RED] Staleness is never a calm: a 4 h old *calm* page returns `Unavailable(STALE_RELAY)`, not `Available(())`, and `parse_warnings_page` is **not called** (assert via a recording parser seam or a poisoned page that would raise if parsed). Expected failure: returns `Available`, because freshness is not checked yet (write this test before 1.13's freshness branch lands, or temporarily remove the branch and record red).
-- [ ] 1.15 [GREEN] Freshness branch before parse; `now` is the injected clock, never `datetime.now()`.
-- [ ] 1.16 [RED] `broken_structure.html` fresh object gives the scraper's **exact** reason and detail (compare against `SenamhiWarningScraper` on the same fixture); a non-`FetchError` parser exception becomes `TRANSPORT_ERROR`. Expected failure: wrong reason or exception escapes.
-- [ ] 1.17 [GREEN] Parse-failure pass-through per D38 step 3.
-- [ ] 1.18 [RED] Reader raising `FetchError(RELAY_MISSING)` / `FetchError(RELAY_UNREADABLE)` maps through unchanged; reader raising an arbitrary `RuntimeError` becomes `RELAY_UNREADABLE`; **nothing escapes** `fetch_current_warnings`. Expected failure: the arbitrary exception propagates.
-- [ ] 1.19 [GREEN] Step 1 mapping.
-- [ ] 1.20 [RED] `on_read` is called exactly once per call, for success, stale, missing, unreadable and parse-failure outcomes, with a `RelayReadRecord` carrying `degraded` (1 for every `Unavailable`, including a fresh-object parse failure, D40), `reason`, `version_id`, `last_modified`, `age_seconds`, `skew_seconds`. Expected failure: callback never invoked.
-- [ ] 1.21 [GREEN] Emit the record on every path.
+- [x] 1.12 [RED] Fresh `tests/fixtures/senamhi/warnings_table.html` through `FakeRelayReader` yields `Available` equal to the scraper's result on the same fixture except `fetched_at == last_modified` and notes. Expected failure: `ImportError` (`RelayWarningProvider` absent).
+- [x] 1.13 [GREEN] Implement `RelayObject`, `RelayObjectReader` Protocol, `RelayReadRecord`, `RelayWarningProvider.fetch_current_warnings` steps 2-4. The module imports nothing from `entrypoints`.
+- [x] 1.14 [RED] Staleness is never a calm: a 4 h old *calm* page returns `Unavailable(STALE_RELAY)`, not `Available(())`, and `parse_warnings_page` is **not called** (assert via a recording parser seam or a poisoned page that would raise if parsed). Expected failure: returns `Available`, because freshness is not checked yet (write this test before 1.13's freshness branch lands, or temporarily remove the branch and record red).
+- [x] 1.15 [GREEN] Freshness branch before parse; `now` is the injected clock, never `datetime.now()`.
+- [x] 1.16 [RED] `broken_structure.html` fresh object gives the scraper's **exact** reason and detail (compare against `SenamhiWarningScraper` on the same fixture); a non-`FetchError` parser exception becomes `TRANSPORT_ERROR`. Expected failure: wrong reason or exception escapes.
+- [x] 1.17 [GREEN] Parse-failure pass-through per D38 step 3.
+- [x] 1.18 [RED] Reader raising `FetchError(RELAY_MISSING)` / `FetchError(RELAY_UNREADABLE)` maps through unchanged; reader raising an arbitrary `RuntimeError` becomes `RELAY_UNREADABLE`; **nothing escapes** `fetch_current_warnings`. Expected failure: the arbitrary exception propagates.
+- [x] 1.19 [GREEN] Step 1 mapping.
+- [x] 1.20 [RED] `on_read` is called exactly once per call, for success, stale, missing, unreadable and parse-failure outcomes, with a `RelayReadRecord` carrying `degraded` (1 for every `Unavailable`, including a fresh-object parse failure, D40), `reason`, `version_id`, `last_modified`, `age_seconds`, `skew_seconds`. Expected failure: callback never invoked.
+- [x] 1.21 [GREEN] Emit the record on every path.
 
 ### Operator notice and resident text (design test 7)
 
-- [ ] 1.22 [RED] `tests/unit/domain/test_outage.py` -- the notice for `STALE_RELAY` names `stale_relay` and the VersionId, within 160 chars; `RELAY_UNREADABLE` has its own scenario; changing reason between cycles (`relay_missing` -> `relay_unreadable`) does **not** re-notify (same outage). Expected failure: notice lacks the relay detail, or re-notifies.
-- [ ] 1.23 [RED] Resident message rendered for `Unavailable(STALE_RELAY)` is byte-identical to `Unavailable(TIMEOUT)` (golden comparison, not a substring check). This passes at once, because `snapshot.py` renders only `assessment.reasons`; record that honestly in apply-progress as a characterisation test, and prove its teeth by temporarily threading `reason.value` into the template and recording red.
-- [ ] 1.24 [GREEN] Make 1.22 pass with the smallest `outage.py` change, if any is needed (design claims generic rendering; verify, do not assume).
+- [x] 1.22 [RED] `tests/unit/domain/test_outage.py` -- the notice for `STALE_RELAY` names `stale_relay` and the VersionId, within 160 chars; `RELAY_UNREADABLE` has its own scenario; changing reason between cycles (`relay_missing` -> `relay_unreadable`) does **not** re-notify (same outage). Expected failure: notice lacks the relay detail, or re-notifies.
+- [x] 1.23 [RED] Resident message rendered for `Unavailable(STALE_RELAY)` is byte-identical to `Unavailable(TIMEOUT)` (golden comparison, not a substring check). This passes at once, because `snapshot.py` renders only `assessment.reasons`; record that honestly in apply-progress as a characterisation test, and prove its teeth by temporarily threading `reason.value` into the template and recording red.
+- [x] 1.24 [GREEN] Make 1.22 pass with the smallest `outage.py` change, if any is needed (design claims generic rendering; verify, do not assume).
 
 ### Close-out
 
-- [ ] 1.25 Extend `tests/architecture/test_layer_boundaries.py`: `adapters/senamhi_relay.py` imports nothing from `entrypoints`; include a planted-violation case proving the scan can fail.
-- [ ] 1.26 PR-1 gate: `uv run pytest`; `uv run --directory agent pytest`; `uv run ruff check`; `uv run ruff format --check`; `uv run mypy`; `cd infra && npm test` (unchanged, must stay green).
+- [x] 1.25 Extend `tests/architecture/test_layer_boundaries.py`: `adapters/senamhi_relay.py` imports nothing from `entrypoints`; include a planted-violation case proving the scan can fail.
+- [x] 1.26 PR-1 gate: `uv run pytest`; `uv run --directory agent pytest`; `uv run ruff check`; `uv run ruff format --check`; `uv run mypy`; `cd infra && npm test` (unchanged, must stay green).
 - [ ] 1.27 **Security review** (fresh context) on the PR-1 branch diff before opening the PR. Scope: no AWS account id, ARN or secret; `relay_detail` cannot leak page content into the operator notice beyond the VersionId and numbers; `tests/hygiene` passes after `git add`.
 
 ---
