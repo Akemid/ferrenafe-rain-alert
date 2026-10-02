@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import rain_alert.adapters.dynamodb_alert_repository as dynamodb_alert_repository
+import rain_alert.adapters.s3_relay_reader as s3_relay_reader
 import rain_alert.adapters.s3_snapshot_publisher as s3_snapshot_publisher
 import rain_alert.entrypoints.wiring as wiring
 from rain_alert.adapters.agent_composer import AgentBackedComposer
@@ -23,11 +24,15 @@ from rain_alert.adapters.s3_snapshot_publisher import (
     SNAPSHOT_KEY_ENV_VAR,
     S3SnapshotPublisher,
 )
+from rain_alert.adapters.s3_relay_reader import RELAY_BUCKET_ENV_VAR
+from rain_alert.adapters.senamhi_relay import RelayWarningProvider
 from rain_alert.adapters.senamhi_scraper import SenamhiWarningScraper
 from rain_alert.domain.config import AlertConfig, CoordinatesSource, RiskThresholds
 from rain_alert.domain.template import MessageComposer as TemplateMessageComposer
-from rain_alert.domain.values import ComposerName, Coordinates, WarningLevel
+from rain_alert.domain.sources import Unavailable
+from rain_alert.domain.values import ComposerName, Coordinates, UnavailableReason, WarningLevel
 from rain_alert.entrypoints.wiring import select_composer, select_snapshot_publisher
+from tests.support.fake_s3 import FakeS3Client, client_error
 from tests.support.fakes import FakeNotifier
 
 NOW = datetime(2026, 9, 3, 12, tzinfo=UTC)
@@ -254,3 +259,75 @@ class TestBuildCloudDeps:
 
         assert recorded == [fake_config]
         assert isinstance(deps.composer, TemplateMessageComposer)
+
+
+class _FailingHtmlFetcher:
+    """Fails the test if the relay graph ever builds a direct HTML fetcher."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("an HtmlFetcher was constructed in relay mode")
+
+
+class TestSelectWarningProvider:
+    """design D43 / R7: presence of the variable selects the relay, and a
+    configured relay never falls back to scraping SENAMHI directly."""
+
+    def test_no_variable_selects_the_direct_scraper(self) -> None:
+        assert isinstance(wiring.select_warning_provider({}), SenamhiWarningScraper)
+
+    def test_a_bucket_selects_the_relay_provider(self) -> None:
+        provider = wiring.select_warning_provider({RELAY_BUCKET_ENV_VAR: "a-bucket"})
+
+        assert isinstance(provider, RelayWarningProvider)
+
+    def test_an_empty_bucket_is_a_degraded_relay_never_a_scrape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(wiring, "HttpxHtmlFetcher", _FailingHtmlFetcher)
+
+        provider = wiring.select_warning_provider({RELAY_BUCKET_ENV_VAR: ""})
+        result = provider.fetch_current_warnings("lambayeque", NOW)
+
+        assert isinstance(provider, RelayWarningProvider)
+        assert isinstance(result, Unavailable)
+        assert result.reason is UnavailableReason.RELAY_UNREADABLE
+        assert "relay bucket not configured" in result.detail
+
+    def test_the_relay_branch_builds_no_html_fetcher(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(wiring, "HttpxHtmlFetcher", _FailingHtmlFetcher)
+
+        wiring.select_warning_provider({RELAY_BUCKET_ENV_VAR: "a-bucket"})
+
+    def test_the_relay_provider_reads_through_the_injected_bucket(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = FakeS3Client(error=client_error("NoSuchKey"))
+        monkeypatch.setattr(s3_relay_reader.boto3, "client", lambda *args, **kwargs: client)
+
+        result = wiring.select_warning_provider({RELAY_BUCKET_ENV_VAR: "a-bucket"}).fetch_current_warnings(
+            "lambayeque", NOW
+        )
+
+        assert isinstance(result, Unavailable)
+        assert result.reason is UnavailableReason.RELAY_MISSING
+        assert client.get_calls[0]["Bucket"] == "a-bucket"
+
+    def test_build_local_deps_never_uses_the_relay(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv(RELAY_BUCKET_ENV_VAR, "a-bucket")
+
+        deps = wiring.build_local_deps(state_file=tmp_path / "state.json", now=lambda: NOW)
+
+        assert isinstance(deps.warnings, SenamhiWarningScraper)
+
+    def test_build_cloud_deps_selects_by_the_given_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            wiring, "SsmConfigRepository", lambda: _FakeSsmConfigRepository(_config(ComposerName.TEMPLATE))
+        )
+
+        deps = wiring.build_cloud_deps({RELAY_BUCKET_ENV_VAR: "a-bucket"})
+
+        assert isinstance(deps.warnings, RelayWarningProvider)
+
+    def test_build_cloud_deps_defaults_to_the_process_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            wiring, "SsmConfigRepository", lambda: _FakeSsmConfigRepository(_config(ComposerName.TEMPLATE))
+        )
+        monkeypatch.setenv(RELAY_BUCKET_ENV_VAR, "a-bucket")
+
+        assert isinstance(wiring.build_cloud_deps().warnings, RelayWarningProvider)

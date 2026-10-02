@@ -36,7 +36,9 @@ from rain_alert.adapters.local.offline_sources import FileHtmlFetcher, OfflineOp
 from rain_alert.adapters.local.static_config_repository import StaticConfigRepository
 from rain_alert.adapters.local.static_contact_repository import StaticContactRepository
 from rain_alert.adapters.open_meteo import OpenMeteoForecastProvider
+from rain_alert.adapters.s3_relay_reader import RELAY_BUCKET_ENV_VAR, S3RelayReader, UnconfiguredRelayReader
 from rain_alert.adapters.s3_snapshot_publisher import SNAPSHOT_BUCKET_ENV_VAR, SNAPSHOT_KEY_ENV_VAR, S3SnapshotPublisher
+from rain_alert.adapters.senamhi_relay import RelayReadRecord, RelayWarningProvider
 from rain_alert.adapters.senamhi_scraper import SenamhiWarningScraper
 from rain_alert.adapters.ssm_config_repository import SsmConfigRepository
 from rain_alert.application.dependencies import CycleDependencies
@@ -45,7 +47,7 @@ from rain_alert.domain.risk import RiskEvaluator
 from rain_alert.domain.template import MessageComposer
 from rain_alert.domain.values import ComposerName
 from rain_alert.entrypoints.run_once import default_now
-from rain_alert.ports import ForecastProvider, Notifier, SnapshotPublisher
+from rain_alert.ports import ForecastProvider, Notifier, SnapshotPublisher, WarningProvider
 from rain_alert.ports import MessageComposer as MessageComposerPort
 
 SENAMHI_FIXTURE_NAME = "senamhi.html"
@@ -117,6 +119,31 @@ def select_snapshot_publisher(env: Mapping[str, str]) -> SnapshotPublisher | Non
     return JsonFileSnapshotPublisher(Path(path)) if path else None
 
 
+def select_warning_provider(
+    env: Mapping[str, str],
+    *,
+    on_read: Callable[[RelayReadRecord], None] = lambda _: None,
+) -> WarningProvider:
+    """Where this cycle's SENAMHI warnings come from (design D43, proposal R7).
+
+    The variable's *presence* selects the relay, not its truthiness, unlike
+    `select_snapshot_publisher`, and on purpose: an empty value is a
+    misconfigured relay and must degrade the cycle, never become a direct
+    scrape. The relay branch constructs no `HtmlFetcher`, so there is
+    structurally no direct-HTTP path to fall back to.
+
+    Args:
+        env: `os.environ` in production, a plain `dict` in tests.
+        on_read: Receives one `RelayReadRecord` per relay read. Unused when
+            the relay is not configured.
+    """
+    if RELAY_BUCKET_ENV_VAR not in env:
+        return SenamhiWarningScraper(HttpxHtmlFetcher())
+    bucket = env[RELAY_BUCKET_ENV_VAR]
+    reader = S3RelayReader(bucket) if bucket else UnconfiguredRelayReader()
+    return RelayWarningProvider(reader, on_read=on_read)
+
+
 def build_local_deps(
     *,
     state_file: Path,
@@ -182,7 +209,7 @@ def build_local_deps(
     )
 
 
-def build_cloud_deps() -> CycleDependencies:
+def build_cloud_deps(env: Mapping[str, str] | None = None) -> CycleDependencies:
     """The full dependency graph for a scheduled cycle (design.md D6, D29).
 
     The second leaf set over the same `CycleDependencies` type
@@ -193,6 +220,10 @@ def build_cloud_deps() -> CycleDependencies:
     always the real one — there is no `--offline-fixtures`/`--now` equivalent
     here, because a scheduled cycle always runs against the real sources,
     the real table and the real clock.
+
+    Args:
+        env: Where `RAIN_ALERT_RELAY_BUCKET` is read. `None` (the handler's
+            call) means `os.environ`; tests pass a plain `dict`.
     """
     config_repository = SsmConfigRepository()
     notifier = ConsoleNotifier()
@@ -201,7 +232,7 @@ def build_cloud_deps() -> CycleDependencies:
 
     return CycleDependencies(
         config=config_repository,
-        warnings=SenamhiWarningScraper(HttpxHtmlFetcher()),
+        warnings=select_warning_provider(os.environ if env is None else env),
         forecast=OpenMeteoForecastProvider(),
         composer=composer,
         contacts=StaticContactRepository(),

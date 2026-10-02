@@ -25,6 +25,9 @@ from rain_alert.adapters.senamhi_relay import MAX_OBJECT_BYTES, OBJECT_KEY, Rela
 from rain_alert.domain.sanitize import sanitize_source_text
 from rain_alert.domain.values import UnavailableReason
 
+#: Presence of this variable (even empty) selects relay mode (design D43).
+RELAY_BUCKET_ENV_VAR = "RAIN_ALERT_RELAY_BUCKET"
+
 CONNECT_TIMEOUT = 3.0
 READ_TIMEOUT = 5.0
 TOTAL_MAX_ATTEMPTS = 2
@@ -148,3 +151,16 @@ class S3RelayReader:
             version_id=response.get("VersionId"),
             claimed_fetched_at=_parse_claim(metadata.get("fetched-at")),
         )
+
+
+class UnconfiguredRelayReader:
+    """The reader for a relay variable that is present but empty (design D43).
+
+    A misconfigured relay must degrade the cycle, never fall back to scraping
+    SENAMHI directly (R7), and raising at wiring time would abort the cycle
+    before Open-Meteo runs. So the failure is deferred to `read`, where the
+    provider turns it into `Unavailable(RELAY_UNREADABLE)`.
+    """
+
+    def read(self) -> RelayObject:
+        raise _unreadable("relay bucket not configured")
