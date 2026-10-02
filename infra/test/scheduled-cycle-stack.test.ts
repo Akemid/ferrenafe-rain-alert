@@ -292,9 +292,21 @@ describe('ScheduledCycleStack — EventBridge Scheduler (D35)', () => {
       }),
     });
 
-    template.hasResourceProperties('AWS::Lambda::Function', {
-      ReservedConcurrentExecutions: 1,
-    });
+    // `ReservedConcurrentExecutions: 1` was asserted here until 2026-10-01, when the first deploy failed
+    // on it: this account's total Lambda concurrency is 10 against AWS's 1000 default, and AWS requires 10
+    // to remain unreserved, so no reservation is expressible at any value. The reasoning for wanting it
+    // (D35, at-least-once delivery) is unchanged and recorded at the property's absence in the stack.
+    //
+    // This now asserts the **absence**, deliberately. A property that silently reappears would fail the
+    // deploy again, in CloudFormation, after the asset upload — and the next person would have to
+    // rediscover why from an error message that names a number and not a reason. When the quota lands,
+    // this assertion flips back to the value and the stack's comment comes out together.
+    const functions = template.findResources('AWS::Lambda::Function');
+    const reservations = Object.values(functions)
+      .map((fn) => (fn as { Properties?: Record<string, unknown> }).Properties?.ReservedConcurrentExecutions)
+      .filter((value) => value !== undefined);
+    expect(Object.keys(functions)).toHaveLength(1);
+    expect(reservations).toEqual([]);
   });
 
   test('scheduleEnabled context defaults to ENABLED and produces DISABLED when explicitly disabled', () => {

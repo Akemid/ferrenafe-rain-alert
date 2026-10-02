@@ -191,10 +191,31 @@ export class ScheduledCycleStack extends Stack {
       // Chosen for import speed (boto3 client construction dominates cold start), not working set —
       // budgeted inside D31's headroom, not treated as free (to verify at the first live `REPORT` line).
       memorySize: 512,
-      // EventBridge Scheduler delivery is at-least-once; two concurrent cycles would both read an empty
-      // dedup history and both send. This throttles the second one so its retry sees what the first wrote
-      // (D35).
-      reservedConcurrentExecutions: 1,
+      // **`reservedConcurrentExecutions: 1` belongs here and is absent, because this account cannot
+      // express it.** D35's reasoning is unchanged and still correct: EventBridge Scheduler delivery is
+      // at-least-once, two concurrent cycles would both read an empty dedup history and both send, and a
+      // reservation of 1 throttles the second so its retry sees what the first wrote.
+      //
+      // The first deploy, 2026-10-01, failed on exactly that line:
+      //
+      //   Specified ReservedConcurrentExecutions for function decreases account's
+      //   UnreservedConcurrentExecution below its minimum value of [10]
+      //
+      // The account's total concurrency is **10**, against AWS's 1000 default, and AWS requires 10 to
+      // remain unreserved — so no reservation is possible at any value, not just an inconvenient one. A
+      // support case to raise it to 100 was filed the same day; Service Quotas reports this quota as
+      // `Adjustable: true` and its adjustment API refuses any value below the default, which is why it
+      // could not be self-served. See
+      // `docs/blog/2026-10-01-the-quota-that-says-adjustable-and-is-not.md`.
+      //
+      // What is exposed meanwhile: a duplicated cycle writes a duplicate `AlertRecord` and repeats an
+      // entry under "Alertas enviadas" on the public page. It does not reach a resident twice, because
+      // `ConsoleNotifier` is the only notifier that exists — the same coupling the `Notifier` port's own
+      // docstring records for the dedup-suppression finding, and it changes on the same day, for the same
+      // reason.
+      //
+      // **Restore this line when the quota lands.** It is a one-line change plus the assertion in
+      // `infra/test/scheduled-cycle-stack.test.ts`, and it is strictly better than what is here now.
       logGroup,
       environment: {
         RAIN_ALERT_AGENT_RUNTIME_ARN: props.agentRuntimeArn,
