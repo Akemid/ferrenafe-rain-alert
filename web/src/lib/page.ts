@@ -16,7 +16,7 @@
  * one.
  */
 
-import type { RecentAlert, Snapshot } from './snapshot';
+import { SUPPORTED_LEVELS, type Level, type RecentAlert, type Snapshot } from './snapshot';
 import type { ViewState } from './view';
 
 export interface PageElements {
@@ -171,7 +171,74 @@ function headingText(snapshot: Snapshot, availability: SourceAvailability, stale
 function statusClass(snapshot: Snapshot, availability: SourceAvailability, stale: boolean): string {
   const classes = stale ? ['status-stale'] : [levelClass(snapshot.level)];
   if (availability.incomplete) classes.push('status-degraded');
+  if (isBlind(snapshot, availability)) classes.push('status-blind');
   return classes.join(' ');
+}
+
+/**
+ * A cycle that read nothing AND reports `none`: the level is the evaluator's
+ * default, not a finding (see `headingText`). The scale shows no current
+ * segment for it. A blind cycle that reports risk is not blind in this sense —
+ * it keeps its level, for the same reason the heading does.
+ */
+function isBlind(snapshot: Snapshot, availability: SourceAvailability): boolean {
+  return availability.blind && snapshot.level === 'none';
+}
+
+// --- The risk scale -------------------------------------------------------
+
+/**
+ * Short segment labels. `snapshot.level_label` is the domain's wording for the
+ * same levels ("sin riesgo", "riesgo inminente"); these are the web layer's own
+ * capitalised, in-the-scale spelling. Two spellings of one fact can drift, so
+ * `page.test.ts` asserts that for every level the current segment's label
+ * equals `level_label` case-insensitively. Keyed off `SUPPORTED_LEVELS` so a
+ * level added to the contract is a type error here, not a missing segment.
+ */
+const SCALE_LABELS: Record<Level, string> = {
+  none: 'Sin riesgo',
+  prepare: 'Prepárate',
+  imminent: 'Riesgo inminente',
+};
+
+function element<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className: string,
+  text?: string,
+): HTMLElementTagNameMap[K] {
+  const created = document.createElement(tag);
+  created.className = className;
+  if (text !== undefined) created.textContent = text;
+  return created;
+}
+
+/**
+ * Colour is never the only signal: the current segment also carries
+ * `aria-current`. Modifiers, all on the current segment unless noted:
+ * - `scale-outlined`: stale. Outline only, no level colour, because a
+ *   two-day-old green reads as a current all-clear.
+ * - `scale-hatched`: an incomplete cycle that said `none`. Grey hatching, not
+ *   green. An incomplete cycle that found risk keeps its real colour.
+ * - `scale-blind` (on the list): nothing was read, so no segment is current.
+ */
+function buildScale(snapshot: Snapshot, availability: SourceAvailability, stale: boolean): HTMLOListElement {
+  const blind = isBlind(snapshot, availability);
+  const scale = element('ol', blind ? 'scale scale-blind' : 'scale');
+  scale.setAttribute('aria-label', 'Escala de riesgo');
+
+  for (const level of SUPPORTED_LEVELS) {
+    const segment = element('li', `scale-segment segment-${level}`);
+    if (!blind && level === snapshot.level) {
+      segment.classList.add('is-current');
+      segment.setAttribute('aria-current', 'true');
+      if (stale) segment.classList.add('scale-outlined');
+      else if (availability.incomplete && level === 'none') segment.classList.add('scale-hatched');
+    }
+    segment.appendChild(element('span', 'scale-bar'));
+    segment.appendChild(element('span', 'scale-label', SCALE_LABELS[level]));
+    scale.appendChild(segment);
+  }
+  return scale;
 }
 
 function paragraph(text: string, className?: string): HTMLParagraphElement {
@@ -196,7 +263,8 @@ function renderStatus(elements: PageElements, snapshot: Snapshot, staleAgeHours:
   status.replaceChildren();
 
   // State 2: stale data — the age is the most important thing on the page at
-  // that moment, so it goes first, above the level, not buried under it.
+  // that moment, so it goes first, above the level, not buried under it. It is
+  // a direct child of `#status`, outside the summary, so it can run full width.
   if (staleAgeHours !== null) {
     const ageDays = Math.floor(staleAgeHours / 24);
     status.appendChild(
@@ -209,15 +277,25 @@ function renderStatus(elements: PageElements, snapshot: Snapshot, staleAgeHours:
     );
   }
 
-  status.appendChild(paragraph(headingText(snapshot, availability, stale), 'status-level'));
+  const summary = element('div', 'status-summary');
+  summary.appendChild(
+    paragraph(isBlind(snapshot, availability) ? 'Estado de la evaluación' : 'Nivel de riesgo', 'status-label'),
+  );
+  summary.appendChild(buildScale(snapshot, availability, stale));
+  summary.appendChild(paragraph(headingText(snapshot, availability, stale), 'status-level'));
 
   // Directly under the heading, before any reassurance: a resident must not
   // be able to read the level without the caveat that qualifies it.
   if (availability.incomplete) {
-    status.appendChild(paragraph(degradedNoticeText(availability), 'degraded-notice'));
+    summary.appendChild(paragraph(degradedNoticeText(availability), 'degraded-notice'));
   }
 
-  status.appendChild(paragraph(`Última evaluación: ${formatPublishedTimestamp(snapshot.evaluated_at)}`));
+  summary.appendChild(
+    paragraph(`Última evaluación: ${formatPublishedTimestamp(snapshot.evaluated_at)}`, 'status-evaluated'),
+  );
+  status.appendChild(summary);
+
+  const details = element('div', 'status-details');
 
   if (snapshot.alert === null) {
     // "No hay ninguna alerta activa EN ESTE MOMENTO" is a present-tense claim
@@ -232,34 +310,34 @@ function renderStatus(elements: PageElements, snapshot: Snapshot, staleAgeHours:
     // `renderStale` rendered no alert paragraph at all. Collapsing two paths
     // fixes fields going missing from one of them and introduces the mirror
     // risk — a field arriving in one that was never written for it.
-    status.appendChild(
+    details.appendChild(
       paragraph(
         availability.incomplete || stale
           ? 'No se envió ninguna alerta en esta evaluación.'
           : 'No hay ninguna alerta activa en este momento.',
+        'no-alert',
       ),
     );
   } else {
-    const alertTitle = document.createElement('h3');
-    alertTitle.textContent = snapshot.alert.title;
-    status.appendChild(alertTitle);
-
-    const alertBody = document.createElement('pre');
-    alertBody.textContent = snapshot.alert.body;
-    status.appendChild(alertBody);
+    const alertBox = element('div', 'alert-box');
+    alertBox.appendChild(element('h3', 'alert-title', snapshot.alert.title));
+    alertBox.appendChild(element('pre', 'alert-body', snapshot.alert.body));
+    details.appendChild(alertBox);
   }
 
   if (snapshot.reasons.length > 0) {
-    status.appendChild(paragraph('Motivos:'));
+    const reasons = element('div', 'status-reasons');
+    reasons.appendChild(paragraph('Motivos:', 'reasons-title'));
 
-    const reasonsList = document.createElement('ul');
+    const reasonsList = element('ul', 'reasons');
     for (const reason of snapshot.reasons) {
-      const item = document.createElement('li');
-      item.textContent = reason;
-      reasonsList.appendChild(item);
+      reasonsList.appendChild(element('li', 'reason', reason));
     }
-    status.appendChild(reasonsList);
+    reasons.appendChild(reasonsList);
+    details.appendChild(reasons);
   }
+
+  status.appendChild(details);
 }
 
 // --- State 1: no alert is the ordinary case, not an empty state. ---
@@ -291,8 +369,11 @@ function renderRecentAlertsList(elements: PageElements, alerts: readonly RecentA
   const { recentList } = elements;
   recentList.replaceChildren();
   for (const alert of alerts) {
+    // The item's text stays exactly `${date} — ${title}`; the span only lets
+    // the stylesheet set the date in bold.
     const item = document.createElement('li');
-    item.textContent = `${formatPublishedTimestamp(alert.sent_at)} — ${alert.title}`;
+    item.appendChild(element('span', 'recent-date', formatPublishedTimestamp(alert.sent_at)));
+    item.appendChild(document.createTextNode(` — ${alert.title}`));
     recentList.appendChild(item);
   }
 }

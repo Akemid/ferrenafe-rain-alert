@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { renderPage, type PageElements } from '../src/lib/page';
-import type { Snapshot } from '../src/lib/snapshot';
+import { SUPPORTED_LEVELS, type Snapshot } from '../src/lib/snapshot';
 import { resolveViewState } from '../src/lib/view';
 import {
   sampleAlerting,
@@ -325,5 +325,216 @@ describe('renderPage — timestamps are shown the way the alert message shows th
     );
 
     expect(elements.recentList.textContent).toContain('desconocido — Alerta de lluvias');
+  });
+});
+
+// --- The risk scale -------------------------------------------------------
+//
+// A three-segment scale (`Sin riesgo` / `Prepárate` / `Riesgo inminente`) is
+// the first thing under the page header. Colour is never its only signal: the
+// current segment is also marked with `aria-current`, so a reader who cannot
+// tell the colours apart, or a screen reader, gets the same answer.
+
+const SCALE_LABELS = ['Sin riesgo', 'Prepárate', 'Riesgo inminente'];
+
+/** `prepare` without any source missing, so it is a complete cycle. */
+const samplePrepareComplete: Snapshot = {
+  ...sampleDegradedForecastOnly,
+  sources: { senamhi: 'available', open_meteo: 'available' },
+  degraded: false,
+};
+
+/** `none` from a cycle where only one source answered: incomplete, not blind. */
+const sampleQuietIncomplete: Snapshot = {
+  ...sampleQuiet,
+  sources: { senamhi: 'unavailable', open_meteo: 'available' },
+  degraded: true,
+};
+
+function segments(elements: PageElements): HTMLElement[] {
+  return Array.from(elements.status.querySelectorAll<HTMLElement>('.scale > li'));
+}
+
+function currentSegments(elements: PageElements): HTMLElement[] {
+  return segments(elements).filter((segment) => segment.getAttribute('aria-current') === 'true');
+}
+
+function segmentLabel(segment: HTMLElement): string {
+  return segment.querySelector('.scale-label')?.textContent ?? '';
+}
+
+describe('renderPage — the risk scale exists in every snapshot state', () => {
+  it.each([
+    ['fresh, no risk', sampleQuiet, FRESH],
+    ['fresh, imminent', sampleAlerting, FRESH],
+    ['fresh, incomplete', sampleQuietIncomplete, FRESH],
+    ['fresh, blind', sampleBlind, FRESH],
+    ['stale', sampleAlerting, STALE],
+    ['stale, blind', sampleBlind, STALE],
+  ] as const)('renders an ordered, named list of the three levels: %s', (_name, snapshot, now) => {
+    const elements = render(snapshot, now);
+
+    const scale = elements.status.querySelector('ol.scale');
+    expect(scale).not.toBeNull();
+    expect(scale?.getAttribute('aria-label')).toBe('Escala de riesgo');
+    expect(segments(elements).map(segmentLabel)).toEqual(SCALE_LABELS);
+  });
+
+  it('is not rendered when the fetch failed', () => {
+    const elements = makeElements();
+    renderPage(elements, resolveViewState({ ok: false, error: new Error('network unreachable') }, FRESH));
+
+    expect(elements.status.querySelector('.scale')).toBeNull();
+  });
+});
+
+describe('renderPage — the current segment is the one the domain reports', () => {
+  it.each([
+    ['none', sampleQuiet, 0],
+    ['prepare', samplePrepareComplete, 1],
+    ['imminent', sampleAlerting, 2],
+  ] as const)('marks exactly the "%s" segment with aria-current', (_level, snapshot, index) => {
+    const elements = render(snapshot, FRESH);
+
+    const current = currentSegments(elements);
+    expect(current).toHaveLength(1);
+    expect(current[0]).toBe(segments(elements)[index]);
+  });
+
+  it('has a fixture for every supported level, so the label check below cannot skip one', () => {
+    const covered = [sampleQuiet, samplePrepareComplete, sampleAlerting].map((snapshot) => snapshot.level);
+
+    expect([...covered].sort()).toEqual([...SUPPORTED_LEVELS].sort());
+  });
+
+  it.each([sampleQuiet, samplePrepareComplete, sampleAlerting])(
+    'labels the current segment with the domain label for "$level" (case-insensitively)',
+    (snapshot) => {
+      // The web layer keeps its own static label map; `level_label` is the
+      // domain's. They are two spellings of one fact, and this is what stops
+      // them drifting apart without anything going red.
+      const [current] = currentSegments(render(snapshot, FRESH));
+
+      expect(segmentLabel(current as HTMLElement).toLowerCase()).toBe(snapshot.level_label.toLowerCase());
+    },
+  );
+
+  it('keeps the real level on an incomplete cycle that found risk', () => {
+    const elements = render(sampleDegradedForecastOnly, FRESH);
+
+    const [current] = currentSegments(elements);
+    expect(segmentLabel(current as HTMLElement)).toBe('Prepárate');
+    expect(current?.classList.contains('scale-hatched')).toBe(false);
+  });
+});
+
+describe('renderPage — the scale never paints absence of information as good news', () => {
+  it('hatches the "none" segment of an incomplete cycle instead of leaving it green', () => {
+    const [current] = currentSegments(render(sampleQuietIncomplete, FRESH));
+
+    expect(current?.classList.contains('scale-hatched')).toBe(true);
+  });
+
+  it('does not hatch the "none" segment of a complete cycle', () => {
+    const [current] = currentSegments(render(sampleQuiet, FRESH));
+
+    expect(current?.classList.contains('scale-hatched')).toBe(false);
+  });
+
+  it('marks no segment as current when both sources were down', () => {
+    const elements = render(sampleBlind, FRESH);
+
+    expect(currentSegments(elements)).toHaveLength(0);
+    expect(elements.status.querySelector('.scale')?.classList.contains('scale-blind')).toBe(true);
+    expect(elements.status.classList.contains('status-blind')).toBe(true);
+  });
+
+  it('keeps a blind cycle that nevertheless reports risk on the real level', () => {
+    // The heading already refuses to suppress an `imminent` from a blind
+    // cycle; the scale must not either.
+    const elements = render({ ...sampleBlind, level: 'imminent', level_label: 'riesgo inminente' }, FRESH);
+
+    expect(currentSegments(elements)).toHaveLength(1);
+    expect(elements.status.classList.contains('status-blind')).toBe(false);
+  });
+
+  it('outlines the current segment on a stale page, with no level colour', () => {
+    const [current] = currentSegments(render(sampleAlerting, STALE));
+
+    expect(current?.classList.contains('scale-outlined')).toBe(true);
+    expect(segmentLabel(current as HTMLElement)).toBe('Riesgo inminente');
+  });
+
+  it('does not outline a fresh page', () => {
+    const [current] = currentSegments(render(sampleAlerting, FRESH));
+
+    expect(current?.classList.contains('scale-outlined')).toBe(false);
+  });
+
+  it('outlines rather than hatches a stale incomplete "none"', () => {
+    const [current] = currentSegments(render(sampleQuietIncomplete, STALE));
+
+    expect(current?.classList.contains('scale-outlined')).toBe(true);
+    expect(current?.classList.contains('scale-hatched')).toBe(false);
+  });
+});
+
+describe('renderPage — the label above the scale', () => {
+  const label = (elements: PageElements): string => elements.status.querySelector('.status-label')?.textContent ?? '';
+
+  it('says "Nivel de riesgo" when there is a level', () => {
+    expect(label(render(sampleQuiet, FRESH))).toBe('Nivel de riesgo');
+    expect(label(render(sampleAlerting, STALE))).toBe('Nivel de riesgo');
+  });
+
+  it('says "Estado de la evaluación" when both sources were down', () => {
+    expect(label(render(sampleBlind, FRESH))).toBe('Estado de la evaluación');
+  });
+});
+
+describe('renderPage — the structure inside #status', () => {
+  it('puts the stale banner first, outside the summary, so it can run full width', () => {
+    const elements = render(sampleQuiet, STALE);
+
+    expect(elements.status.firstElementChild?.className).toBe('stale-warning');
+    expect(elements.status.querySelector('.status-summary .stale-warning')).toBeNull();
+  });
+
+  it('puts level, notice and timestamp in the summary and the alert and reasons in the details', () => {
+    const elements = render(sampleAlerting, FRESH);
+
+    expect(elements.status.querySelector('.status-summary .status-level')).not.toBeNull();
+    expect(elements.status.querySelector('.status-summary .status-evaluated')?.textContent).toBe(
+      'Última evaluación: 03/09/2026 07:00',
+    );
+    expect(elements.status.querySelector('.status-details .alert-box h3')?.textContent).toBe(sampleAlerting.alert!.title);
+    expect(elements.status.querySelector('.status-details .alert-box pre')?.textContent).toBe(sampleAlerting.alert!.body);
+    expect(elements.status.querySelector('.status-details .reasons li')?.textContent).toBe(sampleAlerting.reasons[0]);
+  });
+
+  it('keeps the notice inside the summary, directly under the heading', () => {
+    const elements = render(sampleBlind, FRESH);
+
+    const heading = elements.status.querySelector('.status-level');
+    expect(heading?.nextElementSibling?.className).toBe('degraded-notice');
+    expect(heading?.parentElement?.className).toBe('status-summary');
+  });
+
+  it('renders the no-alert sentence in the details', () => {
+    const elements = render(sampleQuiet, FRESH);
+
+    expect(elements.status.querySelector('.status-details .no-alert')?.textContent).toBe(
+      'No hay ninguna alerta activa en este momento.',
+    );
+  });
+});
+
+describe('renderPage — recent alerts show the date in bold without changing the text', () => {
+  it('wraps the date in a span and keeps the item text exactly "date — title"', () => {
+    const elements = render(sampleAlerting, FRESH);
+
+    const item = elements.recentList.children[0] as HTMLElement;
+    expect(item.textContent).toBe('03/09/2026 07:00 — Alerta de lluvias — Ferreñafe — riesgo inminente');
+    expect(item.querySelector('span.recent-date')?.textContent).toBe('03/09/2026 07:00');
   });
 });
