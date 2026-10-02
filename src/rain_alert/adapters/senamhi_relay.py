@@ -35,6 +35,10 @@ MAX_OBJECT_BYTES = 4194304
 #: Producer-vs-S3 clock disagreement above which the operator is told.
 SKEW_TOLERANCE = timedelta(seconds=900)
 
+#: How far ahead of the cycle clock a `LastModified` may sit and still be clock
+#: jitter. Beyond it the timestamp cannot be trusted and the object is unreadable.
+FUTURE_TOLERANCE = timedelta(seconds=60)
+
 
 @dataclass(frozen=True, slots=True)
 class RelayObject:
@@ -180,11 +184,13 @@ class RelayWarningProvider:
         on_read: Callable[[RelayReadRecord], None] = lambda _: None,
         max_age: timedelta = MAX_AGE,
         skew_tolerance: timedelta = SKEW_TOLERANCE,
+        future_tolerance: timedelta = FUTURE_TOLERANCE,
     ) -> None:
         self._reader = reader
         self._on_read = on_read
         self._max_age = max_age
         self._skew_tolerance = skew_tolerance
+        self._future_tolerance = future_tolerance
 
     def fetch_current_warnings(self, region: str, now: datetime) -> SourceResult[tuple[Warning, ...]]:
         """Read, freshness-check and parse the relay object. No exception escapes.
@@ -207,6 +213,13 @@ class RelayWarningProvider:
 
         if not _is_aware(obj.last_modified):
             return self._failed(now, UnavailableReason.RELAY_UNREADABLE, "relay LastModified has no timezone")
+        ahead = obj.last_modified - now
+        if ahead > self._future_tolerance:
+            version = (
+                f"version={sanitize_source_text(obj.version_id)[:_MAX_VERSION_ID_LENGTH]} " if obj.version_id else ""
+            )
+            detail = f"{version}relay LastModified is {_duration(ahead)} ahead of the cycle clock"[:MAX_DETAIL_LENGTH]
+            return self._failed(now, UnavailableReason.RELAY_UNREADABLE, detail, obj)
         # A naive producer claim is informational and cannot be compared with
         # S3's clock, so it is ignored: no skew is computed or reported.
         claimed = obj.claimed_fetched_at if obj.claimed_fetched_at and _is_aware(obj.claimed_fetched_at) else None

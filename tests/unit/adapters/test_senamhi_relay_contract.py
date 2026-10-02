@@ -12,7 +12,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from rain_alert.adapters.local.static_config_repository import REGION
-from rain_alert.adapters.senamhi_relay import MAX_AGE, MAX_OBJECT_BYTES, OBJECT_KEY, SKEW_TOLERANCE
+from rain_alert.adapters.senamhi_relay import FUTURE_TOLERANCE, MAX_AGE, MAX_OBJECT_BYTES, OBJECT_KEY, SKEW_TOLERANCE
 from rain_alert.adapters.senamhi_scraper import region_slug
 
 CONTRACT_PATH = Path(__file__).resolve().parents[3] / "contracts" / "senamhi-relay.json"
@@ -39,6 +39,10 @@ def test_the_skew_tolerance_matches_the_contract_file() -> None:
     assert timedelta(seconds=int(str(_contract()["skew_tolerance_seconds"]))) == SKEW_TOLERANCE
 
 
+def test_the_future_tolerance_matches_the_contract_file() -> None:
+    assert timedelta(seconds=int(str(_contract()["future_tolerance_seconds"]))) == FUTURE_TOLERANCE
+
+
 def test_the_contract_pins_the_values_the_design_chose() -> None:
     """Guards the file itself: a test comparing two copies of a wrong number passes."""
     assert _contract() == {
@@ -47,6 +51,7 @@ def test_the_contract_pins_the_values_the_design_chose() -> None:
         "max_age_seconds": 10800,
         "max_object_bytes": 4194304,
         "skew_tolerance_seconds": 900,
+        "future_tolerance_seconds": 60,
     }
 
 

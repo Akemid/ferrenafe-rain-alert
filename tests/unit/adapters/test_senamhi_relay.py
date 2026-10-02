@@ -152,7 +152,7 @@ class TestRelayDetail:
 def _relay_object(**overrides: object) -> RelayObject:
     fields: dict[str, object] = {
         "text": "<html></html>",
-        "last_modified": NOW - timedelta(hours=1),
+        "last_modified": PARSE_NOW - timedelta(hours=1),
         "version_id": "v1",
         "claimed_fetched_at": None,
     }
@@ -551,3 +551,32 @@ class TestNaiveTimestampsNeverEscape:
 
         assert isinstance(result, Unavailable)
         assert result.reason is UnavailableReason.RELAY_UNREADABLE
+
+
+class TestAFutureLastModifiedIsBoundedNotFresh:
+    """Spec: a `LastModified` ahead of `now` MUST NOT be treated as fresh beyond
+    `now`. Up to the tolerance it is clock jitter (age zero); past it the
+    object's timestamp cannot be trusted."""
+
+    def test_59_seconds_ahead_is_still_fresh_and_stamped_no_later_than_now(self) -> None:
+        obj = _relay_object(text=_page(SENAMHI_HISTORY_ONLY), last_modified=PARSE_NOW + timedelta(seconds=59))
+
+        result = _fetch(FakeRelayReader(result=obj))
+
+        assert isinstance(result, Available)
+        assert result.fetched_at == PARSE_NOW
+
+    def test_61_seconds_ahead_is_relay_unreadable_with_a_capped_detail(self) -> None:
+        records: list[RelayReadRecord] = []
+        obj = _relay_object(
+            text=_page(SENAMHI_HISTORY_ONLY), last_modified=PARSE_NOW + timedelta(seconds=61), version_id="v-future"
+        )
+
+        result = _fetch(FakeRelayReader(result=obj), on_read=records.append)
+
+        assert isinstance(result, Unavailable)
+        assert result.reason is UnavailableReason.RELAY_UNREADABLE
+        assert result.detail.startswith("version=v-future ")
+        assert "ahead" in result.detail
+        assert len(result.detail) <= 160
+        assert [(r.degraded, r.reason) for r in records] == [(1, UnavailableReason.RELAY_UNREADABLE)]
