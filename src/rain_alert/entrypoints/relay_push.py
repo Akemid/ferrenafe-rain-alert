@@ -68,6 +68,8 @@ _MAX_TOKEN_LENGTH = 60
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         # argparse exits 2, which here means "the gate refused the page".
+        # The message is deliberately dropped: it can echo an argument verbatim.
+        del message
         self.print_usage(sys.stderr)
         self.exit(EXIT_NOT_CONFIGURED, "relay push: bad usage\n")
 
