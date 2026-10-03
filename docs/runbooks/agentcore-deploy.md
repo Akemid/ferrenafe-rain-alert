@@ -204,6 +204,12 @@ Rollback, cheapest first:
 - **Instant**: `RAIN_ALERT_COMPOSER=template` in SSM. The next cycle sends the
   deterministic template; no deploy.
 - **Agent**: redeploy (`agentcore deploy -y`) from the `main` commit that preceded the change; the same `--diff` check applies.
+  **Order matters once the app is trimmed.** Since `agent-system-prompt` PR 4, the app's user turn carries no
+  composition rules; they live only in the agent's `SYSTEM_PROMPT` (runtime version 3 and later). Rolling the
+  agent back below that while the trimmed app is live leaves the model with **no rules at all**. The validator
+  still guards every message, but most drafts would be rejected and fall back to the template (the version 2
+  baseline was 6/10 even *with* the rules in the user turn). So: flip `RAIN_ALERT_COMPOSER=template` first
+  (instant), or revert the app trim before rolling the agent back.
 - **App**: revert the commit, rebuild the asset, deploy.
 
 ## Rollback
@@ -218,8 +224,12 @@ for it under pressure):
    invocation to fail transport-wise, which the fallback already handles —
    the community still gets the template's message, with one operator notice
    per cycle (`AGENT_FALLBACK_USED`).
-3. **`agentcore` teardown** (delete the runtime). Confirm the exact
-   command against `agentcore --help`; not exercised in this runbook.
+3. **`agentcore` teardown** (delete the runtime). `agentcore remove agent`
+   removes the agent from the project config (`agentcore/agentcore.json`); a
+   following `agentcore deploy` would then delete it through CDK. That
+   sequence is inferred from `agentcore remove --help` (CLI 0.30.0) and has
+   **not been exercised**. Prefer levels 1 and 2, and if you do get here,
+   preview with `agentcore deploy --diff -y` first.
 4. **Revert this change's commits.** `agent/`, `agentcore_invoker.py`,
    `select_composer`, and the CLI flag are all this slice's own files —
    reverting them returns the application to template-only, exactly as it

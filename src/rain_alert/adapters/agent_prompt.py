@@ -29,7 +29,7 @@ one line, so nothing escapes *structurally*. What a fixed marker cannot stop
 is *semantic* confusion — a model reading token-by-token can treat an embedded
 copy of the marker as the real close and read whatever follows, up to the
 genuine close, as newly "outside the fence". `_fence_token` draws 128 bits
-from `secrets` for every call, and the instruction block names that call's
+from `secrets` for every call, and the per-call sentence names that call's
 token, so the string that actually closes the data section is one no title
 scraped before this request was composed could contain or predict. What this
 buys: forging the fence now requires guessing a 128-bit value the attacker's

@@ -9,7 +9,7 @@
 ## Deploy
 
 The deploy used `agentcore deploy` (Node CLI 0.30.0, CDK-managed, target `default` in `us-east-2`), not the
-`agentcore launch` flow the runbook still describes. `agentcore deploy --diff -y` beforehand showed a single
+`agentcore launch` flow the runbook described at the time (corrected in `agent-system-prompt` PR 4). `agentcore deploy --diff -y` beforehand showed a single
 in-place change, so the runtime ARN the cycle Lambda holds stayed valid:
 
 ```
