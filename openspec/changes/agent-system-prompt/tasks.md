@@ -61,7 +61,7 @@ Satisfies: spec "Fence-marker format stays aligned" (all four scenarios), "Valid
 - [x] 1.8 [CHAR] `tests/unit/domain/test_incident_392_drafts.py`: build the incident `MessageRequest` (392 window 2026-10-02T05:00Z to 2026-10-05T05:00Z, orange title, `forecast=None`, `static_config_repository.CHECKLIST`). Assert, with the UNCHANGED `validate_message`: "entre el 2 y el 5 de octubre" -> `UNKNOWN_NUMBER`; "5 de octubre de 2026" -> `UNKNOWN_NUMBER`; city only in the title -> `CITY_MISSING`; a body obeying D49 (city in body, dates copied as `DD/MM/AAAA HH:MM`, checklist verbatim) -> no violations. These pass immediately. RUN them and paste the observed rule ids into apply-progress; do not assume. Prove teeth: temporarily break one expectation (swap the expected rule) and record red, revert.
 - [x] 1.9 [CHAR] Confirm `git diff main -- src/rain_alert/domain/message_validation.py tests/unit/domain/test_message_validation.py` is empty (spec "No validator diff").
 - [x] 1.10 PR-1 gate: `uv run pytest`; `uv run --directory agent pytest`; `uv run ruff check`; `uv run ruff format --check`; `uv run mypy`. (`cd infra && npm test` not needed: infra untouched.) `uv run pytest tests/hygiene` after `git add`.
-- [ ] 1.11 **Security review** (fresh context) on the PR-1 branch diff before opening the PR. Scope: no secret, account id or ARN; the contract holds no token value.
+- [x] 1.11 **Security review** (fresh context) on the PR-1 branch diff before opening the PR. Scope: no secret, account id or ARN; the contract holds no token value.
 
 ---
 
@@ -78,7 +78,7 @@ Satisfies: spec "Live acceptance gate" tooling. Design D52, D53, D54 (amended).
 - [x] 2.7 [Docs] `docs/runbooks/agentcore-deploy.md`: add "Changing the system prompt" following `docs/runbooks/README.md`: the ordered procedure from D54 as amended (offline gate green; security AND correctness reviews passed; `agentcore launch` from the branch; 10-call gate; evidence in the same PR; merge; app deploy via `infra/scripts/build-lambda.sh`, `cdk diff`, `cdk deploy`); the 3-round iteration cap and escalation; rollback options. Placeholders `<account>` and `<arn>` only.
 - [x] 2.8 [Docs] Create `docs/evidence/_template-agent-system-prompt-live.md` or the template section the evidence README prescribes: date, commit, command, 10 rows (rule ids, accepted yes/no), tally, rounds, masked ARN, verdict. Read `docs/evidence/README.md` first and follow it.
 - [x] 2.9 PR-2 gate: the five commands plus `uv run pytest tests/hygiene` after `git add`. Confirm `uv run python scripts/agent_live_acceptance.py --help` exits 0 offline.
-- [ ] 2.10 **Security review** (fresh context) on the PR-2 branch diff. Scope: the script never prints the ARN, token or credentials; no network at import; no account id in the template. _Review fixes applied (76d1c3d, c966f04, 03d1711, 8940efe); fresh re-review pending._
+- [x] 2.10 **Security review** (fresh context) on the PR-2 branch diff. Scope: the script never prints the ARN, token or credentials; no network at import; no account id in the template. _Review fixes applied (76d1c3d, c966f04, 03d1711, 8940efe); fresh re-review pending._
 
 ---
 
@@ -103,8 +103,8 @@ Satisfies: spec requirements "constructed with a system prompt", "no digit", "de
 
 - [x] 3.12 [Owner, AWS] From the PR 3 branch, only after 3.10 and 3.11 pass: `cd agent && AWS_PROFILE=ferrenafe AWS_DEFAULT_REGION=us-east-2 uv run agentcore launch`. Record the command and real output in `docs/evidence/` (ARN masked).
 - [x] 3.13 [Owner, AWS] Gate: `uv run python scripts/agent_live_acceptance.py --runs 10`. Record ALL 10 outcomes, failures included, in `docs/evidence/<date>-agent-system-prompt-live.md` using the 2.8 template. No cherry-picking (D53). Exit 0 requires at least 8 of 10 accepted by the unchanged validator.
-- [ ] 3.14 [Owner] If fewer than 8/10: iterate the D49 wording TEST-FIRST (a new failing offline test naming the observed rejection, then the wording change, then relaunch and a fresh 10). Never loosen the validator. Maximum 3 rounds, then escalate to the owner. Record each round. Re-check SSM checklist equals `CHECKLIST` before the gate if SSM was edited.
-- [ ] 3.15 [Owner] Commit the evidence to the PR 3 branch, re-run the gate commands, then merge PR 3. Merging is the owner's decision after the gate is met.
+- [x] 3.14 *(not needed: the gate passed 10/10 in round 1)* [Owner] If fewer than 8/10: iterate the D49 wording TEST-FIRST (a new failing offline test naming the observed rejection, then the wording change, then relaunch and a fresh 10). Never loosen the validator. Maximum 3 rounds, then escalate to the owner. Record each round. Re-check SSM checklist equals `CHECKLIST` before the gate if SSM was edited.
+- [x] 3.15 [Owner] Commit the evidence to the PR 3 branch, re-run the gate commands, then merge PR 3. Merging is the owner's decision after the gate is met.
 
 ---
 
