@@ -98,13 +98,16 @@ class _Invoker(Protocol):
 #: quote a role or a runtime the script never saw.
 _ARN_PATTERN = re.compile(r"arn:aws[a-z-]*:[^\s\"']+")
 _MASK = "<masked>"
+#: A bare account id outside an ARN, e.g. in "User <id> is not authorized".
+_ACCOUNT_PATTERN = re.compile(r"\b\d{12}\b")
+_ACCOUNT_MASK = "<account>"
 
 
 def _mask(text: str, secrets: Sequence[str]) -> str:
     for secret in secrets:
         if secret:
             text = text.replace(secret, _MASK)
-    return _ARN_PATTERN.sub(_MASK, text)
+    return _ACCOUNT_PATTERN.sub(_ACCOUNT_MASK, _ARN_PATTERN.sub(_MASK, text))
 
 
 def _one_line(text: str) -> str:

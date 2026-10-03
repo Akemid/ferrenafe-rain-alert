@@ -222,3 +222,18 @@ class TestItStaysOutOfTheOfflineSuite:
 
         assert code == 2
         assert "RAIN_ALERT_AGENT_RUNTIME_ARN" in capsys.readouterr().err
+
+
+class TestMaskingAnAccountId:
+    def test_a_bare_twelve_digit_account_id_outside_an_arn_is_masked(self, script: ModuleType) -> None:
+        account = "1" * 12
+
+        masked = script._mask(f"User {account} is not authorized; role of account {account}.", ())
+
+        assert account not in masked
+        assert "<account>" in masked
+
+    def test_a_longer_digit_run_is_left_alone(self, script: ModuleType) -> None:
+        run = "1" * 13
+
+        assert script._mask(f"id {run}", ()) == f"id {run}"
