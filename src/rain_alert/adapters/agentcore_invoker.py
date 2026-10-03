@@ -124,8 +124,9 @@ class AgentRuntimeSettings:
     """Where the runtime is, and how long to wait for it (design D19, D23).
 
     `region` is deliberately absent as a `RAIN_ALERT_*` env var: `boto3`
-    already resolves a region from `AWS_REGION`/`AWS_DEFAULT_REGION`/the
-    shared config file, and a second, redundant knob would only be one more
+    already resolves a region from `AWS_DEFAULT_REGION` or the profile in the
+    shared config file (never from `AWS_REGION`; inside Lambda the runtime sets
+    `AWS_DEFAULT_REGION`), and a second, redundant knob would only be one more
     thing that can disagree with it.
     """
 
