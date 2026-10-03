@@ -447,6 +447,28 @@ describe('ScheduledCycleStack — relay bucket (D41)', () => {
   });
 });
 
+describe('ScheduledCycleStack — relay bucket TLS floor (D41)', () => {
+  test('denies any request below TLS 1.2 alongside the enforceSSL deny', () => {
+    const template = synthesizeTemplate();
+    const id = relayBucketLogicalId(template);
+
+    template.hasResourceProperties('AWS::S3::BucketPolicy', {
+      Bucket: { Ref: id },
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Effect: 'Deny',
+            Principal: { AWS: '*' },
+            Action: 's3:*',
+            Condition: { NumericLessThan: { 's3:TlsVersion': '1.2' } },
+            Resource: [{ 'Fn::GetAtt': [id, 'Arn'] }, { 'Fn::Join': ['', [{ 'Fn::GetAtt': [id, 'Arn'] }, '/*']] }],
+          }),
+        ]),
+      },
+    });
+  });
+});
+
 describe('ScheduledCycleStack — relay grants (D39, D41)', () => {
   const relayStatements = (template: Template): Array<Record<string, unknown>> =>
     findFunctionRoleStatements(template).filter((statement) =>

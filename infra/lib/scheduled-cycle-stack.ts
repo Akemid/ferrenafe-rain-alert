@@ -189,6 +189,16 @@ export class ScheduledCycleStack extends Stack {
       ],
       removalPolicy: RemovalPolicy.RETAIN,
     });
+    // `enforceSSL` only denies plaintext; this denies TLS 1.0/1.1 as well.
+    relayBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.DENY,
+        principals: [new iam.AnyPrincipal()],
+        actions: ['s3:*'],
+        resources: [relayBucket.bucketArn, relayBucket.arnForObjects('*')],
+        conditions: { NumericLessThan: { 's3:TlsVersion': '1.2' } },
+      }),
+    );
     const relayObjectArn = relayBucket.arnForObjects(RELAY_CONTRACT.object_key);
 
     // --- CloudWatch Logs (D33) ---
