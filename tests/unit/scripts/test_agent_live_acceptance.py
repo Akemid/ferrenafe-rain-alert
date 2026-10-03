@@ -237,3 +237,55 @@ class TestMaskingAnAccountId:
         run = "1" * 13
 
         assert script._mask(f"id {run}", ()) == f"id {run}"
+
+
+class _FakeLambdaClient:
+    """Hand-written fake of the boto3 Lambda client: returns a config or raises."""
+
+    def __init__(self, outcome: object) -> None:
+        self._outcome = outcome
+
+    def get_function_configuration(self, **_: object) -> object:
+        if isinstance(self._outcome, BaseException):
+            raise self._outcome
+        return self._outcome
+
+
+class TestMainFailuresStayMasked:
+    def test_a_lambda_lookup_failure_exits_two_with_one_masked_line(
+        self, script: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import boto3
+
+        account = str(10**11 + 7)
+        role = f"arn:aws:iam::{account}:role/some-role"
+        failure = RuntimeError(f"User {role} is not authorized; account {account}")
+        monkeypatch.setattr(boto3, "client", lambda *a, **k: _FakeLambdaClient(failure))
+
+        code = script.main(["--from-lambda"], env={})
+
+        err = capsys.readouterr().err
+        assert code == 2
+        assert account not in err
+        assert "arn:aws" not in err
+        assert "Traceback" not in err
+        assert len(err.strip().splitlines()) == 1
+        assert "RuntimeError" in err
+
+    def test_an_invoker_construction_failure_is_masked_too(
+        self, script: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        account = str(10**11 + 9)
+
+        def _boom(arn: str, region: str) -> object:
+            raise RuntimeError(f"cannot build for {arn} in account {account}")
+
+        monkeypatch.setattr(script, "_live_invoker", _boom)
+
+        code = script.main([], env={"RAIN_ALERT_AGENT_RUNTIME_ARN": ARN})
+
+        err = capsys.readouterr().err
+        assert code == 2
+        assert ARN not in err
+        assert account not in err
+        assert "Traceback" not in err

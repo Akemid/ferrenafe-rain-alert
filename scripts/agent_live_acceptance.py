@@ -223,12 +223,17 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
 
     region = environment.get("AWS_DEFAULT_REGION", DEFAULT_REGION)
     arn = environment.get(AGENT_RUNTIME_ARN_ENV_VAR)
-    if not arn and args.from_lambda:
-        arn = _arn_from_lambda(region)
-    if not arn:
-        print(f"set {AGENT_RUNTIME_ARN_ENV_VAR} or pass --from-lambda", file=sys.stderr)
+    try:
+        if not arn and args.from_lambda:
+            arn = _arn_from_lambda(region)
+        if not arn:
+            print(f"set {AGENT_RUNTIME_ARN_ENV_VAR} or pass --from-lambda", file=sys.stderr)
+            return 2
+        invoker = _live_invoker(arn, region)
+    except Exception as exc:  # noqa: BLE001 - an AWS error can quote a role ARN and account id
+        print(_mask(_one_line(f"{type(exc).__name__}: {exc}"), (arn or "",)), file=sys.stderr)
         return 2
-    return run_gate(runs=args.runs, invoker=_live_invoker(arn, region), out=sys.stdout, secrets=(arn,))
+    return run_gate(runs=args.runs, invoker=invoker, out=sys.stdout, secrets=(arn,))
 
 
 if __name__ == "__main__":
