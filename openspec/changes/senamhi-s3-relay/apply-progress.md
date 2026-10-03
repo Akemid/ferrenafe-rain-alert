@@ -173,3 +173,11 @@ Gate: pytest 1349 passed, 15 deselected; agent 32 passed; ruff check clean; ruff
 ## Deviations / notes
 - The existing "no s3:PutObject" test now scopes to the Lambda role statements, because RelayWriter legitimately carries PutObject. The alarm-count assertion went 3 -> 4.
 - Metric filter and alarm sit inside the `relayEnabled` conditional (no alarm that would breach forever after rollback).
+
+## PR-4a review fixes (2026-10-02)
+
+Each RED first, `cd infra && npm test`:
+- ec55786 `relayEnabled` ships `"false"` in `infra/cdk.json`; `parseRelayEnabled` in `bin/infra.ts` (string or boolean; absent disables; other values throw). RED: `Expected path: "relayEnabled"` (real cdk.json lacked the key), `Received: {"Ref": "RelayBucketA541D426"}` for absent context, and `Received function did not throw` for "yes"/1/""/null. Tests in `test/app.test.ts` ("relayEnabled context parsing (D45)").
+- 88353f3 fixed `managedPolicyName` removed; `RelayWriterPolicyName` output added. RED: `Received: "RelayWriter"`. The policy is now found by its `s3:PutObject` statement.
+- 7a2169b bucket policy denies `s3:TlsVersion` below `'1.2'`. RED: TLS floor test found no such statement.
+- Docs: design.md D41/D45 (cdk.json switch, flip procedure, expected creation-time ALARM, 12 h legitimate alarm, rollback does not revoke the key); tasks.md 5.1, L.0 and review note (unticked).
