@@ -4,7 +4,7 @@ This document covers `src/rain_alert/entrypoints/` and everything under `tests/`
 
 ## Part 1: the entrypoints
 
-Two modules. `wiring.py` builds the object graph. `cli.py` parses arguments, runs one cycle and prints it.
+`wiring.py` builds the object graph. `cli.py` parses arguments, runs one cycle and prints it. A third command, `relay_push.py`, is the producer for the SENAMHI relay and is covered [below](#relay_pushpy-the-relay-producer).
 
 ### `wiring.py`
 
@@ -29,6 +29,40 @@ The fixture file names are pinned as `SENAMHI_FIXTURE_NAME` and `OPEN_METEO_FIXT
 **`notifier_stream` exists because the caller, not the notifier, knows what else is on standard output.** Passing `None` keeps the notifier's own default of `sys.stdout`. The CLI passes standard error under `--json` and its own standard output otherwise; the reason is under [The JSON view](#the-json-view) below. It is a stream rather than a boolean flag because the notifier's job is to write somewhere, not to know that `--json` exists.
 
 This function mirrors `tests.support.wiring.build_fake_deps`. Both return the same `CycleDependencies` type, so the object graph the CLI runs is the object graph the tests exercise. Only the leaves differ. That is the reason decision `D6` bundles the ports at all.
+
+### `select_warning_provider` and the cloud graph
+
+`build_cloud_deps(env=None)` is the cloud twin of `build_local_deps`: the same `CycleDependencies`, different leaves. Its `warnings` leaf comes from `select_warning_provider(env, on_read=log_relay_read)`. `env` defaults to `os.environ`, and tests pass a plain `dict`. `build_local_deps` is untouched: the command line still scrapes SENAMHI directly, because a developer's machine can reach it.
+
+| `RAIN_ALERT_RELAY_BUCKET` | `warnings` leaf |
+|---|---|
+| absent | `SenamhiWarningScraper(HttpxHtmlFetcher())`, the direct scraper |
+| present and non-empty | `RelayWarningProvider(S3RelayReader(bucket), on_read=...)` |
+| present and empty or whitespace | `RelayWarningProvider(UnconfiguredRelayReader(), ...)`, so every cycle is `Unavailable(RELAY_UNREADABLE)` |
+
+**Presence selects the relay, not truthiness**, unlike `select_snapshot_publisher`, and on purpose. An empty value is a misconfigured relay, so it must degrade the cycle and never quietly become a direct scrape. The relay branches construct **no `HtmlFetcher` at all**, so there is structurally no direct-HTTP path to fall back to; a wiring test asserts that, by failing if a fetcher is ever constructed. Raising at wiring time was rejected because it would abort the cycle, and no forecast-only alert at all is worse than a degraded one.
+
+`log_relay_read` is the `on_read` callback: one compact JSON line per relay read, `{"event":"senamhi_relay","degraded":...}`, which the CloudWatch metric filter keys on. Its shape and why it is one line are in [adapters.md](./adapters.md#the-single-line-on_read-record). The stack turns the relay on by setting the variable (`relayEnabled` in `infra/cdk.json`), so removing the variable is the rollback.
+
+### `relay_push.py`, the relay producer
+
+```bash
+uv run rain-alert-relay-push [--profile NAME] [--region NAME]
+```
+
+Registered in `pyproject.toml` as `rain-alert-relay-push = "rain_alert.entrypoints.relay_push:main"`, and run hourly by a macOS LaunchAgent (`ops/launchd/pe.ferrenafe.relay-push.plist` is the template). It is the only command in this project that **writes to AWS**, and the only one that runs outside it.
+
+`main(argv=None, *, fetcher=None, client=None, now=None) -> int` takes every collaborator as a parameter, so tests drive it with a `FakeHtmlFetcher` and a `FakeS3Client` and `__main__` is one call. The bucket comes from `RAIN_ALERT_RELAY_BUCKET`; an optional `RAIN_ALERT_RELAY_BUCKET_OWNER` (a 12-digit account id) is passed as `ExpectedBucketOwner`.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Pushed. One summary line with the version id, byte count and rows seen. |
+| 1 | Not configured or bad usage. |
+| 2 | Fetch failed or the parse gate refused the page. Nothing was written. |
+| 3 | The page is over the 4 MiB cap. Nothing was written. |
+| 4 | The S3 client could not be built (profile or credentials) or the write failed. |
+
+Unlike `cli.py`, a non-zero exit here is a real signal, because launchd records it and the operator reads it in `push.log`. The runbook, [`docs/runbooks/senamhi-relay.md`](../runbooks/senamhi-relay.md), has the stderr line for each code.
 
 ### `cli.py`
 
@@ -217,7 +251,7 @@ The fixtures README states the refresh rule plainly: re-capture only when the li
 
 ### `tests/support/`
 
-Three modules, shared across the unit and application suites.
+Modules shared across the unit and application suites. The three below are the original ones; `fake_s3.py` is described after them.
 
 **`fixtures.py`** holds the paths to the pinned fixture files, centralized so a rename breaks one line instead of every test, and so the CLI's offline tests and the adapter tests cannot drift onto different files.
 
@@ -232,6 +266,10 @@ Two of the fakes are worth knowing about individually.
 `FakeAlertRepository` **composes** `InMemoryAlertRepository` rather than reimplementing the query, and its docstring records why. A third hand-written copy of the query once existed, and that copy also cleared the active outage without checking `city_slug`, so a fake the use-case tests trusted behaved differently from production. The class now owns exactly one thing, the call log. The behaviour is the real store's, and the shared port-contract tests in `tests/unit/adapters/test_local_repositories.py` run against this class too, so the two cannot drift again.
 
 **`wiring.py`** holds `build_fake_deps`, the fake side of `CycleDependencies`. It provides calm defaults: a fixed clock at 2026-09-03T12:00Z, the same threshold values the shipped config uses, an empty warnings tuple, and 48 contiguous hours of zero precipitation. A test overrides only the leaf it cares about, for example `build_fake_deps(forecast=Unavailable(...))`. Every spy leaf stays accessible on the returned object for call-order and argument assertions.
+
+**`fake_s3.py`** holds `FakeS3Client`, shared by the relay reader tests and the producer tests. `get_object` returns the response shape boto3 does, including a `TrackingBody` that records `read` and `close` calls, so "the oversize body was never read" is an assertion rather than a hope. `put_object` records its keyword arguments. Programmed failures raise **real** `botocore.exceptions.ClientError`, `EndpointConnectionError` and `ReadTimeoutError`, so the reader's error mapping is tested against the real exception types without `unittest.mock`. `FakeRelayReader` in `fakes.py` is the lighter fake for provider tests: it returns a programmed `RelayObject` or raises a programmed `FetchError`.
+
+Three tests carry the relay's central claims. The producer-reader round trip (`TestTheProducerReaderRoundTrip` in `tests/unit/entrypoints/test_relay_push.py`) writes bytes with `relay_push.main` through `FakeS3Client` and reads them back through `S3RelayReader` and `RelayWarningProvider`, which pins that the Lambda parses what the producer's gate accepted. `tests/unit/adapters/test_senamhi_relay_contract.py` pins `contracts/senamhi-relay.json` equal to the Python constants. A plist test parses `ops/launchd/pe.ferrenafe.relay-push.plist` and asserts it uses `StartCalendarInterval` and not `StartInterval`.
 
 ### How the suites divide the work
 
