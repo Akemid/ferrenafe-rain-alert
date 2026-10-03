@@ -299,7 +299,7 @@ class TestRelayAdaptersNeverImportEntrypoints:
     must never reach back into `entrypoints`, or the layering inverts and
     `lambda_handler` could pull in the CLI through the back door."""
 
-    RELAY_ADAPTERS = ("senamhi_relay.py",)
+    RELAY_ADAPTERS = ("senamhi_relay.py", "s3_relay_reader.py")
 
     def test_the_relay_adapters_import_nothing_from_entrypoints(self) -> None:
         for name in self.RELAY_ADAPTERS:
