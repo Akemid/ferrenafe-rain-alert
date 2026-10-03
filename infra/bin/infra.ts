@@ -4,12 +4,13 @@ import { PublicSnapshotStack } from '../lib/public-snapshot-stack';
 import { ScheduledCycleStack } from '../lib/scheduled-cycle-stack';
 
 /**
- * Parses the `relayEnabled` context value (design D45). Context from `cdk.json` can arrive as the string
- * "true"/"false" or as a JSON boolean, and `-c` always yields a string, so both forms are accepted. Absent
- * means disabled (the safe default, consistent with the committed value). Anything else throws: a typo must
- * fail loudly at synth time rather than silently enable or disable the relay.
+ * Strict boolean-switch parser shared by `relayEnabled` (design D45) and `scheduleEnabled`. Context from
+ * `cdk.json` can arrive as the string "true"/"false" or as a JSON boolean, and `-c` always yields a string, so
+ * both forms are accepted. Absent means DISABLED (the safe default: a switch that ships in `cdk.json` must
+ * never turn something on because it was forgotten). Anything else throws: a typo must fail loudly at synth
+ * time, naming the key, rather than silently enable or disable the feature.
  */
-export function parseRelayEnabled(value: unknown): boolean {
+function parseSwitch(key: string, value: unknown): boolean {
   if (value === undefined || value === 'false' || value === false) {
     return false;
   }
@@ -17,8 +18,16 @@ export function parseRelayEnabled(value: unknown): boolean {
     return true;
   }
   throw new Error(
-    `Invalid context value for relayEnabled: ${JSON.stringify(value)}. Use "true" or "false" (or omit it to disable).`,
+    `Invalid context value for ${key}: ${JSON.stringify(value)}. Use "true" or "false" (or omit it to disable).`,
   );
+}
+
+export function parseRelayEnabled(value: unknown): boolean {
+  return parseSwitch('relayEnabled', value);
+}
+
+export function parseScheduleEnabled(value: unknown): boolean {
+  return parseSwitch('scheduleEnabled', value);
 }
 
 /**
@@ -70,9 +79,11 @@ export function buildScheduledCycleStack(app: cdk.App): ScheduledCycleStack | un
   const agentRuntimeArn = (app.node.tryGetContext('agentRuntimeArn') as string | undefined) ?? '';
   const alarmEmail = (app.node.tryGetContext('alarmEmail') as string | undefined) ?? '';
 
-  // `-c scheduleEnabled=false` is the durable disable route (design D34); any other value, or the flag's
-  // absence, means enabled. Never a boolean context value — CDK context values from the CLI are strings.
-  const scheduleEnabledContext = app.node.tryGetContext('scheduleEnabled') as string | undefined;
+  // The schedule switch lives in `cdk.json`'s `context` and ships "true" (production is enabled). The durable
+  // disable route is committing `"scheduleEnabled": "false"` there (design D34). A `-c scheduleEnabled=false`
+  // override still works for an emergency, but must be followed by the same commit, or the next deploy
+  // reverts it. Absent means DISABLED, never enabled. Parsed strictly: see `parseSwitch`.
+  const scheduleEnabled = parseScheduleEnabled(app.node.tryGetContext('scheduleEnabled'));
 
   // The relay switch lives in `cdk.json`'s `context` and ships "false" (design D45); `-c relayEnabled=...`
   // on the CLI still overrides it. Parsed strictly: see `parseRelayEnabled`.
@@ -86,7 +97,7 @@ export function buildScheduledCycleStack(app: cdk.App): ScheduledCycleStack | un
     snapshotWriterPolicyArn,
     agentRuntimeArn,
     alarmEmail,
-    scheduleEnabled: scheduleEnabledContext !== 'false',
+    scheduleEnabled,
     relayEnabled,
   });
 }

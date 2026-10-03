@@ -18,6 +18,7 @@
   },
   "context": {
     "snapshotBucketName": "ferrenafe-public-snapshot-publicsnapshot73f6a2a6-19vf8dvc6exw",
+    "scheduleEnabled": "true",
     "relayEnabled": "true",
     "@aws-cdk-containers/ecs-service-extensions:enableDefaultLogDriver": true,
     "@aws-cdk/aws-apigateway:authorizerChangeDeploymentLogicalId": true,

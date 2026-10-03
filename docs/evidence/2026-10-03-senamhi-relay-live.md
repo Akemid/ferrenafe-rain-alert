@@ -4,9 +4,8 @@ Region: `us-east-2`. Profiles: `ferrenafe` (operator), `ferrenafe-relay`
 (producer). Change: `openspec/changes/senamhi-s3-relay/`. Procedure:
 [`docs/runbooks/senamhi-relay.md`](../runbooks/senamhi-relay.md).
 
-This record covers runbook steps 1 to 5. During those steps the relay stays
-off in production, so the cycle Lambda does not read the relay object yet.
-Step 6 turns it on, and is recorded below once it has run.
+This record covers runbook steps 1 to 6. During steps 1 to 5 the relay stays
+off in production. Step 6 (§6) turns the relay and the schedule on.
 
 ## 1. Deploy with the relay and the schedule off (runbook step 1)
 
@@ -129,3 +128,86 @@ PutObject  2026-10-03T04:26:12Z  ferrenafe-relay-producer  senamhi/lambayeque/la
 The data event carries the object's `versionId`, so every version the cycle
 reads can be traced to the identity that wrote it. This closes **L.7**. The
 optional denied-write check was not run.
+
+## 6. Relay and schedule on (runbook step 6)
+
+`"relayEnabled": "true"` was merged to `main` in #37. The re-diff showed exactly
+four changes: `RelayDegradedFilter` added, `RelayDegradedAlarm` added,
+`RAIN_ALERT_RELAY_BUCKET` added to the function, and the schedule `DISABLED` →
+`ENABLED` (via `-c scheduleEnabled=true`). The deploy took 19 s.
+
+### The first deploy shipped the old code
+
+The cycle was invoked by hand (`Invoke`, `InvocationType=Event`, 202). It
+reported `senamhi_status: "unavailable"` and logged **no** `senamhi_relay`
+record. That record is emitted on every relay read, so its absence meant the
+relay provider never ran. The cause is `lambda.Code.fromAsset('build/lambda')`
+(`infra/lib/scheduled-cycle-stack.ts`): that directory was a build from
+2026-10-02 01:18 local time, and it held neither `senamhi_relay.py`,
+`s3_relay_reader.py` nor `select_warning_provider`. `cdk deploy` packages
+whatever is in the directory and does not rebuild it. The diff showed no
+change to the function code, but that was not noticed at the time. The
+runbook had no build step.
+
+`infra/scripts/build-lambda.sh` was run from `main`. It reported "no compiled
+artifact found", and the relay modules were then present in the asset. The
+redeploy published `ScheduledCycleFunction/Code` (CodeSha256 prefix
+`nNM0LrmjQ6eV`, LastModified 2026-10-03T04:42:49Z).
+
+### The cycle reads SENAMHI through the relay
+
+The second manual invoke at 2026-10-03T04:43:16Z ran for 10.8 s:
+
+```
+{"event":"senamhi_relay","degraded":0,"reason":null,"version_id":"OyC_3wmPu1.Budf2SN8.fFQQOmX2ijAC","last_modified":"2026-10-03T04:26:12Z","age_seconds":1025,"skew_seconds":-2}
+[OPERATOR NOTICE] sources_recovered: senamhi became available again as of 2026-10-03T04:43:17+00:00
+[OPERATOR NOTICE] agent_fallback_used: validation_failed (city_missing: body does not mention 'Ferreñafe'; unknown_number: '2' traces to no value on the request)
+[DRY-RUN ALERT] imminent: nothing was transmitted: this build has no notifier that can deliver a message
+  title: Alerta de lluvias — Ferreñafe — riesgo inminente
+  - Aviso oficial del SENAMHI, nivel naranja: PRECIPITACIONES EN LA SIERRA NORTE Y COSTA NORTE.
+senamhi_status: available     level: imminent     decision: new level for window, send: true
+notes.senamhi: discarded warning 29127 (INCREMENTO DE TEMPERATURA DIURNA EN LA COSTA Y SIERRA): phenomenon high_temperature cannot cause flooding
+window: 2026-10-02T05:00:00Z → 2026-10-05T05:00:00Z
+```
+
+The warning was checked against the live SENAMHI page, fetched from the
+developer's machine at the same time:
+
+```
+PRECIPITACIONES EN LA SIERRA NORTE Y COSTA NORTE | 392 (vigente) | 2026-09-30 | 2026-10-02 | 2026-10-04 | 71 Hrs. | NARANJA
+```
+
+Its validity window matches the window the cycle computed. The public snapshot
+(`status.json`, HTTP 200) now reads `"level": "imminent"`, evaluated at
+2026-10-02T23:43:17-05:00, with the official warning among its reasons.
+
+The agent composer's draft was rejected by the validator, because it omitted
+the city and introduced a number not present in the request. The deterministic
+template was used instead, which is the project's fail-safe direction.
+
+**No resident was notified.** `sent: true` is the record of a dry run: the
+only notifier in the codebase is `ConsoleNotifier`. A real orange warning is
+in force and is visible only on the public page.
+
+### Alarm and schedule
+
+```
+SenamhiRelayDegraded alarm: OK at 2026-10-03T04:44:25Z
+  ("1 out of the last 2 datapoints [0.0] was not >= 1 and 1 missing datapoint was treated as ...")
+schedule: ENABLED, cron(0 0,6,12,18 * * ? *) America/Lima
+```
+
+The expected creation-time ALARM was not read back: the alarm was already
+`OK` when first queried. This closes the relay part of L.8. The 6-hourly
+alarm cadence (L.9) still needs two consecutive scheduled cycles to observe.
+
+## Findings carried into the runbook
+
+1. **Rebuild the Lambda asset before every deploy** with
+   `infra/scripts/build-lambda.sh`. `cdk deploy` ships whatever
+   `infra/build/lambda/` holds, and a stale tree deploys silently.
+2. **Capture the producer key through a shell variable, not the clipboard.**
+   The clipboard method lost two keys.
+3. **`scheduleEnabled` was CLI-only.** It is moved into `infra/cdk.json` in the
+   same change as this record.
+
