@@ -121,7 +121,12 @@ The AWS credential chain (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
 `AWS_SESSION_TOKEN`, an SSO profile, or an execution role once change 3
 exists) must resolve independently — `boto3.client("bedrock-agentcore")` is
 built lazily on first invocation (design D18) and needs a region, from
-`AWS_REGION`/`AWS_DEFAULT_REGION`/the shared config file. This application
+`AWS_DEFAULT_REGION` or the profile in the shared config file. **botocore does
+not read `AWS_REGION`** for this: with `AWS_PROFILE=ferrenafe AWS_REGION=us-east-2`
+it used the profile's region and reached the stale `us-east-1` runtime
+(`docs/evidence/2026-10-02-agent-composer-switched-on.md` §3). Use
+`AWS_DEFAULT_REGION=us-east-2`, or a profile whose `region` is `us-east-2`.
+Inside Lambda the runtime sets `AWS_DEFAULT_REGION` itself. This application
 reads no separate `RAIN_ALERT_*` region variable; a second, redundant knob
 would only be one more thing that could disagree with the first.
 

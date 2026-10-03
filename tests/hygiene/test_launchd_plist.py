@@ -14,6 +14,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from tests.hygiene.test_repo_hygiene import REPO_ROOT
 
 PLIST = REPO_ROOT / "ops" / "launchd" / "pe.ferrenafe.relay-push.plist"
@@ -54,7 +56,20 @@ def test_it_runs_the_producer_through_uv_in_the_repo() -> None:
         "--directory",
         "<repo>",
         "rain-alert-relay-push",
+        "--region",
+        "us-east-2",
     ]
+
+
+def test_the_region_is_passed_explicitly_because_botocore_ignores_aws_region() -> None:
+    """The explicit `--region` is the producer's region of record (highest precedence in `boto3.Session`).
+
+    The environment variable alone is not enough: see
+    `test_botocore_resolves_the_region_from_aws_default_region_not_aws_region`.
+    """
+    arguments = _load()["ProgramArguments"]
+
+    assert arguments[arguments.index("--region") + 1] == "us-east-2"
 
 
 def test_the_template_documents_the_intentional_run_at_load_and_log_directory_mode() -> None:
@@ -67,9 +82,35 @@ def test_the_template_documents_the_intentional_run_at_load_and_log_directory_mo
 def test_the_environment_names_the_profile_region_and_bucket_placeholder() -> None:
     assert _load()["EnvironmentVariables"] == {
         "AWS_PROFILE": "ferrenafe-relay",
-        "AWS_REGION": "us-east-2",
+        "AWS_DEFAULT_REGION": "us-east-2",
         "RAIN_ALERT_RELAY_BUCKET": "<bucket>",
     }
+
+
+def test_botocore_resolves_the_region_from_aws_default_region_not_aws_region(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins the botocore behaviour that made `AWS_REGION` in this template a silent no-op.
+
+    `boto3.Session().region_name` honours `AWS_DEFAULT_REGION` and the profile, never `AWS_REGION`:
+    with `AWS_REGION` alone a profile without a region resolves to `None`, and a profile with one
+    keeps it. Observed live in docs/evidence/2026-10-02-agent-composer-switched-on.md. Offline: no
+    client is created, nothing connects.
+    """
+    import boto3
+
+    config = tmp_path / "config"
+    config.write_text("[profile noregion]\noutput = json\n", encoding="utf-8")
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "absent"))
+    monkeypatch.setenv("AWS_PROFILE", "noregion")
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+
+    monkeypatch.setenv("AWS_REGION", "us-east-2")
+    assert boto3.Session().region_name is None
+
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-2")
+    assert boto3.Session().region_name == "us-east-2"
 
 
 def test_both_streams_go_to_the_push_log() -> None:

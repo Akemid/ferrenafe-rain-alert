@@ -185,14 +185,24 @@ login keychain only exists inside your user session.
 
 ```bash
 cd <repo>
-AWS_PROFILE=ferrenafe-relay AWS_REGION=us-east-2 RAIN_ALERT_RELAY_BUCKET=<bucket> \
-  uv run --frozen rain-alert-relay-push
+AWS_PROFILE=ferrenafe-relay RAIN_ALERT_RELAY_BUCKET=<bucket> \
+  uv run --frozen rain-alert-relay-push --region us-east-2
 echo "exit=$?"
 ```
 
 Expected: exit `0` and one line like
-`relay push: ok version=<version-id> bytes=<n> rows_seen=<n>`. `--profile` and
-`--region` flags exist too, for a run outside launchd.
+`relay push: ok version=<version-id> bytes=<n> rows_seen=<n>`. A `--profile`
+flag exists too, for a run outside launchd.
+
+**Set the region with `--region` (or `AWS_DEFAULT_REGION`), never `AWS_REGION`
+alone.** botocore resolves the region from the explicit argument, then
+`AWS_DEFAULT_REGION`, then the profile; it does not read `AWS_REGION`. With
+`AWS_REGION` only, a profile without a `region` resolves to no region and a
+profile with one keeps its own. This was observed live in
+`docs/evidence/2026-10-02-agent-composer-switched-on.md` and is pinned by
+`tests/hygiene/test_launchd_plist.py`. The LaunchAgent passes `--region us-east-2`
+explicitly for that reason, and the profile above sets `region = us-east-2` as
+a second line of defence.
 
 Then confirm the object from the operator side:
 
