@@ -128,10 +128,15 @@ item's password is the JSON document that `credential_process` expects.
 ```bash
 # Create the key and put the credential_process JSON on the clipboard.
 # The secret goes through a pipe only: it is not written to disk and not printed.
+# pipefail makes a failure in ANY stage (for example jq missing) visible.
+set -o pipefail
+trap 'pbcopy < /dev/null' EXIT      # clear the clipboard even if a step fails
+
 aws iam create-access-key --profile ferrenafe --region us-east-2 \
   --user-name ferrenafe-relay-producer --query AccessKey --output json \
   | jq -c '{Version: 1, AccessKeyId: .AccessKeyId, SecretAccessKey: .SecretAccessKey}' \
   | pbcopy
+echo "capture exit=$?"
 
 # Store it. `-w` is the LAST option on purpose: security then prompts for the
 # password, and you paste the clipboard there (it asks twice). `-T` lets
@@ -140,9 +145,22 @@ aws iam create-access-key --profile ferrenafe --region us-east-2 \
 security add-generic-password -a "$USER" -s ferrenafe-relay-producer \
   -T /usr/bin/security -U -w
 
-# Clear the clipboard.
+# Clear the clipboard now (the trap above also does it on any failure).
 pbcopy < /dev/null
 ```
+
+If the capture failed after `create-access-key` succeeded (for example `jq` is
+missing), an access key now exists that no Keychain item holds. Delete that
+orphan at once: find its id with `aws iam list-access-keys --profile ferrenafe
+--user-name ferrenafe-relay-producer`, then `aws iam delete-access-key
+--profile ferrenafe --user-name ferrenafe-relay-producer --access-key-id
+<orphan-access-key-id>`. Universal Clipboard and clipboard managers may retain
+the copied value despite the clear; if either is active, turn it off for this
+step or treat the key as exposed and rotate it afterwards.
+
+Tradeoff: `-T /usr/bin/security` lets any process running as the same user read
+the item without a prompt. That is inherent to `credential_process` with an
+unattended job, not something this setup can avoid.
 
 Then add the profile to `~/.aws/config` (operator machine only, never
 committed):
@@ -197,10 +215,10 @@ credential or a raw exception message.
 | Exit | Meaning | stderr line (`push.log`) | First thing to check |
 |---|---|---|---|
 | 0 | Pushed | `relay push: ok version=<id> bytes=<n> rows_seen=<n>` (stdout) | nothing |
-| 1 | Not configured or bad usage | `relay push: RAIN_ALERT_RELAY_BUCKET is not set`, or `relay push: RAIN_ALERT_RELAY_BUCKET_OWNER is not a 12-digit account id`, or `relay push: bad usage` | the plist `EnvironmentVariables`: an empty or missing `RAIN_ALERT_RELAY_BUCKET` is exit 1, while a placeholder left in place is not, so also check the bucket name |
+| 1 | Not configured or bad usage | `relay push: RAIN_ALERT_RELAY_BUCKET is not set`, or `relay push: RAIN_ALERT_RELAY_BUCKET_OWNER is not a 12-digit account id`, or `relay push: bad usage` | the plist `EnvironmentVariables`: an empty or missing `RAIN_ALERT_RELAY_BUCKET` is exit 1, while a placeholder left in place is not: a leftover literal `<bucket>` is exit 4 (see below), so also check the bucket name |
 | 2 | Fetch or parse gate failed, nothing written | `relay push: refused to push, <reason>` where `<reason>` is a value such as `timeout`, `transport_error` or `structure_unrecognized`, or `refused to push, gate crashed: <ExceptionType>` | is the network up; did SENAMHI change its page (`tests/integration/test_senamhi_canary.py` is the early warning) |
 | 3 | Page over the size cap, nothing written | `relay push: refused to push, page is over the 4194304-byte cap` | has the page grown, see the ADR on the 4 MiB cap |
-| 4 | S3 client or write failed | `relay push: S3 write failed: <ErrorCode or ExceptionType>` | `CredentialRetrievalError` or `ProfileNotFound` means the profile or Keychain item; `AccessDenied` means the policy or the key |
+| 4 | S3 client or write failed | `relay push: S3 write failed: <ErrorCode or ExceptionType>` | `CredentialRetrievalError` or `ProfileNotFound` means the profile or Keychain item; `AccessDenied` means the policy or the key; `S3 write failed: ParamValidationError` means a leftover placeholder bucket such as the literal `<bucket>` (client-side validation inside the guarded block) |
 
 Exit 2 after a sleep is normal and recovers by itself, see
 [Schedule and sleep](#schedule-and-sleep).
@@ -213,15 +231,20 @@ Mac only, never in the repository.
 ## Step 4 — Install the LaunchAgent
 
 ```bash
+mkdir -p <home>/Library/LaunchAgents
 mkdir -p <home>/Library/Logs/ferrenafe-relay
 chmod 700 <home>/Library/Logs/ferrenafe-relay      # the log records the bucket name and versions
 
 cp <repo>/ops/launchd/pe.ferrenafe.relay-push.plist <home>/Library/LaunchAgents/
 ```
 
-Edit the copy and replace every angle-bracket token: `<uv>` (absolute path,
-from `which uv`, because launchd has a minimal PATH), `<repo>`, `<bucket>` and
-`<home>` (launchd does not expand `~`). Then:
+Edit the copy and replace every placeholder: `<uv>` (absolute path, from
+`which uv`, because launchd has a minimal PATH), `<repo>`, `<bucket>` and
+`<home>` (launchd does not expand `~`). In the plist body these appear
+XML-escaped (`&lt;uv&gt;`, `&lt;repo&gt;`, `&lt;bucket&gt;`, `&lt;home&gt;`);
+only the header comment shows them unescaped. Replace each escaped token,
+including its `&lt;` and `&gt;`, with the plain absolute path or value, with no
+angle brackets left. Then:
 
 ```bash
 plutil -lint <home>/Library/LaunchAgents/pe.ferrenafe.relay-push.plist
@@ -308,9 +331,11 @@ aws cloudtrail get-trail-status --profile ferrenafe --region us-east-2 --name <t
 `LatestDigestDeliveryError` must be empty. This is the live check that the log
 bucket's `Deny` on `aws:SourceAccount` does not block CloudTrail itself:
 AWS documents bucket policies conditioned on the source keys, but not
-explicitly for digest-file writes. **If either error is set, remove that
-`Deny` statement from the log bucket in `infra/lib/scheduled-cycle-stack.ts`
-and redeploy.** Record the output in `docs/evidence/` (task L.7a).
+explicitly for digest-file writes. **If either error is set, first correct the
+log bucket's `Deny` condition in `infra/lib/scheduled-cycle-stack.ts` (for
+example scope it with `aws:SourceArn` to this trail) and redeploy. Remove the
+confused-deputy `Deny` only as a last resort, and record that decision in an
+ADR; do not simply delete it.** Record the output in `docs/evidence/` (task L.7a).
 
 ### Reading CloudTrail write events
 
@@ -332,8 +357,11 @@ Read who (`userIdentity`: the producer user and access key id), from where
 `PutObject` event carries the object's version id, and whether a denied write
 is logged at all, are **not yet confirmed live** (tasks L.7); if the event has
 no version id, join a version to its writer by `eventTime` against the version's
-`LastModified`. `userIdentity` contains the account id: redact it before
-pasting anything into `docs/evidence/`.
+`LastModified`. `userIdentity` contains the account id, `accessKeyId` and `principalId`, and
+the events carry `sourceIPAddress`: before pasting anything into
+`docs/evidence/`, redact the account id, and replace `accessKeyId`,
+`principalId` and `sourceIPAddress` with `<access-key-id>`, `<principal-id>`
+and `<operator-ip>`.
 
 ## Step 6 — Turn the relay on
 
@@ -344,7 +372,16 @@ pushing.
 2. Edit `infra/cdk.json` and change `"relayEnabled": "false"` to `"true"`.
    Commit that one-line change: it is the reviewed record of the flip.
 3. Deploy `ScheduledCycleStack` exactly as in Step 1.
-4. **Invoke the cycle once by hand**, so the alarm has a datapoint:
+4. **Invoke the cycle once by hand**, so the alarm has a datapoint.
+
+   This is a **real cycle**, not a dry run. It reads the live sources,
+   evaluates risk, writes deduplication and outage state to DynamoDB, publishes
+   the public status snapshot to the public bucket, and may invoke the message
+   composer. It uses the same SSM configuration and deduplication table as the
+   scheduled one. Today the only notifier in the code is `ConsoleNotifier`
+   (`entrypoints/wiring.py`): no resident delivery channel exists, so no
+   message reaches residents. **Revisit this paragraph when a real notifier
+   ships.**
 
    ```bash
    aws lambda invoke --profile ferrenafe --region us-east-2 \
@@ -352,10 +389,7 @@ pushing.
      "$TMPDIR/relay-invoke.json" && cat "$TMPDIR/relay-invoke.json"
    ```
 
-   This is a **real cycle**, not a dry run. It uses the same SSM
-   configuration and the same deduplication table as the scheduled one, so it
-   sends only what a scheduled cycle would have sent. It returns
-   `{"sent": ..., "level": ..., "degraded": ...}`.
+   It returns `{"sent": ..., "level": ..., "degraded": ...}`.
 
 5. Confirm the relay record in the Lambda's log. The log group is created by
    the stack, so ask the function for its name:
@@ -372,8 +406,9 @@ pushing.
    A healthy record is one compact JSON line:
    `{"event":"senamhi_relay","degraded":0,"reason":null,"version_id":"…","last_modified":"…","age_seconds":…,"skew_seconds":…}`.
    `degraded` is `1` for every relay failure, including a fresh object that
-   no longer parses. The cycle's own JSON then shows `senamhi_status` as
-   `available`.
+   no longer parses. Each of those yields an Unavailable source, so the
+   cycle's own JSON shows `senamhi_status` as `"unavailable"` and `degraded`
+   as true; a degraded record never coexists with `available`.
 
 ### The creation-time ALARM, expected
 
@@ -399,8 +434,9 @@ How long a 21600 s alarm takes to change state is not yet observed live
 The alarm is `Maximum` of `SenamhiRelayDegraded`, period 21600 s (a **sliding**
 window), 2 of 2 periods, missing data breaching, threshold 1. In practice it
 fires after **about 12 hours** without a healthy record. That includes: two
-consecutive degraded cycles in any mix of `stale_relay`, `relay_missing` and
-`relay_unreadable`, and a cycle that never ran. If the producer is absent for
+consecutive degraded cycles in any mix of `stale_relay`, `relay_missing`,
+`relay_unreadable` and the parser reasons below (any record with `degraded=1`
+counts), and a cycle that never ran. If the producer is absent for
 about 12 hours or more after you enabled the relay, the alarm is telling the
 truth. It is separate from, and deliberately duplicates, the no-invocation
 alarm.
@@ -411,7 +447,9 @@ alarm.
 |---|---|---|
 | `stale_relay` | The object exists but is 3 h old or more; it is not parsed, because a stale "nothing in force" would be a false calm | the producer: Mac awake, logged in, `push.log` |
 | `relay_missing` | `NoSuchKey`: the producer never pushed | Step 3, a first push |
-| `relay_unreadable` | Access denied, any other S3 error, an object over the size cap, a bad charset, a missing or wrong `sha256`, a `LastModified` more than 60 s ahead of the cycle clock, a fresh object whose parse fails, or the bucket variable present but empty | the notice detail names the code; the grant, the bucket name, or a producer/Lambda version drift |
+| `relay_unreadable` | Access denied, any other S3 error, an object over the size cap, a bad charset, a missing or wrong `sha256`, a `LastModified` more than 60 s ahead of the cycle clock, or the bucket variable present but empty | the notice detail names the code; the grant, the bucket name, or a producer/Lambda version drift |
+| the parser's own reason, for example `structure_unrecognized` or `no_rows_extracted` | A fresh object was read but its parse failed; the record carries the parser's reason, not `relay_unreadable`. `degraded` is still `1`, so it counts toward the alarm | the object's content: did SENAMHI change its page, or was a bad object pushed (see the leak response) |
+| `transport_error` | The parser crashed with an unexpected exception (not a fetch error) on a fresh object; `degraded` is `1` | the notice detail names the exception type; a parser bug or producer/Lambda version drift |
 
 A relay failure never falls back to scraping SENAMHI from AWS. The resident
 message is the same SENAMHI-unavailable text as for any outage; only the
@@ -424,25 +462,28 @@ account for.
 
 ```bash
 aws iam list-access-keys --profile ferrenafe --user-name ferrenafe-relay-producer
-aws iam get-access-key-last-used --profile ferrenafe --access-key-id <access-key-id>
+aws iam get-access-key-last-used --profile ferrenafe --access-key-id <old-access-key-id>
 ```
 
-1. IAM allows two keys per user. Create the new key and replace the Keychain
-   item with the same commands as Step 2 (`-U` updates the existing item).
+1. IAM allows two keys per user. Record the old key's id
+   (`<old-access-key-id>`, from `list-access-keys` above) **before** replacing
+   anything. Create the new key (`<new-access-key-id>`) and replace the
+   Keychain item with the same commands as Step 2 (`-U` updates the existing
+   item).
 2. Run one manual push (Step 3). Confirm a new `VersionId` and a fresh
    `LastModified`.
 3. Set the old key to `Inactive`:
 
    ```bash
    aws iam update-access-key --profile ferrenafe --user-name ferrenafe-relay-producer \
-     --access-key-id <access-key-id> --status Inactive
+     --access-key-id <old-access-key-id> --status Inactive
    ```
 
 4. Wait one cycle (the next hourly push must succeed), then delete it:
 
    ```bash
    aws iam delete-access-key --profile ferrenafe --user-name ferrenafe-relay-producer \
-     --access-key-id <access-key-id>
+     --access-key-id <old-access-key-id>
    ```
 
 ## Revoke on a suspected leak
@@ -486,6 +527,13 @@ a forged page that parses is read as a real, empty warning list.
 5. A bad object stays "fresh" until 3 hours after its own `LastModified`, and
    only then turns into `stale_relay`. That is why step 4 matters; the staleness
    limit alone is not a substitute for it.
+6. **Close out after forensics.** Delete the compromised key
+   (`aws iam delete-access-key --profile ferrenafe --user-name
+   ferrenafe-relay-producer --access-key-id <compromised-access-key-id>`),
+   create a new key and replace the Keychain item (Step 2), then restart the
+   producer with `launchctl kickstart -k gui/$UID/pe.ferrenafe.relay-push`
+   (use `launchctl bootstrap` first if you ran `bootout`). Until a new push
+   succeeds the relay goes stale after about 3 hours and the cycles degrade.
 
 ## Retire the key (Roles Anywhere migration)
 
