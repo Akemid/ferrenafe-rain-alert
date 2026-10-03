@@ -219,13 +219,15 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
         (a) => a.Properties.MetricName === 'SenamhiRelayDegraded',
       );
 
-    test('the real committed cdk.json context ships the relay OFF: no env var and no relay alarm', () => {
+    test('the real committed cdk.json context turns the relay ON: env var and relay alarm present', () => {
+      // Flipped by the owner on 2026-10-03, after the producer was verified live (runbook steps 1-5,
+      // docs/evidence/2026-10-03-senamhi-relay-live.md). Turning it off again is a reviewed commit of "false".
       const cdkJson = require('../cdk.json') as { context: Record<string, unknown> };
       const template = synth({ ...baseContext, relayEnabled: cdkJson.context.relayEnabled });
 
-      expect(cdkJson.context).toHaveProperty('relayEnabled');
-      expect(relayVariable(template)).toBeUndefined();
-      expect(relayAlarms(template)).toEqual([]);
+      expect(cdkJson.context.relayEnabled).toBe('true');
+      expect(relayVariable(template)).toBeDefined();
+      expect(relayAlarms(template)).toHaveLength(1);
     });
 
     test.each([['true'], [true]])('%p enables the relay: env var and alarm present', (value) => {
