@@ -105,7 +105,7 @@ Identical. DNS resolves perfectly from both; the SYN is answered from neither. I
 
 That negative result cost twenty minutes and saved building a whole São Paulo stack to land in the same place. It also killed the NAT Gateway idea before I spent $32 a month on it: if two AWS regions on different continents get the same silence, an Elastic IP is still an AWS address.
 
-The honest summary is uncomfortable and worth saying plainly: **this system was designed and tested from the one place on earth where its data source answers.** My laptop is in Lambayeque, twenty milliseconds from that server. The cloud is not. Nothing in a test suite could have told me that, and nothing did until the first real invocation.
+The honest summary is uncomfortable and worth saying plainly: **this system was designed and tested from the one place on earth where its data source answers.** My laptop is in Ferreñafe, twenty milliseconds from that server. The cloud is not. Nothing in a test suite could have told me that, and nothing did until the first real invocation.
 
 ### Fixing it: the API was behind the same wall
 
@@ -188,9 +188,9 @@ What comes next, in order:
 
 <!-- END OWNER SECTION -->
 
-## Why this lane
+## Why the community lane
 
-I live in Lambayeque. Ferreñafe is not a case study for me.
+I live in Ferreñafe. It is not a case study for me; it is where I live.
 
 The repository is Apache 2.0 and the architecture is deliberately boring in the places that matter — hexagonal, with the risk rules as pure functions and every external service behind a port. Another coastal town can swap the coordinates, the thresholds and the scraper and have the same system. That is the actual deliverable: not one town's page, but a shape that fits the next town.
 
