@@ -201,25 +201,67 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
     }
   });
 
-  test('passes `-c relayEnabled=false` through, and leaves the relay on for any other value or none', () => {
-    // Design D41/D45: the string 'false' only, same parsing as `scheduleEnabled`.
-    const relayVariable = (relayEnabled: string | undefined): unknown => {
-      const app = new App({
-        context: {
-          snapshotBucketName: REAL_BUCKET_NAME,
-          snapshotWriterPolicyArn: SNAPSHOT_WRITER_POLICY_ARN,
-          agentRuntimeArn: AGENT_RUNTIME_ARN,
-          alarmEmail: ALARM_EMAIL,
-          ...(relayEnabled === undefined ? {} : { relayEnabled }),
-        },
-      });
-      const template = Template.fromStack(buildScheduledCycleStack(app)!);
+  describe('relayEnabled context parsing (D45)', () => {
+    const baseContext = {
+      snapshotBucketName: REAL_BUCKET_NAME,
+      snapshotWriterPolicyArn: SNAPSHOT_WRITER_POLICY_ARN,
+      agentRuntimeArn: AGENT_RUNTIME_ARN,
+      alarmEmail: ALARM_EMAIL,
+    };
+    const synth = (context: Record<string, unknown>): Template =>
+      Template.fromStack(buildScheduledCycleStack(new App({ context }))!);
+    const relayVariable = (template: Template): unknown => {
       const [fn] = Object.values(template.findResources('AWS::Lambda::Function'));
       return fn.Properties.Environment.Variables.RAIN_ALERT_RELAY_BUCKET;
     };
+    const relayAlarms = (template: Template): unknown[] =>
+      Object.values(template.findResources('AWS::CloudWatch::Alarm')).filter(
+        (a) => a.Properties.MetricName === 'SenamhiRelayDegraded',
+      );
 
-    expect(relayVariable('false')).toBeUndefined();
-    expect(relayVariable('true')).toBeDefined();
-    expect(relayVariable(undefined)).toBeDefined();
+    test('the real committed cdk.json context ships the relay OFF: no env var and no relay alarm', () => {
+      const cdkJson = require('../cdk.json') as { context: Record<string, unknown> };
+      const template = synth({ ...baseContext, relayEnabled: cdkJson.context.relayEnabled });
+
+      expect(cdkJson.context).toHaveProperty('relayEnabled');
+      expect(relayVariable(template)).toBeUndefined();
+      expect(relayAlarms(template)).toEqual([]);
+    });
+
+    test.each([['true'], [true]])('%p enables the relay: env var and alarm present', (value) => {
+      const template = synth({ ...baseContext, relayEnabled: value });
+
+      expect(relayVariable(template)).toBeDefined();
+      expect(relayAlarms(template)).toHaveLength(1);
+    });
+
+    test.each([['false'], [false]])('%p disables the relay', (value) => {
+      const template = synth({ ...baseContext, relayEnabled: value });
+
+      expect(relayVariable(template)).toBeUndefined();
+      expect(relayAlarms(template)).toEqual([]);
+    });
+
+    test('absent disables the relay (safe default, consistent with cdk.json)', () => {
+      const template = synth(baseContext);
+
+      expect(relayVariable(template)).toBeUndefined();
+      expect(relayAlarms(template)).toEqual([]);
+    });
+
+    test.each([['yes'], [1], [''], [null]])('%p throws a clear synth-time error', (value) => {
+      expect(() => buildScheduledCycleStack(new App({ context: { ...baseContext, relayEnabled: value } }))).toThrow(
+        /relayEnabled/,
+      );
+    });
+
+    test('keeps bucket, user and policy in both states', () => {
+      for (const relayEnabled of ['true', 'false']) {
+        const template = synth({ ...baseContext, relayEnabled });
+        template.resourceCountIs('AWS::S3::Bucket', 1);
+        template.resourceCountIs('AWS::IAM::ManagedPolicy', 1);
+        template.resourceCountIs('AWS::IAM::User', 1);
+      }
+    });
   });
 });
