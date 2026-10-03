@@ -59,3 +59,7 @@ happened.
   (and the schedule re-enable the diff caught), the producer key after two
   orphan keys, the first manual and launchd pushes, and the CloudTrail delivery
   and `versionId` checks.
+- [`_template-agent-system-prompt-live.md`](_template-agent-system-prompt-live.md)
+  — fill-in template for the agent system prompt's 10-call live gate
+  (`scripts/agent_live_acceptance.py`): date, commit, command, ten outcome
+  rows, tally, rounds, masked ARN, verdict.
