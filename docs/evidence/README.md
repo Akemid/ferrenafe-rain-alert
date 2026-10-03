@@ -54,3 +54,8 @@ happened.
   agent-composed message (a dry run against the production runtime), the
   owner's acceptance of its wording, and a first attempt that hit the stale
   `us-east-1` runtime because boto3 ignored `AWS_REGION`.
+- [`2026-10-03-senamhi-relay-live.md`](2026-10-03-senamhi-relay-live.md)
+  — Phase L of `senamhi-s3-relay`: the deploy with the relay and schedule off
+  (and the schedule re-enable the diff caught), the producer key after two
+  orphan keys, the first manual and launchd pushes, and the CloudTrail delivery
+  and `versionId` checks.
