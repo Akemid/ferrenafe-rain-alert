@@ -198,3 +198,29 @@ Each RED first, `cd infra && npm test`:
 - Existing bucket-count assertions (1 -> 2) and `relayBucketLogicalId` updated for the second bucket; app.test.ts too.
 - Offline synth verified with `./node_modules/.bin/cdk synth ScheduledCycleStack -c ... -o <tmp>` (exit 0). `npx cdk` via npm swallows `-c`, so the binary is called directly. Fixture ARNs with a 12-digit id were passed on the CLI only, never committed.
 - Cost: about 28 write data events a day at $0.10 per 100k, nothing to code.
+
+---
+
+# Phase 5 / PR 5 (feat/senamhi-relay-5-docs, stacked on relay-4b-trail): tasks 5.1-5.6 [x]
+
+5.7 (security review) remains open. Docs only, no code. `uv run pytest tests/hygiene` passes after `git add`.
+
+## Work units
+
+1. `docs/runbooks/senamhi-relay.md` (5.1, 5.2): deploy order with the relay OFF, key and Keychain, `ferrenafe-relay` profile, LaunchAgent install, schedule and sleep, `push.log`, exit codes, trail check (L.7a), CloudTrail write events, flip procedure, creation-time ALARM, ~12 h legitimate alarm, rotation, revocation, Roles Anywhere retirement, rollback. Roles Anywhere requirement before 2026-12-01 stated up front, linking the ADR.
+2. `docs/decisions/0003-senamhi-s3-relay.md` (5.3). No decisions README exists, so the shape follows ADR 0001/0002 headers.
+3. `docs/architecture/adapters.md` and `entrypoints-and-testing.md` (5.4).
+4. README, ADR 0001 update note, architecture README (5.5): reachability claims corrected narrowly, evidence cited, ADR 0003 indexed. History docs (blog, evidence) untouched.
+
+## Design versus code (the code won)
+
+- Contract file carries a sixth key, `future_tolerance_seconds` (60), not in D37. The provider treats a `LastModified` more than 60 s ahead of the cycle clock as `RELAY_UNREADABLE`; D38 said "clamp". Docs follow the code.
+- No stack output exists for the trail or the audit log bucket, and neither has a fixed name. L.7a's `--name <trail>` is resolved in the runbook through `describe-stack-resources` (trail physical id) and `describe-trails` (log bucket).
+- CloudTrail data events are not returned by `lookup-events`; the runbook reads the gzipped log files from the log bucket. Whether a `PutObject` event carries `versionId` and whether a denied write is logged stay unconfirmed (L.7).
+- `push.log` lines carry no timestamp; the runbook tells the operator to use the file mtime or match `version=` against `list-object-versions`.
+- Producer exit 4 also covers a client that cannot be built: a failing `credential_process` raises `CredentialRetrievalError` inside the guarded block (reproduced offline), so it is `S3 write failed: CredentialRetrievalError`, not a separate code.
+- Producer read timeout is 10 s (reader's is 5 s), per `relay_push.py`.
+- The relay alarm has an alarm action only, so recovery sends no email; the runbook shows `describe-alarms`.
+- `npx cdk` swallows `-c` (npm reads it); the runbook uses `./node_modules/.bin/cdk`.
+- `docs/runbooks/README.md`, `docs/decisions/README.md` and `scheduled-cycle-deploy.md` do not exist; conventions were taken from `public-page-deploy.md` and ADR 0001/0002.
+- A manual `aws lambda invoke` is a real cycle (same SSM config and dedup table), stated in the runbook.
