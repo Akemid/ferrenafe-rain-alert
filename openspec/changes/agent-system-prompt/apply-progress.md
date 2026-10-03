@@ -14,3 +14,29 @@
   - Teeth: swapped expectation CITY_MISSING -> UNKNOWN_NUMBER, red; reverted.
 - 1.9: `git diff main -- message_validation.py test_message_validation.py` is empty.
 - 1.10 gate: pytest 1361 passed; agent pytest 33 passed, 1 xfailed; ruff check, ruff format --check, mypy clean; tests/hygiene green.
+
+## Batch 2 (PR 2, branch feat/agent-sp-2-live-script): Phase 2 tasks 2.1-2.9 done; 2.10 (security review) pending
+
+Also: docs commit 6b07f6f records the owner-approved SENAMHI attribution rule in D49 (design.md bullet, Owner Decisions entry; engram design #2721 updated) and adds Phase 3 task 3.4a (RED test for the SENAMHI sentence), unimplemented.
+
+TDD cycle evidence:
+| Task | RED (observed) | GREEN | Notes |
+|---|---|---|---|
+| 2.1/2.2 tally + incident fixture | `FileNotFoundError` on scripts/agent_live_acceptance.py (script absent) | 5 passed | first green attempt also needed the test loader to register the module in sys.modules (dataclass) |
+| 2.3/2.4/2.5 runner + secrecy | `AttributeError: module has no attribute 'run_gate'` (6 tests) | 11 passed | secrecy masks the given ARN, the per-run fence token and any `arn:aws...` string |
+| 2.6 offline exclusion | passed at once (CHAR: client construction was already lazy) | 15 passed | teeth: temporarily added a module-level boto3.client call -> `AssertionError: a client was built at import time`; reverted |
+| 2.7/2.8 docs | n/a | runbook section "Changing the system prompt"; evidence template + README index | placeholders only |
+| 2.9 gate | n/a | pytest 1376 passed; agent 33 passed 1 xfailed; ruff, format, mypy clean; hygiene 61 passed; `--help` exits 0 offline | |
+
+Design notes: run_gate uses real build_prompt, parse_candidate, validate_message (injectable for tests); region passed explicitly (default us-east-2, AWS_DEFAULT_REGION override); ARN from RAIN_ALERT_AGENT_RUNTIME_ARN or `--from-lambda` (get_function_configuration on ferrenafe-rain-alert-cycle). Imports private `_fence_token` from agent_prompt for the default token factory.
+
+## Batch 2 review fixes (task 2.10 annotated "review fixes applied"; checkbox left open)
+
+| Fix | RED (observed) | Commit |
+|---|---|---|
+| `_mask` also masks a bare 12-digit id as `<account>` | `AssertionError: the bare id still in the masked text` | 76d1c3d |
+| `main()` masks lookup/invoker-construction failures, one stderr line, exit 2 | the RuntimeError (with role ARN + account id) escaped `main()` | c966f04 |
+| `--runs` fixed at 10 (other value: usage error, exit 2); 7/10 exit 1, 8/10 exit 0 | `DID NOT RAISE SystemExit` for `--runs 20` | 03d1711 |
+| `--from-lambda` tests with a fake Lambda client; runbook uses `read -rs` for the ARN | characterization: passed at once (path already existed) | 8940efe |
+
+Gotcha: a doc comment containing a 12-digit example id tripped tests/hygiene (it scans history); fixed by rewriting the 4 unpushed commits (filter-branch) and dropping refs/original + gc. Never write a literal 12-digit id, even as an example.

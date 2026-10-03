@@ -113,8 +113,8 @@ For a one-off local run without touching the environment, use the CLI flag
 instead (design D24):
 
 ```bash
-RAIN_ALERT_AGENT_RUNTIME_ARN="arn:aws:bedrock-agentcore:<region>:<account>:runtime/<id>" \
-  uv run rain-alert-cycle --composer agent
+read -rs RAIN_ALERT_AGENT_RUNTIME_ARN && export RAIN_ALERT_AGENT_RUNTIME_ARN   # not in shell history
+uv run rain-alert-cycle --composer agent
 ```
 
 The AWS credential chain (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
@@ -153,6 +153,63 @@ at all — composition sits inside the authorized-send branch
 (`application/run_alert_cycle.py`), and a calm forecast costs nothing. Force
 an authorized send with `--offline-fixtures` pointed at a fixture pair that
 clears a threshold to observe a real invocation.
+
+## Changing the system prompt
+
+The agent's fixed rules live in `agent/prompts.py::SYSTEM_PROMPT` (change
+`agent-system-prompt`, design D48-D54). Changing them changes what is sent to
+residents, so the order below is not optional. Production never runs agent code
+that has not passed review and the live gate.
+
+1. **Offline gate green** on the branch: `uv run pytest`,
+   `uv run --directory agent pytest`, `uv run ruff check`,
+   `uv run ruff format --check`, `uv run mypy`. The wording changes test-first:
+   a failing test names the rule, then the text.
+2. **Fresh-context reviews passed**: security AND correctness, on the branch
+   diff. Both. `agentcore launch` is allowed from an unmerged branch only after
+   this step.
+3. **Launch from the branch** (step 3 above):
+   `cd agent && AWS_PROFILE=ferrenafe AWS_DEFAULT_REGION=us-east-2 uv run agentcore launch`.
+   Record the command and its real output in `docs/evidence/`, ARN masked as
+   `arn:aws:bedrock-agentcore:us-east-2:<account>:runtime/<id>`.
+4. **Run the 10-call live gate** (paid: ten real model calls):
+
+   ```bash
+   read -rs RAIN_ALERT_AGENT_RUNTIME_ARN   # paste the ARN; not echoed, not in shell history
+   export RAIN_ALERT_AGENT_RUNTIME_ARN
+   AWS_PROFILE=ferrenafe AWS_DEFAULT_REGION=us-east-2 \
+     uv run python scripts/agent_live_acceptance.py --runs 10
+   ```
+
+   Or skip the variable and add `--from-lambda` to read the ARN from the
+   deployed `ferrenafe-rain-alert-cycle` configuration (preferred: nothing to
+   paste). `--runs` is fixed at 10. The script passes the
+   region explicitly (botocore ignores `AWS_REGION`), never prints the ARN or a
+   fence token, and exits non-zero below 8 of 10 accepted. Acceptance is decided
+   by the unchanged `validate_message`; the script only counts. If the SSM
+   checklist was edited since exploration, confirm it still equals
+   `static_config_repository.CHECKLIST` first.
+5. **Record all ten outcomes in the evidence file**, failures included, from
+   `docs/evidence/_template-agent-system-prompt-live.md`. No cherry-picking: a
+   second batch never replaces the first, it is recorded as a new round.
+6. **Iterate if below 8/10**: write a new failing offline test that names the
+   observed rejection, change the wording, relaunch, run a fresh ten. Never
+   loosen the validator. **Three rounds at most**, then escalate to the owner.
+7. **Commit the evidence to the same PR**, re-run the offline gate, and merge.
+   Merging is the owner's decision once the gate is met.
+8. **Deploy the application** from `main`: `infra/scripts/build-lambda.sh`,
+   `cdk diff` (read it: only the function code should change), then `cdk deploy`
+   with the existing `-c` flags. The agent goes first on purpose: while it runs
+   the new prompt and the app still sends the old rules, the rules are duplicated,
+   which is harmless. The reverse order leaves the agent without rules and every
+   draft falls back to the template.
+
+Rollback, cheapest first:
+
+- **Instant**: `RAIN_ALERT_COMPOSER=template` in SSM. The next cycle sends the
+  deterministic template; no deploy.
+- **Agent**: relaunch from the `main` commit that preceded the change.
+- **App**: revert the commit, rebuild the asset, deploy.
 
 ## Rollback
 
