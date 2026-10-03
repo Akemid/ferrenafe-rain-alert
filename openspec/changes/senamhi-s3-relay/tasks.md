@@ -174,7 +174,7 @@ VersionId, skew, resident text byte-identical). Design D37, D38, D40
 
 - [x] 1.25 Extend `tests/architecture/test_layer_boundaries.py`: `adapters/senamhi_relay.py` imports nothing from `entrypoints`; include a planted-violation case proving the scan can fail.
 - [x] 1.26 PR-1 gate: `uv run pytest`; `uv run --directory agent pytest`; `uv run ruff check`; `uv run ruff format --check`; `uv run mypy`; `cd infra && npm test` (unchanged, must stay green).
-- [ ] 1.27 **Security review** (fresh context) on the PR-1 branch diff before opening the PR. Scope: no AWS account id, ARN or secret; `relay_detail` cannot leak page content into the operator notice beyond the VersionId and numbers; `tests/hygiene` passes after `git add`.
+- [x] 1.27 **Security review** (fresh context) on the PR-1 branch diff before opening the PR. Scope: no AWS account id, ARN or secret; `relay_detail` cannot leak page content into the operator notice beyond the VersionId and numbers; `tests/hygiene` passes after `git add`.
 
 ---
 
@@ -216,7 +216,7 @@ direct scrape), `weather-sources` (relay selected by
 - [x] 2.17b [RED/GREEN] The S3 reader enforces `MAX_OBJECT_BYTES` before reading or decoding: check `ContentLength` first, then a bounded read of at most `cap + 1` bytes. Tests: an oversized `ContentLength` -> `RELAY_UNREADABLE` with `TrackingBody.read` never called; a lying small `ContentLength` with a body larger than the cap -> `RELAY_UNREADABLE` (extends 2.9/2.10).
 
 - [x] 2.18 PR-2 gate: full project gate (as 1.26).
-- [ ] 2.19 **Security review** (fresh context) on the PR-2 branch diff. Scope: exceptions never carry object content into logs; the env-var-empty path cannot reach a direct scrape; no account id in fixtures. Note: review fixes applied (judgment-day round 1); security review still open.
+- [x] 2.19 **Security review** (fresh context) on the PR-2 branch diff. Scope: exceptions never carry object content into logs; the env-var-empty path cannot reach a direct scrape; no account id in fixtures. Note: review fixes applied (judgment-day round 1); security review still open.
 
 ---
 
@@ -238,7 +238,7 @@ V.7 recorded.
 - [x] 3.10 [GREEN] Fix any drift the round trip reveals (expected: none).
 - [x] 3.11 Register `rain-alert-relay-push` in `pyproject.toml [project.scripts]`; create `ops/launchd/pe.ferrenafe.relay-push.plist` template (D47: `StartCalendarInterval` as the single dict `{Minute: 0}`, `RunAtLoad true`, `uv run --directory <repo> rain-alert-relay-push`, `AWS_PROFILE=ferrenafe-relay`, `AWS_REGION=us-east-2`, `RAIN_ALERT_RELAY_BUCKET=<bucket>`, logs under `~/Library/Logs/ferrenafe-relay/push.log`). **RED:** a hygiene-style test parses the plist with `plistlib` and asserts: `StartCalendarInterval == {"Minute": 0}` exactly (no `Hour`/`Day`/`Weekday`/`Month` keys, so it is hourly); **`StartInterval` is absent** (the man page says both are evaluated independently, so both would double-fire, and `StartInterval` misses runs during sleep); `RunAtLoad is True`; the `ProgramArguments`, `EnvironmentVariables` and log-path keys above; every placeholder is an angle-bracket token; no secret, account id or ARN. Expected failure: file absent. Mutation proof: swap in `StartInterval 3600` and record red; revert.
 - [x] 3.12 PR-3 gate: full project gate (as 1.26), plus `uv run rain-alert-relay-push --help` exits 0 offline (entry point resolves).
-- [ ] 3.13 *(review fixes applied: gate-exception exit 2, in-flight cap and deadline, `--frozen`, optional ExpectedBucketOwner, design D42/D47 amended; awaiting confirmation)* **Security review** (fresh context) on the PR-3 branch diff. Scope: no credential, key or Keychain material in code, plist or fixtures; producer never logs the body; failed run provably leaves the old object untouched (tests 3.1-3.7).
+- [x] 3.13 *(review fixes applied: gate-exception exit 2, in-flight cap and deadline, `--frozen`, optional ExpectedBucketOwner, design D42/D47 amended; awaiting confirmation)* **Security review** (fresh context) on the PR-3 branch diff. Scope: no credential, key or Keychain material in code, plist or fixtures; producer never logs the body; failed run provably leaves the old object untouched (tests 3.1-3.7).
 
 ---
 
@@ -288,7 +288,7 @@ V.10, V.11 recorded.
 - [x] 4.22 [RED] The trail and log bucket exist with `relayEnabled=false` (audit record outlives a rollback). Expected failure: they are missing if wrongly nested under the switch.
 - [x] 4.23 [GREEN] Keep them outside the conditional. Mutation proofs: change `readWriteType` to `ALL` and record red (it would bill and log every Lambda read); change `managementEvents` to `ALL` (adds a management selector) and record red; replace the bucket selector with `logAllS3DataEvents` (account-wide `arn:aws:s3`) and record red; revert.
 - [x] 4.24 PR-4 gate: `cd infra && npm test`; `uv run pytest`; `uv run --directory agent pytest`; `uv run ruff check`; `uv run ruff format --check`; `uv run mypy`; `uv run pytest tests/hygiene` after `git add`; `npx cdk synth ScheduledCycleStack -c ...` with fixture contexts offline succeeds (selects by construct id, as scheduled-cycle 3.25 recorded).
-- [ ] 4.25 **Security review** (fresh context) on the PR-4 (and 4a/4b) diff. Scope: every grant resource-scoped, no wildcard; no `AWS::IAM::AccessKey`; no account id or ARN in outputs, fixtures or context; trail selector is write-only and bucket-scoped; both buckets private.
+- [x] 4.25 **Security review** (fresh context) on the PR-4 (and 4a/4b) diff. Scope: every grant resource-scoped, no wildcard; no `AWS::IAM::AccessKey`; no account id or ARN in outputs, fixtures or context; trail selector is write-only and bucket-scoped; both buckets private.
 
 ---
 
@@ -300,7 +300,7 @@ V.10, V.11 recorded.
 - [x] 5.4 `docs/architecture/adapters.md` -- document `RelayWarningProvider`, `S3RelayReader`, the producer entrypoint and the single-line `on_read` record; update the entrypoints doc for `select_warning_provider`.
 - [x] 5.5 Correct stale docs found by `git grep` for "SENAMHI" reachability claims in `docs/` and `README` only where the evidence file contradicts them (edit narrowly, cite the evidence).
 - [x] 5.6 PR-5 gate: `uv run pytest tests/hygiene` (account id regex, docstring citations) after `git add`; proofread that every runbook command matches `contracts/senamhi-relay.json` and the CDK outputs exactly.
-- [ ] 5.7 **Security review** (fresh context) on the PR-5 diff. Scope: no account id, ARN, access key id, secret, email or bucket name; Keychain commands show placeholders only. Note: review fixes applied.
+- [x] 5.7 **Security review** (fresh context) on the PR-5 diff. Scope: no account id, ARN, access key id, secret, email or bucket name; Keychain commands show placeholders only. Note: review fixes applied.
 
 ---
 
