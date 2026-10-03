@@ -411,7 +411,9 @@ describe('ScheduledCycleStack — relay bucket (D41)', () => {
     expect(bucket.UpdateReplacePolicy).toBe('Retain');
     expect(bucket.Properties.BucketName).toBeUndefined();
 
-    template.hasResourceProperties('AWS::S3::Bucket', {
+    // Scoped to the relay bucket alone: the audit log bucket (D46) carries the same properties, so a
+    // stack-wide `hasResourceProperties` would stay green if the relay bucket lost any of them.
+    Template.fromJSON({ Resources: { [id]: bucket } }).hasResourceProperties('AWS::S3::Bucket', {
       PublicAccessBlockConfiguration: {
         BlockPublicAcls: true,
         BlockPublicPolicy: true,
