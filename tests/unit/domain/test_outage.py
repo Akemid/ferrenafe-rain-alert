@@ -3,8 +3,11 @@
 active/next state is passed in and returned as data.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from rain_alert.adapters.senamhi_relay import relay_detail
 from rain_alert.domain.messages import OutageRecord
 from rain_alert.domain.outage import OutageDecision, evaluate_outage
 from rain_alert.domain.sources import Available, Unavailable
@@ -234,3 +237,74 @@ class TestTheNoticeCarriesWhyTheSourceFailed:
         body = decision.notices[0].body
         assert "line one line two" in body
         assert len(body) < 600
+
+
+def _relay_unavailable(reason: UnavailableReason, detail: str) -> Unavailable:
+    return Unavailable(source=SourceName.SENAMHI, reason=reason, detail=detail, observed_at=NOW)
+
+
+class TestTheRelayOutagesReachTheOperatorWithTheirOwnVocabulary:
+    """The relay added three reasons. The notice renders `reason.value` and the
+    detail generically, so these scenarios pin that the operator can tell the
+    producer being down from the grant being broken, and which object it was."""
+
+    def test_a_stale_relay_notice_names_the_reason_and_the_version_id(self) -> None:
+        detail = relay_detail(
+            version_id="3HL4kqtJlcpXroDTDmJ.rmSpXd3dIbrHY",
+            age=timedelta(hours=4, minutes=12),
+            max_age=timedelta(hours=3),
+            last_modified=datetime(2026, 9, 3, 7, 48, tzinfo=UTC),
+            skew=timedelta(minutes=20),
+        )
+        decision = evaluate_outage(
+            _relay_unavailable(UnavailableReason.STALE_RELAY, detail), _available(), None, CITY_SLUG, NOW
+        )
+
+        line = decision.notices[0].body.splitlines()[-1]
+        assert line.startswith("- senamhi: stale_relay — version=3HL4kqtJlcpXroDTDmJ.rmSpXd3dIbrHY age=4h12m")
+        assert len(line.split(" — ", 1)[1]) <= 160
+
+    def test_the_version_id_survives_the_notice_length_cap_even_when_it_is_long(self) -> None:
+        detail = relay_detail(
+            version_id="V" * 100,
+            age=timedelta(hours=4, minutes=12),
+            max_age=timedelta(hours=3),
+            last_modified=datetime(2026, 9, 3, 7, 48, tzinfo=UTC),
+            skew=timedelta(minutes=20),
+        )
+        decision = evaluate_outage(
+            _relay_unavailable(UnavailableReason.STALE_RELAY, detail), _available(), None, CITY_SLUG, NOW
+        )
+
+        assert "version=" + "V" * 100 in decision.notices[0].body
+
+    def test_an_unreadable_relay_has_its_own_scenario(self) -> None:
+        decision = evaluate_outage(
+            _relay_unavailable(UnavailableReason.RELAY_UNREADABLE, "AccessDenied on GetObject"),
+            _available(),
+            None,
+            CITY_SLUG,
+            NOW,
+        )
+
+        assert decision.notices[0].body.splitlines()[-1] == "- senamhi: relay_unreadable — AccessDenied on GetObject"
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            (UnavailableReason.RELAY_MISSING, UnavailableReason.RELAY_UNREADABLE),
+            (UnavailableReason.STALE_RELAY, UnavailableReason.RELAY_MISSING),
+        ],
+        ids=["missing-to-unreadable", "stale-to-missing"],
+    )
+    def test_a_change_of_relay_reason_between_cycles_is_the_same_outage_and_does_not_renotify(
+        self, first: UnavailableReason, second: UnavailableReason
+    ) -> None:
+        opened = evaluate_outage(_relay_unavailable(first, "a"), _available(), None, CITY_SLUG, NOW)
+        assert len(opened.notices) == 1  # the outage really opened and notified
+
+        later = evaluate_outage(_relay_unavailable(second, "b"), _available(), opened.next_state, CITY_SLUG, NOW)
+
+        assert later.notices == ()
+        assert later.state_changed is False
+        assert later.next_state == opened.next_state

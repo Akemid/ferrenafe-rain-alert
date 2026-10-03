@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Any
 
 from rain_alert.adapters.local.in_memory_alert_repository import InMemoryAlertRepository
+from rain_alert.adapters.senamhi_relay import RelayObject
 from rain_alert.domain.config import AlertConfig
 from rain_alert.domain.entities import Contact, Forecast, RiskAssessment, Warning
 from rain_alert.domain.messages import AlertMessage, AlertRecord, MessageRequest, OperatorNotice, OutageRecord
@@ -312,3 +313,22 @@ class RecordingPublisher:
 
     def publish(self, document: dict[str, Any]) -> None:
         self.documents.append(document)
+
+
+@dataclass
+class FakeRelayReader:
+    """`RelayObjectReader` that returns a programmed object or raises a programmed error.
+
+    `result` is either a `RelayObject` (returned) or an exception instance
+    (raised unchanged), so one fake covers a `FetchError` and an arbitrary
+    surprise alike.
+    """
+
+    result: RelayObject | BaseException
+    calls: int = 0
+
+    def read(self) -> RelayObject:
+        self.calls += 1
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result

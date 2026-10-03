@@ -11,7 +11,15 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from rain_alert.domain.values import ComposerName, Coordinates, Level, NoticeKind, TimeWindow, is_escalation
+from rain_alert.domain.values import (
+    ComposerName,
+    Coordinates,
+    Level,
+    NoticeKind,
+    TimeWindow,
+    UnavailableReason,
+    is_escalation,
+)
 
 LIMA_OFFSET = timezone(timedelta(hours=-5))
 
@@ -159,3 +167,21 @@ class TestTimeWindow:
     def test_key_is_start_iso8601(self) -> None:
         window = TimeWindow(start=_utc(0), end=_utc(1))
         assert window.key() == _utc(0).isoformat()
+
+
+class TestTheRelayReasonsAreAPersistedVocabulary:
+    """Pinned despite the pruning note above: these spellings are not only
+    enum members. They are the `reason` field of the one-line relay record
+    that the CloudWatch metric filter and the operator read, so a rename
+    silently breaks both (senamhi-relay spec: three distinct reasons)."""
+
+    @pytest.mark.parametrize(
+        ("member", "value"),
+        [
+            ("STALE_RELAY", "stale_relay"),
+            ("RELAY_MISSING", "relay_missing"),
+            ("RELAY_UNREADABLE", "relay_unreadable"),
+        ],
+    )
+    def test_each_relay_reason_exists_with_its_published_spelling(self, member: str, value: str) -> None:
+        assert UnavailableReason[member].value == value
