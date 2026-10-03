@@ -17,8 +17,8 @@ invoker, `parse_candidate` and the UNCHANGED `validate_message`. The validator
 decides acceptance; this script only counts. Exit status is 0 at 8 of 10
 accepted or better, 1 below. `--runs` is fixed at 10 (any other value is a
 usage error, exit 2): the minimum is the fixed 8 of 10, not a ratio. Exit 2 also
-means the ARN lookup or invoker construction failed (masked, one line). Record all outcomes, failures included
-(D53): no cherry-picking.
+means the ARN lookup or invoker construction failed (masked, one line).
+Record all outcomes, failures included (D53): no cherry-picking.
 """
 
 from __future__ import annotations

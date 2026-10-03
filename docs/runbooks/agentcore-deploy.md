@@ -113,8 +113,8 @@ For a one-off local run without touching the environment, use the CLI flag
 instead (design D24):
 
 ```bash
-RAIN_ALERT_AGENT_RUNTIME_ARN="arn:aws:bedrock-agentcore:<region>:<account>:runtime/<id>" \
-  uv run rain-alert-cycle --composer agent
+read -rs RAIN_ALERT_AGENT_RUNTIME_ARN && export RAIN_ALERT_AGENT_RUNTIME_ARN   # not in shell history
+uv run rain-alert-cycle --composer agent
 ```
 
 The AWS credential chain (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
@@ -175,13 +175,15 @@ that has not passed review and the live gate.
 4. **Run the 10-call live gate** (paid: ten real model calls):
 
    ```bash
+   read -rs RAIN_ALERT_AGENT_RUNTIME_ARN   # paste the ARN; not echoed, not in shell history
+   export RAIN_ALERT_AGENT_RUNTIME_ARN
    AWS_PROFILE=ferrenafe AWS_DEFAULT_REGION=us-east-2 \
-   RAIN_ALERT_AGENT_RUNTIME_ARN=<arn> \
      uv run python scripts/agent_live_acceptance.py --runs 10
    ```
 
-   Or add `--from-lambda` instead of the ARN variable to read it from the
-   deployed `ferrenafe-rain-alert-cycle` configuration. The script passes the
+   Or skip the variable and add `--from-lambda` to read the ARN from the
+   deployed `ferrenafe-rain-alert-cycle` configuration (preferred: nothing to
+   paste). `--runs` is fixed at 10. The script passes the
    region explicitly (botocore ignores `AWS_REGION`), never prints the ARN or a
    fence token, and exits non-zero below 8 of 10 accepted. Acceptance is decided
    by the unchanged `validate_message`; the script only counts. If the SSM

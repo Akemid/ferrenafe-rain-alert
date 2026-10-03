@@ -318,3 +318,38 @@ class TestTheRunsAreFixedAtTen:
     ) -> None:
         assert self._main(script, monkeypatch, 8, ["--runs", "10"]) == 0
         capsys.readouterr()
+
+
+class TestFromLambda:
+    def test_the_arn_comes_from_the_lambda_configuration_and_is_never_printed(
+        self, script: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import boto3
+
+        config = {"Environment": {"Variables": {"RAIN_ALERT_AGENT_RUNTIME_ARN": ARN}}}
+        monkeypatch.setattr(boto3, "client", lambda *a, **k: _FakeLambdaClient(config))
+        built: list[tuple[str, str]] = []
+        invoker = _ScriptedInvoker([_good_draft(script)] * 10)
+
+        def _fake_invoker(arn: str, region: str) -> _ScriptedInvoker:
+            built.append((arn, region))
+            return invoker
+
+        monkeypatch.setattr(script, "_live_invoker", _fake_invoker)
+
+        code = script.main(["--from-lambda"], env={})
+
+        captured = capsys.readouterr()
+        assert code == 0
+        assert built == [(ARN, "us-east-2")]
+        assert ARN not in captured.out + captured.err
+
+    def test_a_lambda_without_the_variable_refuses(self, script: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+        import boto3
+
+        monkeypatch.setattr(boto3, "client", lambda *a, **k: _FakeLambdaClient({"Environment": {}}))
+
+        with pytest.raises(SystemExit) as raised:
+            script.main(["--from-lambda"], env={})
+
+        assert "RAIN_ALERT_AGENT_RUNTIME_ARN" in str(raised.value)
