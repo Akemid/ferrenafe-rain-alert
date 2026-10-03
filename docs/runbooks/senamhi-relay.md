@@ -88,6 +88,22 @@ Run `cdk` from `infra/` through its own binary. `npx cdk` is read by npm,
 which swallows `-c` (a finding from the infra work for this change), so the
 context values would silently not arrive.
 
+**Rebuild the Lambda asset first, from the commit you are deploying.**
+`ScheduledCycleStack` packages `infra/build/lambda/` as it is
+(`lambda.Code.fromAsset`), and `cdk deploy` does not rebuild it. A stale tree
+deploys silently: on 2026-10-03 the first relay deploy shipped a build from
+the day before that had no relay code at all
+(`docs/evidence/2026-10-03-senamhi-relay-live.md` §6). Run this before
+**every** `cdk diff`/`cdk deploy` of this stack:
+
+```bash
+bash infra/scripts/build-lambda.sh      # from the repository root
+```
+
+Then diff. Check the schedule too: `scheduleEnabled` lives in
+`infra/cdk.json` next to `relayEnabled`. The diff must not change the
+`AWS::Scheduler::Schedule` `State` unless you mean it to.
+
 ```bash
 cd infra
 export AWS_PROFILE=ferrenafe AWS_REGION=us-east-2
@@ -125,38 +141,36 @@ put the secret into CloudFormation. The secret is never pasted into a chat,
 a file in the repository, `~/.aws/credentials`, or the plist. The Keychain
 item's password is the JSON document that `credential_process` expects.
 
+Copy and paste this block **once**, as a whole, into a terminal. It holds the
+secret in a shell variable and passes it straight to the Keychain, so nothing
+goes through the clipboard. Two keys were lost on 2026-10-03 when the
+clipboard was overwritten between the capture and the paste
+(`docs/evidence/2026-10-03-senamhi-relay-live.md` §2).
+
 ```bash
-# Create the key and put the credential_process JSON on the clipboard.
-# The secret goes through a pipe only: it is not written to disk and not printed.
-# pipefail makes a failure in ANY stage (for example jq missing) visible.
 set -o pipefail
-trap 'pbcopy < /dev/null' EXIT      # clear the clipboard even if a step fails
-
-aws iam create-access-key --profile ferrenafe --region us-east-2 \
-  --user-name ferrenafe-relay-producer --query AccessKey --output json \
-  | jq -c '{Version: 1, AccessKeyId: .AccessKeyId, SecretAccessKey: .SecretAccessKey}' \
-  | pbcopy
-echo "capture exit=$?"
-
-# Store it. `-w` is the LAST option on purpose: security then prompts for the
-# password, and you paste the clipboard there (it asks twice). `-T` lets
-# /usr/bin/security read the item without a dialog; without it the first
-# unattended read raises an "allow" prompt and the job hangs.
-security add-generic-password -a "$USER" -s ferrenafe-relay-producer \
-  -T /usr/bin/security -U -w
-
-# Clear the clipboard now (the trap above also does it on any failure).
-pbcopy < /dev/null
+J=$(aws iam create-access-key --profile ferrenafe --region us-east-2 \
+      --user-name ferrenafe-relay-producer --query AccessKey --output json \
+    | jq -c '{Version: 1, AccessKeyId: .AccessKeyId, SecretAccessKey: .SecretAccessKey}') \
+&& printf '%s' "$J" | jq -e 'has("AccessKeyId") and has("SecretAccessKey")' >/dev/null \
+&& security add-generic-password -a "$USER" -s ferrenafe-relay-producer -T /usr/bin/security -U -w "$J" \
+&& echo "OK stored"
+unset J
 ```
 
-If the capture failed after `create-access-key` succeeded (for example `jq` is
-missing), an access key now exists that no Keychain item holds. Delete that
-orphan at once: find its id with `aws iam list-access-keys --profile ferrenafe
---user-name ferrenafe-relay-producer`, then `aws iam delete-access-key
+The secret is never printed and never written to disk. The shell history keeps
+the command but not the value of `$J`. For a fraction of a second the value is
+visible in the process list to processes of the same user. That adds nothing,
+because those processes can already read the item without a prompt (see the
+tradeoff below).
+
+If `OK stored` does not appear, **do not rerun the block**. The key may have
+been created without being stored. List the user's keys with
+`aws iam list-access-keys --profile ferrenafe --user-name ferrenafe-relay-producer`
+and delete any key that no Keychain item holds, with `aws iam delete-access-key
 --profile ferrenafe --user-name ferrenafe-relay-producer --access-key-id
-<orphan-access-key-id>`. Universal Clipboard and clipboard managers may retain
-the copied value despite the clear; if either is active, turn it off for this
-step or treat the key as exposed and rotate it afterwards.
+<orphan-access-key-id>`. Only then run it again. An IAM user can hold two keys
+at most.
 
 Tradeoff: `-T /usr/bin/security` lets any process running as the same user read
 the item without a prompt. That is inherent to `credential_process` with an
@@ -381,7 +395,13 @@ pushing.
 1. Confirm an object exists and is fresh (`head-object` above).
 2. Edit `infra/cdk.json` and change `"relayEnabled": "false"` to `"true"`.
    Commit that one-line change: it is the reviewed record of the flip.
-3. Deploy `ScheduledCycleStack` exactly as in Step 1.
+3. If the schedule is off (`"scheduleEnabled": "false"`), turn it on in the
+   same commit: a schedule left off keeps the page frozen, and the reason it
+   was off (cloud cycles overwriting a correct page with a degraded one) is
+   what the relay removes. Then **rebuild the asset**
+   (`bash infra/scripts/build-lambda.sh`) and deploy `ScheduledCycleStack`
+   exactly as in Step 1. The diff must show a change to
+   `ScheduledCycleFunction` code if the deployed asset predates the relay.
 4. **Invoke the cycle once by hand**, so the alarm has a datapoint.
 
    This is a **real cycle**, not a dry run. It reads the live sources,
@@ -412,6 +432,10 @@ pushing.
      --log-group-name <log-group> --filter-pattern '{ $.event = "senamhi_relay" }' \
      --max-items 3
    ```
+
+   **No `senamhi_relay` record at all** means the relay provider did not run.
+   Most likely the deployed asset is stale (rebuild and redeploy, item 3), or
+   `RAIN_ALERT_RELAY_BUCKET` is absent from the function.
 
    A healthy record is one compact JSON line:
    `{"event":"senamhi_relay","degraded":0,"reason":null,"version_id":"…","last_modified":"…","age_seconds":…,"skew_seconds":…}`.
