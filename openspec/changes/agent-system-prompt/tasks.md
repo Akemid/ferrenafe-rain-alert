@@ -118,9 +118,9 @@ Satisfies: spec MODIFIED "Prompt content is limited to MessageRequest", "User tu
 - [x] 4.4 [CHAR] Recipient data never reaches either channel: neither the system prompt constant nor the user turn contains a contact identifier or account id (spec scenario). Existing `build_prompt` tests for sanitized titles stay green; run them.
 - [x] 4.5 [CHAR] The contract tests from Phase 1 still pass against the trimmed block (the markers are still produced by the same code).
 - [x] 4.6 PR-4 gate: the five commands plus `uv run pytest tests/hygiene` after `git add`.
-- [ ] 4.7 **Security review** (fresh context) on the PR-4 branch diff: no fixed-rule text left next to untrusted data; no secret or account id.
-- [ ] 4.8 [Owner] After PR 4 merges, on `main`: run `infra/scripts/build-lambda.sh`; confirm the asset holds the trimmed `agent_prompt.py` (grep for the removed rule text); `cdk diff` and read it: only the function code change; then `cdk deploy` with the existing `-c` flags. Record the output in `docs/evidence/`.
-- [ ] 4.9 [Owner] One manual cycle invoke check after deploy: `aws lambda invoke` by hand (profile `ferrenafe`), confirm the cycle log shows the agent draft accepted or, if rejected, the template sent plus the operator notice; append the result to the evidence file and commit it.
+- [x] 4.7 **Security review** (fresh context) on the PR-4 branch diff: no fixed-rule text left next to untrusted data; no secret or account id.
+- [x] 4.8 [Owner] After PR 4 merges, on `main`: run `infra/scripts/build-lambda.sh`; confirm the asset holds the trimmed `agent_prompt.py` (grep for the removed rule text); `cdk diff` and read it: only the function code change; then `cdk deploy` with the existing `-c` flags. Record the output in `docs/evidence/`.
+- [x] 4.9 [Owner] One manual cycle invoke check after deploy: `aws lambda invoke` by hand (profile `ferrenafe`), confirm the cycle log shows the agent draft accepted or, if rejected, the template sent plus the operator notice; append the result to the evidence file and commit it.
 
 ---
 
