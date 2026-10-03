@@ -27,7 +27,7 @@ So: code governs the flow, and the agent is one node inside it.
 ```
 EventBridge Scheduler (6-hourly, America/Lima)
   → Lambda
-      → SENAMHI scrape + Open-Meteo forecast     (two independent signals)
+      → SENAMHI (via S3 relay) + Open-Meteo      (two independent signals)
       → deterministic risk rules                  (pure domain, no I/O)
       → dedup: already alerted this window?       (ends here at zero cost)
       → COMPOSE  ← the agent, only when a new alert exists
@@ -47,13 +47,14 @@ I built that validator, then attacked it. The SENAMHI attribution rule alone car
 | | |
 |---|---|
 | Cycle | Python 3.12, hexagonal architecture, Lambda ARM64 |
+| SENAMHI relay | Producer outside AWS (macOS LaunchAgent, hourly) → private, versioned S3 object; write-only CloudTrail audit |
 | Agent | Strands on Bedrock AgentCore Runtime, Claude Haiku 4.5 |
 | Schedule | EventBridge Scheduler, 6-hourly, America/Lima |
 | State | DynamoDB (dedup + audit), SSM Parameter Store (config) |
 | Page | Astro, S3, Amplify Hosting with a `/data/*` rewrite |
 | Infra | CDK TypeScript |
 
-Running cost: **cents a month.** The largest line item is three CloudWatch alarms at $0.10 each — which is also the only line buying anything.
+Running cost: **cents a month.** The largest line item is four CloudWatch alarms at $0.10 each — which is also the only line buying anything. The relay adds S3 storage for 90 days of object versions (about $0.03 a month) and CloudTrail data events for the producer's writes (one per hourly push, about 24 a day, at $0.10 per 100,000).
 
 ## 3. What went wrong on the cloud side
 
@@ -75,7 +76,7 @@ The thread through all of them is one sentence, now the first rule in this repos
 
 > **Several defects survived review precisely because a check looked like it had run and had not.**
 
-A findings log in `docs/blog/` records each one as it happened, with the command that revealed it. Fourteen entries.
+A findings log in `docs/blog/` records each one as it happened, with the command that revealed it. Seventeen entries.
 
 ## 4. The one I only found by deploying it
 
@@ -106,25 +107,86 @@ That negative result cost twenty minutes and saved building a whole São Paulo s
 
 The honest summary is uncomfortable and worth saying plainly: **this system was designed and tested from the one place on earth where its data source answers.** My laptop is in Lambayeque, twenty milliseconds from that server. The cloud is not. Nothing in a test suite could have told me that, and nothing did until the first real invocation.
 
+### Fixing it: the API was behind the same wall
+
+The obvious way out was SENAMHI's official OGC/GeoServer API, a different host with a documented interface. Before writing an adapter for it, I probed both hosts from throwaway Lambdas in `us-east-2` and `sa-east-1`. I tested a raw TCP connect first, with Open-Meteo as a control:
+
+```
+                         us-east-2       sa-east-1       outside AWS
+www.senamhi.gob.pe       TCP timeout     TCP timeout     200 in 1.6 s
+idesep.senamhi.gob.pe    TCP timeout     TCP timeout     200 in 1.9 s
+api.open-meteo.com       200 in 615 ms   200 in 547 ms   —
+```
+
+Both hosts sit in the same `/24`. Switching to the API would have cost a day of adapter work and timed out exactly the same way. I also rejected a residential proxy: it would route a public-safety system's official source through strangers' home connections, around a block that may be deliberate.
+
+What shipped is a **relay**. A producer outside AWS (today, a macOS LaunchAgent on my machine) fetches the page every hour. It parses the page locally as a gate and uploads the validated text to a private, versioned S3 object. The cycle reads that object instead of SENAMHI. The design choices that matter are about how it fails:
+
+- **The schedule stays the heartbeat.** I rejected an S3-event trigger. If the producer died, nothing would run at all, the forecast-only path included, and nothing would report the silence.
+- **Staleness is an outage, not data.** An object 3 hours old or older becomes `STALE_RELAY`. Missing and unreadable objects get their own reasons. Two consecutive degraded cycles email the operator, and the alarm treats missing data as breaching, so a cycle that stops running cannot read as healthy.
+- **A forged calm page is worse than no page.** A calm page parses as "no warnings", which makes the system *less* sensitive than an outage would. I accepted that risk deliberately and bounded it:
+  - the producer's key can write exactly one object, and nothing else;
+  - every version is kept for 90 days;
+  - a write-only CloudTrail trail records who wrote each version, and from where.
+- **The switch lives in the repository.** `relayEnabled` (and now `scheduleEnabled`) are reviewed one-line commits in `cdk.json`, not CLI flags someone can forget.
+
+Turning it on surfaced four more findings that no test had caught:
+
+- **botocore ignores `AWS_REGION`.** It resolves the region from `AWS_DEFAULT_REGION` and the profile only. The producer's LaunchAgent set only `AWS_REGION`. A code review had cited a line of botocore as proof that the variable worked; that line belongs to a different mechanism. I reproduced the behaviour offline, and a test now pins it.
+- **`launchd` drops interval runs that fall during sleep.** `man launchd.plist` says so for `StartInterval`, while `StartCalendarInterval` runs are coalesced on wake. The producer schedules by calendar for that reason.
+- **The first deploy shipped yesterday's code.** CDK packages a prebuilt directory, and `cdk deploy` does not rebuild it. The new environment variable arrived; the code that reads it did not. What gave it away was a log record that should have been there and was not.
+- **The deploy that would have re-enabled the schedule by accident.** The schedule's off-switch existed only as a CLI flag. The diff showed `DISABLED → ENABLED` before anything was applied. It now lives in `cdk.json` too, and `cdk diff` against the live account reports *no differences*.
+
 ## 5. The result
 
 A page anyone can open, showing the current risk level, when it was last evaluated, which sources were available, and the alerts that have gone out.
 
 The page is deliberately honest about what it does not know. If the data is stale, the age goes in the heading, not a footnote. If a source was unavailable, it says which one. If the cycle could not load at all, it says so instead of showing "sin riesgo" — because on a page like this, a quiet failure that looks like good news is the worst possible failure.
 
-What is deployed and running: the Lambda, the DynamoDB table, the SSM parameters, three CloudWatch alarms, the S3 bucket, the Amplify site, and the AgentCore runtime. All verified by hand, with the commands in `docs/evidence/`.
+What is deployed and running:
 
-Two things are deliberately switched off, and saying so is part of the deliverable:
+- the Lambda, on its 6-hourly schedule, now **enabled**;
+- the DynamoDB table and the SSM parameters;
+- four CloudWatch alarms;
+- the public S3 bucket and the Amplify site;
+- the AgentCore runtime;
+- the SENAMHI relay, with its private bucket and its audit trail.
 
-**The schedule.** `scheduleEnabled` is `false` on purpose. Turning it on today would overwrite a correct page with a degraded one every six hours, because of the connectivity finding above — the cycle would faithfully publish "could not evaluate the risk" while a real orange warning is active. That is the system behaving correctly and the result being worse. Until SENAMHI is reachable from the cloud, the page is refreshed by running the same cycle from a laptop that can reach it: one command, the same code path, the same validation.
+All of it was verified by hand, with the commands in `docs/evidence/`.
+
+The first cycle that read SENAMHI through the relay found a real warning. SENAMHI warning **No. 392**, orange, *"Precipitaciones en la sierra norte y costa norte"*, valid 2–4 October 2026. I checked it against SENAMHI's own page at the same moment. The cycle computed **imminent risk** for Ferreñafe, discarded a concurrent heat warning as unable to cause flooding, and published that to the page. The agent's draft of the message was rejected by the validator, because it omitted the town's name and introduced a number that traced to nothing in the request. The deterministic template went out instead. The rule worked on the first real alert it saw.
+
+One thing is still deliberately switched off, and saying so is part of the deliverable:
 
 **Delivery to phones.** There is no notifier in this codebase capable of sending a message to a human — only one that prints to a console. That is structural, not a flag someone can forget: real recipients are personal data, and consent matters.
 
 The obvious channel also does not fit, and I read the documentation rather than assume. Meta's Groups API requires an **Official Business Account**; groups are *"an invite-only experience where participants join using a group invite link you send them"*, so no endpoint adds a neighbour to a group; and the documented ceiling is *"Max group participants: 8"*. Ferreñafe has tens of thousands of residents. Eight per group, each one having to accept a link from a business account, is not a town's warning channel — it is a feature for a work crew.
 
-So today the public page *is* the channel.
+So today the public page *is* the channel. That is why the first real orange warning reached nobody's phone, and I want that sentence to stay uncomfortable.
 
-The next change is a fetch route that does not depend on where the machine is. Then the schedule gets turned on, and then — separately, and last — something earns the right to reach a phone.
+What comes next, in order:
+
+1. **An always-on producer** that does not depend on my laptop being awake. It should authenticate with IAM Roles Anywhere instead of a long-lived key, and it has to exist before the rainy season starts in December.
+2. **Ask SENAMHI for access** from a fixed address. That is the clean fix, and a relay is the honest workaround until then.
+3. Separately, and last, a delivery channel that earns the right to reach a phone.
+
+## Evidence: an agent connected to the AWS console
+
+<!-- OWNER: insert your screenshots here. One image per block; replace the path and the caption. -->
+
+![Screenshot 1 — <caption>](<path-to-image-1>)
+
+*<What this screenshot shows.>*
+
+![Screenshot 2 — <caption>](<path-to-image-2>)
+
+*<What this screenshot shows.>*
+
+![Screenshot 3 — <caption>](<path-to-image-3>)
+
+*<What this screenshot shows.>*
+
+<!-- END OWNER SECTION -->
 
 ## Why this lane
 
@@ -152,6 +214,14 @@ The repository is Apache 2.0 and the architecture is deliberately boring in the 
 - [Understanding Lambda function scaling](https://docs.aws.amazon.com/lambda/latest/dg/lambda-concurrency.html) — reserved vs. unreserved concurrency, and the 1,000-unit regional default.
 - [Service Quotas — `RequestServiceQuotaIncrease`](https://docs.aws.amazon.com/AWSJavaScriptSDK/latest/AWS/ServiceQuotas.html) — where I confirmed the API offers an *increase* operation and nothing else.
 - [`aws-cdk-lib.aws_bedrockagentcore`](https://docs.aws.amazon.com/cdk/api/v2/docs/aws-cdk-lib.aws_bedrockagentcore-readme.html) — the Runtime construct's `grantInvoke` helpers, which encode the two-resource grant correctly.
+- [Amazon S3 bucket policy for CloudTrail](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/create-s3-bucket-policy-for-cloudtrail.html) — CloudTrail's delivery calls carry the source condition keys, which made the log bucket's `aws:SourceAccount` deny safe. Confirmed live: logs and digests delivered with no error.
+- [How do I securely manage IAM access keys?](https://repost.aws/knowledge-center/manage-iam-access-keys-securely) — "for workloads outside of AWS … use AWS IAM Roles Anywhere". This is why the always-on producer must not use a long-lived key.
+- [Access Denied on the S3 static website endpoint](https://repost.aws/knowledge-center/s3-static-website-endpoint-error) — without `s3:ListBucket`, a missing object returns 403, not 404. That is why the cycle's role can list the relay bucket, so that "missing" and "unreadable" stay distinguishable.
+
+**Relay producer**
+
+- `man launchd.plist` (macOS) — `StartInterval`: "If the system is asleep … that interval will be missed"; `StartCalendarInterval`: "launchd will start the job the next time the computer wakes up".
+- [SENAMHI — warnings for Lambayeque](https://www.senamhi.gob.pe/?dp=lambayeque&p=aviso-meteorologico) — warning No. 392 (orange, 2026-09-30, valid 2026-10-02 to 2026-10-04), read on 2026-10-03.
 
 **Delivery channel**
 
