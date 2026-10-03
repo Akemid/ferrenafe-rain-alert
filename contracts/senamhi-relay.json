@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "object_key": "senamhi/lambayeque/latest.html",
+  "max_age_seconds": 10800,
+  "max_object_bytes": 4194304,
+  "skew_tolerance_seconds": 900,
+  "future_tolerance_seconds": 60
+}

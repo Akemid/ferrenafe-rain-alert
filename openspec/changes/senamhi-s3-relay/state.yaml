@@ -1,0 +1,141 @@
+schema: spec-driven
+change: senamhi-s3-relay
+title: SENAMHI S3 Relay (off-AWS producer, freshness-checked reader)
+created: 2026-10-02
+updated: 2026-10-02
+
+artifact_store:
+  mode: hybrid
+  openspec_root: openspec/changes/senamhi-s3-relay
+  engram_prefix: sdd/senamhi-s3-relay
+
+execution:
+  mode: interactive
+  delivery_strategy: ask-on-risk
+  chain_strategy: null  # decided at tasks if chained PRs are needed
+  strict_tdd: true
+  security_review: >-
+    A fresh-context security review runs on the branch diff before every pull
+    request.
+
+baseline:
+  branch: main
+  evidence: docs/evidence/2026-10-02-senamhi-unreachable-from-aws.md
+  related_decisions:
+    - docs/decisions/0001-senamhi-source-strategy.md  # not reopened
+
+phases:
+  explore:
+    status: done
+    artifact: openspec/changes/senamhi-s3-relay/explore.md
+    engram_topic_key: sdd/senamhi-s3-relay/explore
+    engram_saved: true
+    note: Transcribed from Engram observation 2700 by the propose phase.
+  proposal:
+    status: done
+    artifact: openspec/changes/senamhi-s3-relay/proposal.md
+    engram_topic_key: sdd/senamhi-s3-relay/proposal
+    engram_saved: true
+    note: Rules R1-R9; owner decisions of 2026-10-02 recorded.
+  spec:
+    status: done
+    depends_on: [proposal]
+    artifact: openspec/changes/senamhi-s3-relay/specs/
+    engram_topic_key: sdd/senamhi-s3-relay/spec
+    engram_saved: true
+  design:
+    status: done
+    depends_on: [proposal]
+    artifact: openspec/changes/senamhi-s3-relay/design.md
+    engram_topic_key: sdd/senamhi-s3-relay/design
+    engram_saved: true
+    note: >-
+      Decisions D36-D46. AWS docs tools were unavailable in the design phase;
+      every AWS behaviour relied on is listed under "To Verify at Apply".
+  tasks:
+    status: done
+    depends_on: [spec, design]
+    artifact: openspec/changes/senamhi-s3-relay/tasks.md
+    engram_topic_key: sdd/senamhi-s3-relay/tasks
+    engram_saved: true
+    note: >-
+      Phase 0 doc verifications, Phases 1-5 (PR 1-5), Phase L live (operator).
+      Forecast 2900-4000 lines, High risk, chained PRs recommended; chain
+      strategy still to be chosen by the owner before apply.
+  apply:
+    status: pending
+    depends_on: [tasks]
+    artifact: null
+  verify:
+    status: pending
+    depends_on: [apply]
+    artifact: null
+  archive:
+    status: pending
+    depends_on: [verify]
+    artifact: null
+
+capabilities:
+  new:
+    - senamhi-relay
+  modified:
+    - weather-sources
+    - source-outage-notices
+
+resolved_decisions:
+  - id: freshness-threshold
+    decision: 3 hours from S3 LastModified; producer timestamp informational, skew over ~15 min flagged.
+  - id: monitoring
+    decision: >-
+      CloudWatch alarm to the operator email after 2 consecutive relay-degraded
+      cycles, counting STALE_RELAY, RELAY_MISSING and RELAY_UNREADABLE together
+      in any mix (design D40). Resolved by the owner, 2026-10-02.
+  - id: resident-message
+    decision: Unchanged; relay distinction only in the operator notice.
+  - id: producers
+    decision: >-
+      Single producer (Mac, launchd) now; always-on producer required before
+      2026-12-01 and it MUST use IAM Roles Anywhere. Resolved by the owner,
+      2026-10-02.
+  - id: integrity
+    decision: >-
+      Accepted risk, credential-only integrity with single-key write, versioning,
+      size cap, producer parse gate, VersionId in the operator notice and log,
+      and CloudTrail write-only data events as the forensic record.
+  - id: trigger
+    decision: EventBridge schedule stays the heartbeat; S3-event trigger out of scope.
+  - id: producer-credential
+    decision: >-
+      Design D36 - dedicated IAM user access key scoped to PutObject on the one
+      relay key, in the macOS Keychain via credential_process, for the Mac
+      phase; rotation and revocation in the runbook. Resolved by the owner,
+      2026-10-02.
+  - id: relay-unavailable-reasons
+    decision: >-
+      STALE_RELAY (age >= 3 h), RELAY_MISSING (NoSuchKey/404, needs
+      s3:ListBucket), RELAY_UNREADABLE (access denied, throttling, other
+      errors). Never a direct-scrape fallback. Proposal R7 corrected. Resolved
+      by the owner, 2026-10-02.
+  - id: stored-content
+    decision: >-
+      Gate-validated page text encoded UTF-8, Content-Type text/html;
+      charset=utf-8, not SENAMHI's original bytes (design D37, proposal R9).
+      Resolved by the owner, 2026-10-02.
+  - id: write-audit
+    decision: >-
+      CloudTrail data events, write-only, scoped to the relay bucket, dedicated
+      trail and log bucket in ScheduledCycleStack (design D46). Resolved by the
+      owner, 2026-10-02.
+  - id: object-key-and-metadata
+    decision: Design D37 - contracts/senamhi-relay.json, key senamhi/lambayeque/latest.html.
+  - id: size-cap
+    decision: Design D37 - 4 MiB, enforced by producer and reader.
+  - id: stack-placement
+    decision: Design D41 - ScheduledCycleStack, bucket retained, relayEnabled context.
+
+open_decisions: []
+
+next_recommended:
+  - sdd-apply  # after the Review Workload Guard decision (chain strategy)
+
+blocked_reasons: []

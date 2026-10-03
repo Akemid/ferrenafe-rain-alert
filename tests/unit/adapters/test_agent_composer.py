@@ -46,7 +46,12 @@ from typing import Any
 
 import pytest
 
-from rain_alert.adapters.agent_composer import REQUIRED_OUTPUT_FIELDS, AgentBackedComposer, FallbackReason
+from rain_alert.adapters.agent_composer import (
+    REQUIRED_OUTPUT_FIELDS,
+    AgentBackedComposer,
+    FallbackReason,
+    fallback_reason_for,
+)
 from rain_alert.adapters.agent_invoker import AgentInvocationError
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
@@ -223,6 +228,26 @@ class TestTransportFaultsFallBackToTheTemplate:
         result, deps = run_cycle(invoker)
 
         assert_the_template_was_sent(result, deps)
+
+
+class TestTheFallbackMappingIsTotalOverEveryUnavailableReason:
+    """`UnavailableReason` grows (the relay added three members), and the
+    mapping runs inside an `except` clause, so a member it cannot map would
+    raise from the handler whose job is to absorb exceptions."""
+
+    @pytest.mark.parametrize("reason", list(UnavailableReason), ids=lambda reason: reason.value)
+    def test_every_reason_maps_to_a_fallback_reason(self, reason: UnavailableReason) -> None:
+        assert isinstance(fallback_reason_for(reason), FallbackReason)
+
+    @pytest.mark.parametrize(
+        "reason",
+        [UnavailableReason.STALE_RELAY, UnavailableReason.RELAY_MISSING, UnavailableReason.RELAY_UNREADABLE],
+        ids=lambda reason: reason.value,
+    )
+    def test_a_relay_reason_has_no_transport_equivalent_and_is_an_unexpected_error(
+        self, reason: UnavailableReason
+    ) -> None:
+        assert fallback_reason_for(reason) is FallbackReason.UNEXPECTED_ERROR
 
 
 class TestBadPayloadsFallBackToTheTemplate:

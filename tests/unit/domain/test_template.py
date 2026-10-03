@@ -14,16 +14,20 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from rain_alert.domain.config import RiskThresholds
+from rain_alert.domain.entities import Forecast, HourlyPoint
 from rain_alert.domain.message_validation import MAX_BODY_LENGTH
-from rain_alert.domain.messages import MessageRequest
+from rain_alert.domain.messages import AlertMessage, MessageRequest
 from rain_alert.domain.reasons import (
     ForecastThresholdReason,
     NoQualifyingWarningReason,
     SenamhiUnavailableReason,
     WarningReason,
 )
+from rain_alert.domain.risk import RiskEvaluator
+from rain_alert.domain.sources import Available, Unavailable
 from rain_alert.domain.template import CHECKLIST_TRUNCATED_ES, LEVEL_LABELS_ES, MessageComposer, render_reason_es
-from rain_alert.domain.values import Level, TimeWindow, WarningLevel
+from rain_alert.domain.values import Coordinates, Level, SourceName, TimeWindow, UnavailableReason, WarningLevel
 
 NOW = datetime(2026, 9, 3, 12, tzinfo=UTC)
 WINDOW = TimeWindow(start=NOW, end=NOW + timedelta(hours=48))
@@ -445,3 +449,70 @@ class TestTheSpanishRendererIsPublic:
         reason = WarningReason(level=WarningLevel.ORANGE, title="PRECIPITACIONES EN LA COSTA")
 
         assert render_reason_es(reason) == ("Aviso oficial del SENAMHI, nivel naranja: PRECIPITACIONES EN LA COSTA.")
+
+
+class TestTheResidentTextIgnoresWhyTheOfficialSourceFailed:
+    """senamhi-relay / source-outage-notices: the resident-facing Spanish text
+    for a relay outage is byte-identical to the text for any other SENAMHI
+    outage. A resident cannot act on "stale_relay"; the reason is the
+    operator's vocabulary and must never cross into the community body.
+
+    This is a characterization test. It passed the moment it was written,
+    because the template renders only `assessment.reasons`, never the
+    `Unavailable.reason`. Its teeth were proved by mutation: threading the
+    reason into `RiskEvaluator`'s `senamhi_status` turned it red.
+    """
+
+    @staticmethod
+    def _compose_for(reason: UnavailableReason) -> AlertMessage:
+        points = tuple(
+            HourlyPoint(at=NOW + timedelta(hours=hour), precipitation_mm=2.0, probability_pct=90) for hour in range(48)
+        )
+        assessment = RiskEvaluator(
+            RiskThresholds(
+                prepare_mm_48h=9.5,
+                prepare_probability_pct=60,
+                prepare_probability_pct_degraded=70,
+                prepare_warning_levels=frozenset({WarningLevel.YELLOW, WarningLevel.ORANGE, WarningLevel.RED}),
+                imminent_mm_24h=20.0,
+                imminent_probability_pct=70,
+                imminent_warning_levels=frozenset({WarningLevel.ORANGE, WarningLevel.RED}),
+            )
+        ).evaluate(
+            Unavailable(source=SourceName.SENAMHI, reason=reason, detail="d", observed_at=NOW),
+            Available(
+                data=Forecast(location=Coordinates(latitude=-6.636005, longitude=-79.789860), points=points),
+                fetched_at=NOW,
+            ),
+            NOW,
+        )
+        request = _request(
+            level=assessment.level,
+            window=assessment.window,
+            reasons=assessment.reasons,
+            senamhi_status=assessment.senamhi_status,
+            open_meteo_status=assessment.open_meteo_status,
+        )
+        return MessageComposer().compose(request)
+
+    @pytest.mark.parametrize(
+        "reason",
+        [UnavailableReason.STALE_RELAY, UnavailableReason.RELAY_MISSING, UnavailableReason.RELAY_UNREADABLE],
+        ids=lambda reason: reason.value,
+    )
+    def test_a_relay_outage_renders_exactly_as_a_timeout_does(self, reason: UnavailableReason) -> None:
+        baseline = self._compose_for(UnavailableReason.TIMEOUT)
+
+        relay = self._compose_for(reason)
+
+        assert baseline.level is not Level.NONE  # the alert really was composed
+        assert "La fuente oficial SENAMHI no estuvo disponible" in baseline.body
+        assert relay == baseline
+        assert relay.body.encode("utf-8") == baseline.body.encode("utf-8")
+
+    def test_no_relay_vocabulary_reaches_the_resident(self) -> None:
+        message = self._compose_for(UnavailableReason.STALE_RELAY)
+
+        for word in ("stale", "relay", "S3"):
+            assert word not in message.title
+            assert word not in message.body

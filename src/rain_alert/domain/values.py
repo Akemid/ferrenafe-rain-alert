@@ -73,6 +73,15 @@ class UnavailableReason(StrEnum):
     STRUCTURE_UNRECOGNIZED = "structure_unrecognized"
     NO_ROWS_EXTRACTED = "no_rows_extracted"
     INSUFFICIENT_HORIZON = "insufficient_horizon"
+    #: The relay object exists but is at least `MAX_AGE` old. Never a calm: the
+    #: page is not parsed, because a stale "nothing in force" is a false calm.
+    STALE_RELAY = "stale_relay"
+    #: The relay object does not exist: the producer never pushed.
+    RELAY_MISSING = "relay_missing"
+    #: The relay could not be read or trusted: grant, S3 or integrity failure.
+    #: Kept apart from `RELAY_MISSING` so the operator can tell "the producer
+    #: is down" from "the grant is broken".
+    RELAY_UNREADABLE = "relay_unreadable"
 
 
 LEVEL_RANK: Mapping[Level, int] = {Level.NONE: 0, Level.PREPARE: 1, Level.IMMINENT: 2}
