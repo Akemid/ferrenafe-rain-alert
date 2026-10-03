@@ -50,8 +50,13 @@ phases:
     engram_topic_key: sdd/senamhi-s3-relay/design
     engram_saved: true
     note: >-
-      Decisions D36-D46. AWS docs tools were unavailable in the design phase;
+      Decisions D36-D47. AWS docs tools were unavailable in the design phase;
       every AWS behaviour relied on is listed under "To Verify at Apply".
+      Amended 2026-10-02 after Phase 0 (Engram 2706): D40 alarm is a sliding
+      21600 s window (config unchanged, alignment unproven, L.9); D46 uses
+      classic event selectors via the CDK Trail L2 (no advanced selectors);
+      D47 new, producer uses launchd StartCalendarInterval {Minute: 0}
+      instead of StartInterval.
   tasks:
     status: done
     depends_on: [spec, design]
@@ -61,7 +66,10 @@ phases:
     note: >-
       Phase 0 doc verifications, Phases 1-5 (PR 1-5), Phase L live (operator).
       Forecast 2900-4000 lines, High risk, chained PRs recommended; chain
-      strategy still to be chosen by the owner before apply.
+      strategy still to be chosen by the owner before apply. Phase 0 V.1-V.11
+      marked with verdicts on 2026-10-02 except V.6 (live charset check, no
+      evidence recorded, still gates task 3.5); tasks 3.11, 4.11-4.13,
+      4.18-4.19, 4.23, 5.1, L.4, L.9 amended.
   apply:
     status: pending
     depends_on: [tasks]
@@ -130,6 +138,12 @@ resolved_decisions:
     decision: Design D37 - contracts/senamhi-relay.json, key senamhi/lambayeque/latest.html.
   - id: size-cap
     decision: Design D37 - 4 MiB, enforced by producer and reader.
+  - id: producer-schedule
+    decision: >-
+      Design D47 - launchd StartCalendarInterval {Minute: 0}, not
+      StartInterval, because StartInterval misses firings during sleep while
+      StartCalendarInterval coalesces them into one run on wake (man
+      launchd.plist). Phase 0 amendment, 2026-10-02.
   - id: stack-placement
     decision: Design D41 - ScheduledCycleStack, bucket retained, relayEnabled context.
 

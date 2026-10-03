@@ -18,7 +18,7 @@ Commits are work units (behaviour plus its tests plus its docs), never
 "models, then services, then tests". Commit messages follow Conventional
 Commits with no AI attribution.
 
-Rule references: R1-R9 are `proposal.md`; D36-D46 are `design.md`.
+Rule references: R1-R9 are `proposal.md`; D36-D47 are `design.md` (D40, D46 amended and D47 added after Phase 0, 2026-10-02).
 
 ## Review Workload Forecast
 
@@ -89,19 +89,35 @@ If an answer contradicts the design, **stop and report**, do not code
 around it. Items that cannot be settled by documentation are carried to
 Phase L as `[Owner]` tasks, named in the "Carried to" column.
 
+**Phase 0 result (2026-10-02).** Source: Engram observation 2706 (topic `sdd/senamhi-s3-relay/phase0-verification`), plus the orchestrator's Phase 0 summary. 2706 records the details for V.3, V.7 and V.10. For the items marked CONFIRMED, it records no per-item quote. Three CONTRADICTED items were amended in design.md (D40, D46, D47) on 2026-10-02 before any dependent code. Verdicts:
+
+| Item | Verdict | Effect |
+|---|---|---|
+| V.1 | CONFIRMED | D39 unchanged; L.6 still observes a real `NoSuchKey` |
+| V.2 | PARTIAL | Contract as designed; boto3 `credential_process` plus `security find-generic-password -w` under launchd is verified live in **L.3** |
+| V.3 | CONTRADICTED, amended | A 21600 s alarm is a sliding window; wall-clock windows exist only for 60/300/3600/86400/604800 s. D40 rewritten; config 21600/2/2/Maximum/breaching kept; evaluation cadence verified live in **L.9** |
+| V.4 | PARTIAL | Single-line JSON record already implemented in PR 2 (2.15/2.16/2.17a); matching against a real event is **L.5** |
+| V.5 | CONFIRMED | Reader-side cap is the real guard (D37) |
+| V.6 | CONFIRMED | Live page is UTF-8 (header `charset=UTF-8`, `<meta charset="utf-8">`), strict decode OK, 523,653 bytes vs 4 MiB cap — `docs/evidence/2026-10-02-senamhi-unreachable-from-aws.md` §9 (checked with curl, not HttpxHtmlFetcher) |
+| V.7 | CONTRADICTED, amended | `StartInterval` misses firings during sleep; `StartCalendarInterval` coalesces them into one run on wake (`man launchd.plist`). New D47; 3.11 rewritten; wake behaviour observed in **L.4** |
+| V.8 | CONFIRMED | Relay read worst case 16 s, D31 relation holds |
+| V.9 | CONFIRMED | Cost figure stands for the ADR |
+| V.10 | CONTRADICTED (a), amended; PARTIAL (e, f) | (a) The `Trail` L2 emits classic selectors only, and CFN forbids mixing them with advanced ones. D46 rewritten; 4.18/4.19 rewritten. `describe-trails` in us-east-2 shows zero trails. (e) denied `PutObject` logged and (f) `versionId` in the event go to **L.7** |
+| V.11 | CONFIRMED | CDK prop names as used in 4.x |
+
 | Task | Item | Must land before | Carried to |
 |---|---|---|---|
-| - [ ] V.1 [Docs] `GetObject` returns 403 vs 404 without `s3:ListBucket`; whether an `s3:prefix` condition satisfies the implicit list check (API_GetObject permissions section; repost article cited in D39) | design #1 | task 2.9 (reader mapping) and 4.5 (grant) | L.6 observes real `NoSuchKey` |
-| - [ ] V.2 [Docs] `credential_process` JSON contract (`Version`, `AccessKeyId`, `SecretAccessKey`) and that boto3 honours it from `~/.aws/config`; `security find-generic-password -w` output and `-T` pre-authorization semantics | design #2 | 5.x runbook text | L.3 observes it under launchd |
-| - [ ] V.3 [Docs] CloudWatch alarm period alignment for a 6 h period; `treatMissingData` behaviour with a metric-filter metric that has no `defaultValue`; confirm the 05/11/17/23 UTC cron vs 6 h UTC boundaries | design #3 | task 4.13 | L.9 observes a transition |
-| - [ ] V.4 [Docs] Python Lambda runtime log splitting of multi-line `print` output, and JSON metric-filter matching against single-line records under the stack's log format | design #4 | task 2.13 (`on_read` record shape) | L.5 matches a real event |
-| - [ ] V.5 [Docs] No IAM condition key bounds `PutObject` size (so the reader-side cap is the real guard) | design #5 | task 2.9 | none |
-| - [ ] V.6 [Mac] Read-only check of the live SENAMHI response charset: `uv run python -c` fetch through `HttpxHtmlFetcher`, print `response.encoding`, declared `Content-Type`, byte length; compare with the 4 MiB cap (fixture README says ~512 KB). Plain GET, no AWS | design #6 | task 3.5 (producer body) | recorded in `docs/evidence/` |
-| - [ ] V.7 [Docs] launchd `StartInterval` across sleep (missed runs coalesce on wake?) | design #7 | task 3.11 (plist) | L.4 observes sleep/wake |
-| - [ ] V.8 Compute D31 headroom: relay read worst case (2 attempts x (3 s + 5 s)) vs `cycle_headroom_seconds` 60 against the Lambda `Timeout` 120; confirm Relation 2 still holds | design #8 | task 4.3 | none |
-| - [ ] V.9 [Docs] S3 Standard pricing for the 90-day, ~1.1 GB noncurrent-version estimate (awspricing) | design #9 | ADR (5.5) | none |
-| - [ ] V.10 [Docs] D46 facts: CDK `cloudtrail.Trail` API for management events off plus an advanced event selector (or `addS3EventSelector` with `includeManagementEvents: false`) against the pinned `aws-cdk-lib`; CloudTrail data-event pricing; that a denied `PutObject` is logged; that the `PutObject` event carries `versionId`. Also `aws cloudtrail describe-trails` read-only against `ferrenafe` to record (not reuse) any existing account trail | design #10 | tasks 4.18-4.19 | L.7 observes a real event |
-| - [ ] V.11 [Docs] Confirm `aws-cdk-lib` `iam.User`, `s3.Bucket` lifecycle (`noncurrentVersionExpiration`, `abortIncompleteMultipartUploadAfter`) and `logs.FilterPattern.stringValue` prop names against the installed `infra/node_modules/aws-cdk-lib` source, as scheduled-cycle task 3.1 did | CDK props | tasks 4.5-4.13 | none |
+| - [x] V.1 [Docs] `GetObject` returns 403 vs 404 without `s3:ListBucket`; whether an `s3:prefix` condition satisfies the implicit list check (API_GetObject permissions section; repost article cited in D39) | design #1 | task 2.9 (reader mapping) and 4.5 (grant) | L.6 observes real `NoSuchKey` |
+| - [x] V.2 [Docs] `credential_process` JSON contract (`Version`, `AccessKeyId`, `SecretAccessKey`) and that boto3 honours it from `~/.aws/config`; `security find-generic-password -w` output and `-T` pre-authorization semantics | design #2 | 5.x runbook text | L.3 observes it under launchd |
+| - [x] V.3 [Docs] CloudWatch alarm period alignment for a 6 h period; `treatMissingData` behaviour with a metric-filter metric that has no `defaultValue`; confirm the 05/11/17/23 UTC cron vs 6 h UTC boundaries | design #3 | task 4.13 | L.9 observes a transition |
+| - [x] V.4 [Docs] Python Lambda runtime log splitting of multi-line `print` output, and JSON metric-filter matching against single-line records under the stack's log format | design #4 | task 2.13 (`on_read` record shape) | L.5 matches a real event |
+| - [x] V.5 [Docs] No IAM condition key bounds `PutObject` size (so the reader-side cap is the real guard) | design #5 | task 2.9 | none |
+| - [x] V.6 [Mac] Read-only check of the live SENAMHI response charset: `uv run python -c` fetch through `HttpxHtmlFetcher`, print `response.encoding`, declared `Content-Type`, byte length; compare with the 4 MiB cap (fixture README says ~512 KB). Plain GET, no AWS | design #6 | task 3.5 (producer body) | recorded in `docs/evidence/` |
+| - [x] V.7 [Docs] launchd `StartInterval` across sleep (missed runs coalesce on wake?) | design #7 | task 3.11 (plist) | L.4 observes sleep/wake |
+| - [x] V.8 Compute D31 headroom: relay read worst case (2 attempts x (3 s + 5 s)) vs `cycle_headroom_seconds` 60 against the Lambda `Timeout` 120; confirm Relation 2 still holds | design #8 | task 4.3 | none |
+| - [x] V.9 [Docs] S3 Standard pricing for the 90-day, ~1.1 GB noncurrent-version estimate (awspricing) | design #9 | ADR (5.5) | none |
+| - [x] V.10 [Docs] D46 facts: CDK `cloudtrail.Trail` API for management events off plus an advanced event selector (or `addS3EventSelector` with `includeManagementEvents: false`) against the pinned `aws-cdk-lib`; CloudTrail data-event pricing; that a denied `PutObject` is logged; that the `PutObject` event carries `versionId`. Also `aws cloudtrail describe-trails` read-only against `ferrenafe` to record (not reuse) any existing account trail | design #10 | tasks 4.18-4.19 | L.7 observes a real event |
+| - [x] V.11 [Docs] Confirm `aws-cdk-lib` `iam.User`, `s3.Bucket` lifecycle (`noncurrentVersionExpiration`, `abortIncompleteMultipartUploadAfter`) and `logs.FilterPattern.stringValue` prop names against the installed `infra/node_modules/aws-cdk-lib` source, as scheduled-cycle task 3.1 did | CDK props | tasks 4.5-4.13 | none |
 
 ---
 
@@ -210,19 +226,19 @@ Satisfies: `senamhi-relay` (producer parse gate, no overwrite on failure,
 UTF-8 body, headers, metadata, size cap). Design D37, D42. Needs V.6 and
 V.7 recorded.
 
-- [ ] 3.1 [RED] `tests/unit/entrypoints/test_relay_push.py` -- `RAIN_ALERT_RELAY_BUCKET` absent or empty -> exit **1**, zero `put_object` calls. Expected failure: `ModuleNotFoundError`.
-- [ ] 3.2 [GREEN] `entrypoints/relay_push.py::main(argv=None, *, fetcher=None, client=None, now=None) -> int`; `__main__` is one call.
-- [ ] 3.3 [RED] Fetch failure (`FetchError` from a `FakeHtmlFetcher`) -> exit **2**, zero PUTs. Parse failure (`broken_structure.html`) -> exit **2**, zero PUTs (the gate). Expected failure: a PUT is attempted or the exception propagates.
-- [ ] 3.4 [GREEN] Steps 2 and 3 of D42 using `HttpxHtmlFetcher`, `warnings_url_for(REGION)`, `parse_warnings_page`.
-- [ ] 3.5 [RED] Body over `MAX_OBJECT_BYTES` -> exit **3**, zero PUTs. Success -> exactly **one** `put_object` with `Key == OBJECT_KEY`, `Body == html.encode("utf-8")`, `ContentType == "text/html; charset=utf-8"`, `ChecksumAlgorithm == "SHA256"`, `Metadata` carrying `fetched-at` (ISO-8601 UTC from the injected `now`), `sha256` (hex of the body), `producer`; exit **0**; one summary line (version id, bytes, rows_seen). Expected failure: the PUT headers are absent or wrong. The sha256 value is asserted against an independently computed digest, not the production helper.
-- [ ] 3.6 [GREEN] Steps 4-6 of D42.
-- [ ] 3.7 [RED] `put_object` raising `ClientError` or `BotoCoreError` -> exit **4**. Bounded `Config` pinned as in 2.3.
-- [ ] 3.8 [GREEN] Error exit and bounded client.
-- [ ] 3.9 [RED] Producer-reader round trip: bytes written by `main` through `FakeS3Client` are accepted by `S3RelayReader` over the same fake and parsed by `RelayWarningProvider` into the same `Available` data as the scraper. This is the test that pins "the Lambda parses byte-for-byte what the gate accepted" (D37 charset argument). Expected failure: reader rejects the producer's metadata or encoding if either side drifts.
-- [ ] 3.10 [GREEN] Fix any drift the round trip reveals (expected: none).
-- [ ] 3.11 Register `rain-alert-relay-push` in `pyproject.toml [project.scripts]`; create `ops/launchd/pe.ferrenafe.relay-push.plist` template (`StartInterval 3600`, `RunAtLoad true`, `uv run --directory <repo> rain-alert-relay-push`, `AWS_PROFILE=ferrenafe-relay`, `AWS_REGION=us-east-2`, `RAIN_ALERT_RELAY_BUCKET=<bucket>`, logs under `~/Library/Logs/ferrenafe-relay/push.log`). **RED:** a hygiene-style test parses the plist with `plistlib` and asserts those keys, that every placeholder is an angle-bracket token, and that it contains no secret, account id or ARN. Expected failure: file absent.
-- [ ] 3.12 PR-3 gate: full project gate (as 1.26), plus `uv run rain-alert-relay-push --help` exits 0 offline (entry point resolves).
-- [ ] 3.13 **Security review** (fresh context) on the PR-3 branch diff. Scope: no credential, key or Keychain material in code, plist or fixtures; producer never logs the body; failed run provably leaves the old object untouched (tests 3.1-3.7).
+- [x] 3.1 [RED] `tests/unit/entrypoints/test_relay_push.py` -- `RAIN_ALERT_RELAY_BUCKET` absent or empty -> exit **1**, zero `put_object` calls. Expected failure: `ModuleNotFoundError`.
+- [x] 3.2 [GREEN] `entrypoints/relay_push.py::main(argv=None, *, fetcher=None, client=None, now=None) -> int`; `__main__` is one call.
+- [x] 3.3 [RED] Fetch failure (`FetchError` from a `FakeHtmlFetcher`) -> exit **2**, zero PUTs. Parse failure (`broken_structure.html`) -> exit **2**, zero PUTs (the gate). Expected failure: a PUT is attempted or the exception propagates.
+- [x] 3.4 [GREEN] Steps 2 and 3 of D42 using `HttpxHtmlFetcher`, `warnings_url_for(REGION)`, `parse_warnings_page`.
+- [x] 3.5 [RED] Body over `MAX_OBJECT_BYTES` -> exit **3**, zero PUTs. Success -> exactly **one** `put_object` with `Key == OBJECT_KEY`, `Body == html.encode("utf-8")`, `ContentType == "text/html; charset=utf-8"`, `ChecksumAlgorithm == "SHA256"`, `Metadata` carrying `fetched-at` (ISO-8601 UTC from the injected `now`), `sha256` (hex of the body), `producer`; exit **0**; one summary line (version id, bytes, rows_seen). Expected failure: the PUT headers are absent or wrong. The sha256 value is asserted against an independently computed digest, not the production helper.
+- [x] 3.6 [GREEN] Steps 4-6 of D42.
+- [x] 3.7 [RED] `put_object` raising `ClientError` or `BotoCoreError` -> exit **4**. Bounded `Config` pinned as in 2.3.
+- [x] 3.8 [GREEN] Error exit and bounded client.
+- [x] 3.9 [RED] Producer-reader round trip: bytes written by `main` through `FakeS3Client` are accepted by `S3RelayReader` over the same fake and parsed by `RelayWarningProvider` into the same `Available` data as the scraper. This is the test that pins "the Lambda parses byte-for-byte what the gate accepted" (D37 charset argument). Expected failure: reader rejects the producer's metadata or encoding if either side drifts.
+- [x] 3.10 [GREEN] Fix any drift the round trip reveals (expected: none).
+- [x] 3.11 Register `rain-alert-relay-push` in `pyproject.toml [project.scripts]`; create `ops/launchd/pe.ferrenafe.relay-push.plist` template (D47: `StartCalendarInterval` as the single dict `{Minute: 0}`, `RunAtLoad true`, `uv run --directory <repo> rain-alert-relay-push`, `AWS_PROFILE=ferrenafe-relay`, `AWS_REGION=us-east-2`, `RAIN_ALERT_RELAY_BUCKET=<bucket>`, logs under `~/Library/Logs/ferrenafe-relay/push.log`). **RED:** a hygiene-style test parses the plist with `plistlib` and asserts: `StartCalendarInterval == {"Minute": 0}` exactly (no `Hour`/`Day`/`Weekday`/`Month` keys, so it is hourly); **`StartInterval` is absent** (the man page says both are evaluated independently, so both would double-fire, and `StartInterval` misses runs during sleep); `RunAtLoad is True`; the `ProgramArguments`, `EnvironmentVariables` and log-path keys above; every placeholder is an angle-bracket token; no secret, account id or ARN. Expected failure: file absent. Mutation proof: swap in `StartInterval 3600` and record red; revert.
+- [x] 3.12 PR-3 gate: full project gate (as 1.26), plus `uv run rain-alert-relay-push --help` exits 0 offline (entry point resolves).
+- [ ] 3.13 *(review fixes applied: gate-exception exit 2, in-flight cap and deadline, `--frozen`, optional ExpectedBucketOwner, design D42/D47 amended; awaiting confirmation)* **Security review** (fresh context) on the PR-3 branch diff. Scope: no credential, key or Keychain material in code, plist or fixtures; producer never logs the body; failed run provably leaves the old object untouched (tests 3.1-3.7).
 
 ---
 
@@ -250,9 +266,9 @@ V.10, V.11 recorded.
 
 - [ ] 4.9 [RED] `"relay filter"` -- metric filter on the Lambda log group with `FilterPattern` `{ $.event = "senamhi_relay" }`, metric namespace `FerrenafeRainAlert`, name `SenamhiRelayDegraded`, `MetricValue` `$.degraded`, **no `DefaultValue`**. Expected failure: no such filter.
 - [ ] 4.10 [GREEN] Add the filter.
-- [ ] 4.11 [RED] `"relay alarm"` -- `Statistic: Maximum`, `Period: 21600`, `EvaluationPeriods: 2`, `DatapointsToAlarm: 2`, `TreatMissingData: breaching`, `AlarmActions` includes the existing `AlarmsTopic`. Expected failure: no alarm.
-- [ ] 4.12 [GREEN] Add the alarm.
-- [ ] 4.13 Mutation proofs: change `treatMissingData` to `notBreaching` and `datapointsToAlarm` to 1 in turn; record each assertion red; revert. State plainly in apply-progress that a template test proves configuration, not a live transition (carried to L.9).
+- [ ] 4.11 [RED] `"relay alarm"` -- `Statistic: Maximum`, `Period: 21600`, `EvaluationPeriods: 2`, `DatapointsToAlarm: 2`, `TreatMissingData: breaching`, `AlarmActions` includes the existing `AlarmsTopic`. Expected failure: no alarm. (D40, amended: 21600 s is a **sliding** window. The 2/2 plus breaching semantics do not depend on alignment, because any 12 h span holds at least one cycle in normal operation. Do not add a comment or ADR claim that windows align with the 0/6/12/18 America/Lima schedule.)
+- [ ] 4.12 [GREEN] Add the alarm. The code comment states the sliding-window argument from D40 in one or two lines, not an alignment claim.
+- [ ] 4.13 Mutation proofs: change `treatMissingData` to `notBreaching` and `datapointsToAlarm` to 1 in turn; record each assertion red; revert. Also assert the metric filter has **no** `DefaultValue` (a default of 0 would fill the missing windows and defeat `breaching`), with a mutation proof. State plainly in apply-progress that a template test proves configuration, not window alignment, evaluation cadence or a live transition (carried to L.9).
 
 ### `relayEnabled` rollback switch (D41, D45)
 
@@ -263,12 +279,12 @@ V.10, V.11 recorded.
 
 ### Audit trail (D46, design test 10) -- may be PR 4b
 
-- [ ] 4.18 [RED] `"relay audit trail"` -- exactly one `AWS::CloudTrail::Trail`; `IsMultiRegionTrail: false`; `IncludeGlobalServiceEvents: false`; `EnableLogFileValidation: true`; management events excluded (per the API confirmed in V.10); exactly one advanced event selector with `eventCategory=Data`, `resources.type=AWS::S3::Object`, `readOnly=false`, `resources.ARN StartsWith` the relay bucket ARN plus `/`; no CloudWatch Logs delivery; no KMS. Expected failure: no trail.
-- [ ] 4.19 [GREEN] Add the trail. If `cloudtrail.Trail` cannot express management-off plus an advanced selector, use an escape hatch on `CfnTrail` and record why (V.10).
+- [ ] 4.18 [RED] `"relay audit trail"` (D46, amended to classic selectors) -- exactly one `AWS::CloudTrail::Trail`; `IsMultiRegionTrail: false`; `IncludeGlobalServiceEvents: false` (both explicit, since the L2 defaults are `true`); `EnableLogFileValidation: true`; `EventSelectors` has **exactly one** entry equal to `{ReadWriteType: "WriteOnly", IncludeManagementEvents: false, DataResources: [{Type: "AWS::S3::Object", Values: [<relay bucket ARN> + "/"]}]}` (match the `Fn::Join`/`Fn::GetAtt` on the relay bucket's logical id, not a literal ARN); **no `AdvancedEventSelectors` key**; no management selector (no second `EventSelectors` entry); no `CloudWatchLogsLogGroupArn`/`CloudWatchLogsRoleArn`; no `KMSKeyId`. Expected failure: no trail.
+- [ ] 4.19 [GREEN] Add the trail with the L2: `new cloudtrail.Trail(this, ..., { bucket: logBucket, isMultiRegionTrail: false, includeGlobalServiceEvents: false, enableFileValidation: true, sendToCloudWatchLogs: false, managementEvents: cloudtrail.ReadWriteType.NONE })` and `trail.addS3EventSelector([{ bucket: relayBucket }], { readWriteType: cloudtrail.ReadWriteType.WRITE_ONLY, includeManagementEvents: false })`. **No `CfnTrail` escape hatch** (D46: no requirement needs advanced selectors, and CFN forbids mixing the two kinds).
 - [ ] 4.20 [RED] `"relay audit log bucket"` -- own bucket: BLOCK_ALL, SSL-deny, `AES256`, `BucketOwnerEnforced`, lifecycle expiration 400 days, `Retain`, no `BucketName`, CloudTrail bucket-policy statement present, **distinct** from the relay bucket. Expected failure: no second bucket.
 - [ ] 4.21 [GREEN] Add the log bucket.
 - [ ] 4.22 [RED] The trail and log bucket exist with `relayEnabled=false` (audit record outlives a rollback). Expected failure: they are missing if wrongly nested under the switch.
-- [ ] 4.23 [GREEN] Keep them outside the conditional. Mutation proofs: remove `readOnly=false` and record red (it would bill and log every Lambda read); make the selector prefix the whole account and record red; revert.
+- [ ] 4.23 [GREEN] Keep them outside the conditional. Mutation proofs: change `readWriteType` to `ALL` and record red (it would bill and log every Lambda read); change `managementEvents` to `ALL` (adds a management selector) and record red; replace the bucket selector with `logAllS3DataEvents` (account-wide `arn:aws:s3`) and record red; revert.
 - [ ] 4.24 PR-4 gate: `cd infra && npm test`; `uv run pytest`; `uv run --directory agent pytest`; `uv run ruff check`; `uv run ruff format --check`; `uv run mypy`; `uv run pytest tests/hygiene` after `git add`; `npx cdk synth ScheduledCycleStack -c ...` with fixture contexts offline succeeds (selects by construct id, as scheduled-cycle 3.25 recorded).
 - [ ] 4.25 **Security review** (fresh context) on the PR-4 (and 4a/4b) diff. Scope: every grant resource-scoped, no wildcard; no `AWS::IAM::AccessKey`; no account id or ARN in outputs, fixtures or context; trail selector is write-only and bucket-scoped; both buckets private.
 
@@ -276,7 +292,7 @@ V.10, V.11 recorded.
 
 ## Phase 5: Runbook, ADR, architecture docs (PR 5)
 
-- [ ] 5.1 `docs/runbooks/senamhi-relay.md` -- follows `docs/runbooks/README.md` conventions and the shape of `scheduled-cycle-deploy.md`. Contents: deploy order (D45 steps 1-5); create the IAM access key and store it in the Keychain as the `credential_process` JSON with `-T /usr/bin/security`; `~/.aws/config` profile `ferrenafe-relay`; LaunchAgent (not Daemon) install with `launchctl bootstrap gui/$UID` and `bootout`; manual push; rotation every 90 days (D36 steps); revocation on suspected leak (Inactive, `list-object-versions`, CloudTrail events, `copy-object` restore); retirement on Roles Anywhere migration; rollback list (D45); reading CloudTrail write events; `<account>` and `<bucket>` placeholders only.
+- [ ] 5.1 `docs/runbooks/senamhi-relay.md` -- follows `docs/runbooks/README.md` conventions and the shape of `scheduled-cycle-deploy.md`. Contents: deploy order (D45 steps 1-5); create the IAM access key and store it in the Keychain as the `credential_process` JSON with `-T /usr/bin/security`; `~/.aws/config` profile `ferrenafe-relay`; LaunchAgent (not Daemon) install with `launchctl bootstrap gui/$UID` and `bootout`; **schedule and sleep behaviour (D47)**: the push runs hourly at `:00` via `StartCalendarInterval`; after sleep, missed firings coalesce into one push on wake; if that push fails because the network is not up yet (exit 2, old object kept), the next `:00` push recovers, so expect fresh within 1 h of wake; a Mac off, logged out or asleep for more than about 3 h makes cycles read `STALE_RELAY`, and two such cycles raise the alarm (expected, not a fault of the relay; the R4 always-on producer is the remedy); how to read `push.log` to confirm the wake run; manual push; rotation every 90 days (D36 steps); revocation on suspected leak (Inactive, `list-object-versions`, CloudTrail events, `copy-object` restore); retirement on Roles Anywhere migration; rollback list (D45); reading CloudTrail write events; `<account>` and `<bucket>` placeholders only.
 - [ ] 5.2 State in the runbook that an always-on producer authenticating with IAM Roles Anywhere is required before 2026-12-01 (R4), with the dated link to the ADR.
 - [ ] 5.3 `docs/decisions/<next-number>-senamhi-s3-relay.md` -- follows `docs/decisions/README.md`: the choice, evidence (link `docs/evidence/2026-10-02-senamhi-unreachable-from-aws.md`), consequences, accepted risk R5, the S3 and CloudTrail cost figures from V.9/V.10. Does not reopen ADR 0001.
 - [ ] 5.4 `docs/architecture/adapters.md` -- document `RelayWarningProvider`, `S3RelayReader`, the producer entrypoint and the single-line `on_read` record; update the entrypoints doc for `select_warning_provider`.
@@ -298,12 +314,12 @@ profile; prefer `mcp__aws-mcp__run_script` over raw CLI.
 - [ ] L.1 [Owner, AWS] `cdk diff ScheduledCycleStack` with the existing `-c` flags (`snapshotWriterPolicyArn`, `agentRuntimeArn`, `alarmEmail`); read the diff: bucket, user, policy, alarm, trail, log bucket, env var only. Then `cdk deploy ScheduledCycleStack ...`. Record `RelayBucketName` and `RelayProducerUserName` outputs.
 - [ ] L.2 [Owner, AWS] Create the access key for `ferrenafe-relay-producer`; write the `credential_process` JSON into the Keychain with `-T /usr/bin/security`; add the `ferrenafe-relay` profile to `~/.aws/config`. The secret is never pasted into a chat or committed.
 - [ ] L.3 [Owner, Mac] Run `rain-alert-relay-push` by hand: confirm exit 0, a real `VersionId` and `LastModified`, and the Keychain read **without a dialog**. Run it again from a LaunchAgent context (`launchctl kickstart`) and confirm the same unattended. Closes V.2.
-- [ ] L.4 [Owner, Mac] `launchctl bootstrap gui/$UID` the agent; put the Mac to sleep across one interval; observe whether missed runs coalesce. Closes V.7.
+- [ ] L.4 [Owner, Mac] `launchctl bootstrap gui/$UID` the agent; confirm `launchctl print gui/$UID/pe.ferrenafe.relay-push` shows the calendar trigger; put the Mac to sleep across at least two `:00` firings; on wake, observe exactly **one** coalesced push in `push.log` (and a new `VersionId`), or a logged fetch failure followed by a recovering push at the next `:00`. Confirms D47 live.
 - [ ] L.5 [Owner, AWS] `aws lambda invoke` by hand; confirm one log line with `"event":"senamhi_relay","degraded":0`, the cycle's `senamhi_status: available`, and that the metric filter produced a datapoint. Closes V.4 against a real event.
 - [ ] L.6 [Owner, AWS] Delete or rename nothing: instead, temporarily invoke with `RAIN_ALERT_RELAY_BUCKET` pointing at an empty scratch bucket the role cannot read, and a second time with a key-less state if feasible, to observe `RELAY_UNREADABLE`; observe a genuine `RELAY_MISSING` (`NoSuchKey`, not `AccessDenied`) before the first push or against a scratch prefix under the granted `ListBucket`. Closes V.1 live. Restore afterwards with a normal deploy, never a console edit of the env var (D34 trap).
 - [ ] L.7 [Owner, AWS] CloudTrail: find the real `PutObject` data event from L.3; record principal, access key id (redacted), source IP, user agent, and whether `versionId` appears. Confirm Lambda reads are **not** recorded. Optionally attempt one denied write with another identity and confirm it is logged. Closes V.10 live.
 - [ ] L.8 [Owner, AWS] Observe two consecutive scheduled cycles at full freshness (`degraded=0`), then the flow end to end into a real resident-facing run in `console` channel only (no real send beyond the existing active channel).
-- [ ] L.9 [Owner, AWS] **Stale -> alarm**: stop the producer (`launchctl bootout`), wait for the object to pass 3 h, observe a cycle reporting `STALE_RELAY` and one operator notice carrying the VersionId; observe a second consecutive degraded cycle drive the `SenamhiRelayDegraded` alarm to `ALARM` and the email arrive. Restart the producer and observe recovery. Closes V.3 live.
+- [ ] L.9 [Owner, AWS] **Stale -> alarm**: stop the producer (`launchctl bootout`), wait for the object to pass 3 h, observe a cycle reporting `STALE_RELAY` and one operator notice carrying the VersionId; observe a second consecutive degraded cycle drive the `SenamhiRelayDegraded` alarm to `ALARM` and the email arrive. Restart the producer and observe recovery. Record the timestamps of the two degraded log events, the alarm's `StateUpdatedTimestamp`, and the `StateReason` text: they show the real window placement and evaluation cadence of a 21600 s alarm, which D40 states as unproven. Also confirm that no ALARM fired during L.8's healthy cycles. Closes V.3 live.
 - [ ] L.10 [Owner, AWS] Run `cdk drift`/`cdk diff` and confirm no console drift; confirm one real rollback rehearsal with `-c relayEnabled=false` followed by re-enable, to prove D45 works on the live stack.
 - [ ] L.11 Write `docs/evidence/2026-MM-DD-senamhi-relay-live.md` from the real output of L.1-L.10, with the V.1-V.10 answers that needed a live check; add a findings entry under `docs/blog/` for anything that surprised us, with the command that revealed it.
 - [ ] L.12 Security review (fresh context) on the evidence-PR diff: no account id, ARN, key id or email.

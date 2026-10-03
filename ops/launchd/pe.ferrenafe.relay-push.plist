@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the SENAMHI relay producer (design D42, D47). Copy to
+  ~/Library/LaunchAgents/ and replace every <angle-bracket> placeholder:
+    <uv>      absolute path of the uv binary (launchd has a minimal PATH)
+    <repo>    absolute path of this repository checkout
+    <bucket>  relay bucket name (the RelayBucketName stack output)
+    <home>    your home directory (launchd does not expand "~")
+  Create <home>/Library/Logs/ferrenafe-relay/ first and run
+  `chmod 700` on it: the log records the bucket name and push versions.
+  The frozen flag stops uv re-resolving the lockfile over the network every hour. Credentials come from the
+  AWS profile (a credential_process entry); nothing secret belongs in this file.
+
+  Optional hardening: add RAIN_ALERT_RELAY_BUCKET_OWNER to EnvironmentVariables
+  with your 12-digit AWS account id (shown here only as <account>; never commit
+  the real value). When set, every PUT carries ExpectedBucketOwner.
+
+  RunAtLoad is intentional: push immediately at login or load, for example
+  after the Mac was off, instead of waiting for the next :00.
+
+  Schedule: StartCalendarInterval, never StartInterval. Per `man launchd.plist`
+  a StartInterval run that falls during sleep is missed, while calendar runs
+  are coalesced into one run on wake. Do not add StartInterval: the two keys
+  are evaluated independently and would double-fire.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>pe.ferrenafe.relay-push</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>&lt;uv&gt;</string>
+    <string>run</string>
+    <string>--frozen</string>
+    <string>--directory</string>
+    <string>&lt;repo&gt;</string>
+    <string>rain-alert-relay-push</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AWS_PROFILE</key>
+    <string>ferrenafe-relay</string>
+    <key>AWS_REGION</key>
+    <string>us-east-2</string>
+    <key>RAIN_ALERT_RELAY_BUCKET</key>
+    <string>&lt;bucket&gt;</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>&lt;home&gt;/Library/Logs/ferrenafe-relay/push.log</string>
+  <key>StandardErrorPath</key>
+  <string>&lt;home&gt;/Library/Logs/ferrenafe-relay/push.log</string>
+</dict>
+</plist>

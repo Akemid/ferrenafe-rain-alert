@@ -82,3 +82,47 @@ def test_put_object_records_its_kwargs() -> None:
     client.put_object(Bucket="b", Key="k", Body=b"x")
 
     assert client.put_calls == [{"Bucket": "b", "Key": "k", "Body": b"x"}]
+
+
+def test_put_object_raises_the_programmed_put_error_and_still_records_the_attempt() -> None:
+    client = FakeS3Client(put_error=client_error("AccessDenied", "PutObject"))
+
+    with pytest.raises(ClientError):
+        client.put_object(Bucket="b", Key="k", Body=b"x")
+
+    assert client.put_calls == [{"Bucket": "b", "Key": "k", "Body": b"x"}]
+
+
+def test_a_get_error_does_not_break_put_object() -> None:
+    client = FakeS3Client(error=client_error("NoSuchKey"))
+
+    client.put_object(Bucket="b", Key="k", Body=b"x")
+
+    assert len(client.put_calls) == 1
+
+
+def test_a_successful_put_becomes_what_get_returns() -> None:
+    client = FakeS3Client(last_modified=MODIFIED)
+
+    client.put_object(
+        Bucket="b",
+        Key="k",
+        Body=b"<p>hi</p>",
+        ContentType="text/html; charset=utf-8",
+        Metadata={"sha256": "abc"},
+    )
+    response = client.get_object(Bucket="b", Key="k")
+
+    assert response["Body"].read() == b"<p>hi</p>"
+    assert response["ContentLength"] == len(b"<p>hi</p>")
+    assert response["ContentType"] == "text/html; charset=utf-8"
+    assert response["Metadata"] == {"sha256": "abc"}
+
+
+def test_a_failed_put_leaves_the_previous_object_in_place() -> None:
+    client = FakeS3Client(body=b"old", put_error=client_error("AccessDenied", "PutObject"))
+
+    with pytest.raises(ClientError):
+        client.put_object(Bucket="b", Key="k", Body=b"new")
+
+    assert client.get_object(Bucket="b", Key="k")["Body"].read() == b"old"

@@ -29,6 +29,7 @@ dependencies = [
 
 [project.scripts]
 rain-alert-cycle = "rain_alert.entrypoints.cli:main"
+rain-alert-relay-push = "rain_alert.entrypoints.relay_push:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -103,3 +103,72 @@ def test_the_html_fetcher_raises_a_fetch_error_instead_of_leaking_httpx() -> Non
         fetcher.fetch(URL)
 
     assert caught.value.reason is UnavailableReason.TIMEOUT
+
+
+class _CountingChunks(httpx.SyncByteStream):
+    """A response body that records how many chunks the client actually pulled."""
+
+    def __init__(self, chunk: bytes, count: int) -> None:
+        self._chunk = chunk
+        self._count = count
+        self.pulled = 0
+
+    def __iter__(self):
+        for _ in range(self._count):
+            self.pulled += 1
+            yield self._chunk
+
+
+def _streaming_fetcher(stream: httpx.SyncByteStream, **kwargs) -> HttpxHtmlFetcher:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=stream))
+    return HttpxHtmlFetcher(transport=transport, **kwargs)
+
+
+def test_a_byte_cap_aborts_the_download_without_buffering_the_whole_body() -> None:
+    stream = _CountingChunks(b"x" * 1000, count=1_000_000)
+    fetcher = _streaming_fetcher(stream, max_bytes=5000)
+
+    with pytest.raises(FetchError) as caught:
+        fetcher.fetch(URL)
+
+    assert caught.value.reason is UnavailableReason.TRANSPORT_ERROR
+    assert "5000" in caught.value.detail
+    assert stream.pulled <= 10
+
+
+def test_a_body_exactly_at_the_byte_cap_is_returned() -> None:
+    stream = _CountingChunks(b"x" * 1000, count=5)
+
+    assert _streaming_fetcher(stream, max_bytes=5000).fetch(URL) == "x" * 5000
+
+
+def test_a_body_under_the_byte_cap_is_decoded_as_text() -> None:
+    fetcher = HttpxHtmlFetcher(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text="<p>Ferreñafe</p>")),
+        max_bytes=1000,
+    )
+
+    assert fetcher.fetch(URL) == "<p>Ferreñafe</p>"
+
+
+def test_a_non_success_status_is_still_bad_status_under_a_cap() -> None:
+    fetcher = HttpxHtmlFetcher(
+        transport=httpx.MockTransport(lambda request: httpx.Response(503, text="down")), max_bytes=1000
+    )
+
+    with pytest.raises(FetchError) as caught:
+        fetcher.fetch(URL)
+
+    assert caught.value.reason is UnavailableReason.BAD_STATUS
+
+
+def test_an_overall_deadline_aborts_a_slow_drip_that_never_trips_the_per_chunk_timeout() -> None:
+    ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
+    stream = _CountingChunks(b"x", count=1_000_000)
+    fetcher = _streaming_fetcher(stream, deadline_seconds=3.0, clock=lambda: next(ticks))
+
+    with pytest.raises(FetchError) as caught:
+        fetcher.fetch(URL)
+
+    assert caught.value.reason is UnavailableReason.TIMEOUT
+    assert stream.pulled <= 10
