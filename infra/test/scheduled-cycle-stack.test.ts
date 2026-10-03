@@ -482,11 +482,14 @@ describe('ScheduledCycleStack — relay writer and producer user (D36, D41)', ()
     const id = relayBucketLogicalId(template);
 
     const policies = template.findResources('AWS::IAM::ManagedPolicy');
-    const writers = Object.entries(policies).filter(
-      ([, policy]) => policy.Properties.ManagedPolicyName === 'RelayWriter',
+    const writers = Object.entries(policies).filter(([, policy]) =>
+      JSON.stringify(policy.Properties.PolicyDocument.Statement).includes('s3:PutObject'),
     );
     expect(writers).toHaveLength(1);
     const [writerLogicalId, writer] = writers[0];
+    // No fixed name: IAM names are account-global, so a fixed one risks collision/replacement failures.
+    expect(writer.Properties.ManagedPolicyName).toBeUndefined();
+    expect(Object.keys(template.findOutputs('RelayWriterPolicyName'))).toHaveLength(1);
     expect(writer.Properties.PolicyDocument.Statement).toEqual([
       {
         Action: 's3:PutObject',

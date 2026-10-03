@@ -330,7 +330,6 @@ export class ScheduledCycleStack extends Stack {
     // The managed policy and user stay even when `relayEnabled` is false. CDK creates NO access key: the
     // operator creates it in Phase L, so the secret never enters the template or the CloudFormation state.
     const relayWriter = new iam.ManagedPolicy(this, 'RelayWriter', {
-      managedPolicyName: 'RelayWriter',
       statements: [new iam.PolicyStatement({ actions: ['s3:PutObject'], resources: [relayObjectArn] })],
     });
     const producerUser = new iam.User(this, 'RelayProducerUser', {
@@ -338,8 +337,10 @@ export class ScheduledCycleStack extends Stack {
       managedPolicies: [relayWriter],
     });
 
+    // The policy name is CDK-generated (a fixed IAM name is account-global), so the operator finds it here.
     // Outputs carry names only, never ARNs (an ARN embeds the account id).
     new CfnOutput(this, 'RelayBucketName', { value: relayBucket.bucketName });
+    new CfnOutput(this, 'RelayWriterPolicyName', { value: relayWriter.managedPolicyName });
     new CfnOutput(this, 'RelayProducerUserName', { value: producerUser.userName });
     new CfnOutput(this, 'RelayObjectKey', { value: RELAY_CONTRACT.object_key });
 
