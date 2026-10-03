@@ -186,7 +186,7 @@ class TestTheAgentDeploymentUnitIsASeparateArtifact:
         """A scan over a directory that does not exist reports no violation and
         reads as a pass. Mutation-checked by pointing `AGENT_ROOT` at a name
         that is not there: without this, nothing turned red."""
-        assert sorted(path.name for path in AGENT_ROOT.glob("*.py")) == ["app.py", "models.py"]
+        assert sorted(path.name for path in AGENT_ROOT.glob("*.py")) == ["app.py", "models.py", "prompts.py"]
         assert (SRC_ROOT / "adapters" / "agent_prompt.py").is_file()
 
     def test_the_application_side_scanner_detects_a_planted_import(self, tmp_path: Path) -> None:
