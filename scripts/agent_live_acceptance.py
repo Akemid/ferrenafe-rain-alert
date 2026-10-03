@@ -15,7 +15,9 @@ never printed, and neither is any fence token.
 Each run goes through the same code the cycle uses: `build_prompt`, the
 invoker, `parse_candidate` and the UNCHANGED `validate_message`. The validator
 decides acceptance; this script only counts. Exit status is 0 at 8 of 10
-accepted or better, non-zero below. Record all outcomes, failures included
+accepted or better, 1 below. `--runs` is fixed at 10 (any other value is a
+usage error, exit 2): the minimum is the fixed 8 of 10, not a ratio. Exit 2 also
+means the ARN lookup or invoker construction failed (masked, one line). Record all outcomes, failures included
 (D53): no cherry-picking.
 """
 
@@ -213,13 +215,20 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     parser = argparse.ArgumentParser(
         description="LIVE AND PAID: run the incident request through the deployed agent and count validator acceptances."
     )
-    parser.add_argument("--runs", type=int, default=DEFAULT_RUNS, help="number of live invocations (default 10)")
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=DEFAULT_RUNS,
+        help=f"must be {DEFAULT_RUNS}: the D53 gate is a fixed 8 of 10 (default {DEFAULT_RUNS})",
+    )
     parser.add_argument(
         "--from-lambda",
         action="store_true",
         help=f"read the runtime ARN from the deployed Lambda instead of {AGENT_RUNTIME_ARN_ENV_VAR}",
     )
     args = parser.parse_args(argv)
+    if args.runs != DEFAULT_RUNS:
+        parser.error(f"--runs must be {DEFAULT_RUNS}: the gate is a fixed {MINIMUM_ACCEPTED} of {DEFAULT_RUNS} (D53)")
 
     region = environment.get("AWS_DEFAULT_REGION", DEFAULT_REGION)
     arn = environment.get(AGENT_RUNTIME_ARN_ENV_VAR)

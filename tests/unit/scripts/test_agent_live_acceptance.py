@@ -289,3 +289,32 @@ class TestMainFailuresStayMasked:
         assert ARN not in err
         assert account not in err
         assert "Traceback" not in err
+
+
+class TestTheRunsAreFixedAtTen:
+    def _main(self, script: ModuleType, monkeypatch: pytest.MonkeyPatch, accepted: int, argv: list[str]) -> int:
+        bad = {**_good_draft(script), "body": "Aviso naranja entre el 2 y el 5 de octubre."}
+        invoker = _ScriptedInvoker([_good_draft(script)] * accepted + [bad] * (10 - accepted))
+        monkeypatch.setattr(script, "_live_invoker", lambda arn, region: invoker)
+        return script.main(argv, env={"RAIN_ALERT_AGENT_RUNTIME_ARN": ARN})
+
+    def test_any_other_run_count_is_a_usage_error(
+        self, script: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as raised:
+            self._main(script, monkeypatch, 10, ["--runs", "20"])
+
+        assert raised.value.code == 2
+        assert "10" in capsys.readouterr().err
+
+    def test_seven_of_ten_fails_with_exit_one(
+        self, script: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert self._main(script, monkeypatch, 7, ["--runs", "10"]) == 1
+        capsys.readouterr()
+
+    def test_eight_of_ten_passes(
+        self, script: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert self._main(script, monkeypatch, 8, ["--runs", "10"]) == 0
+        capsys.readouterr()
