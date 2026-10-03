@@ -10,7 +10,7 @@ It answers by combining two independent signals.
 
 | Signal | Source | What it says |
 |---|---|---|
-| Official warning | SENAMHI Lambayeque warnings page, scraped | The region is under an official aviso, at yellow, orange or red |
+| Official warning | SENAMHI Lambayeque warnings page, scraped (in the deployed cycle, read from an S3 copy pushed from outside AWS, because SENAMHI does not answer AWS; see [ADR 0003](../decisions/0003-senamhi-s3-relay.md)) | The region is under an official aviso, at yellow, orange or red |
 | Local forecast | Open-Meteo API for the configured coordinates | Millimetres of rain and hourly probability expected at Ferreñafe |
 
 Neither signal is enough alone. The official aviso covers a whole department, highlands included, and it is multi-hazard. The forecast is a global model, and global models are imprecise on the Peruvian coast. Combining them produces a verdict with judgment, which is the point of the whole design.
@@ -134,6 +134,8 @@ These are the decisions that are not visible from the code shape alone. Each one
 | `http.py` | The shared fetch seam: `FetchError`, `fetch_text`, `HtmlFetcher` and `HttpxHtmlFetcher`, with no `httpx` exception allowed to escape. |
 | `open_meteo.py` | The forecast adapter: the verified query, the pure `parse_forecast_payload`, and `OpenMeteoForecastProvider`. |
 | `senamhi_scraper.py` | The warnings scraper: header-signature table location, in-force detection, relevance filtering, and loud failure. |
+| `senamhi_relay.py` | `RelayWarningProvider`: reads the SENAMHI page from one S3 object, refuses a stale one, and parses it with the scraper's parser. |
+| `s3_relay_reader.py` | `S3RelayReader` and `UnconfiguredRelayReader`: fetch and validate that object, and name every failure. |
 | `senamhi_classification.py` | The SENAMHI Spanish title vocabulary translated into domain `Phenomenon` and `Zone` terms, by word-boundary regular expressions over normalized text. |
 | `console_notifier.py` | `ConsoleNotifier`, which prints community alerts and operator notices under distinct prefixes and cannot transmit. |
 | `serialization.py` | The persisted document shape for alerts, outages and reasons, carried forward unchanged for change 3's DynamoDB adapter. |
@@ -244,8 +246,8 @@ The **message is printed even when nothing is sent**, labelled `PREVIEW (NOT SEN
 |---|---|
 | [domain.md](./domain.md) | Every module in `src/rain_alert/domain/`: the types, the risk branches, the hazard filter, the dedup and outage rules, the Spanish template. |
 | [ports-and-application.md](./ports-and-application.md) | The eight `Protocol` classes, `CycleDependencies`, `AlertPolicy` and `RunAlertCycle`. |
-| [adapters.md](./adapters.md) | The HTTP seam, the Open-Meteo client, the SENAMHI scraper and classifier, the console notifier, serialization, and everything under `local/`. |
-| [entrypoints-and-testing.md](./entrypoints-and-testing.md) | The CLI, the object graph, and the test architecture including the architecture boundary test and the live canaries. |
+| [adapters.md](./adapters.md) | The HTTP seam, the Open-Meteo client, the SENAMHI scraper, classifier and relay, the console notifier, serialization, and everything under `local/`. |
+| [entrypoints-and-testing.md](./entrypoints-and-testing.md) | The CLI, the relay producer, the object graph and warning-provider selection, and the test architecture including the architecture boundary test and the live canaries. |
 
 Background reading, subordinate to the code in every case where they disagree:
 

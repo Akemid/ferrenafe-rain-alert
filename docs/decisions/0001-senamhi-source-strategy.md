@@ -5,6 +5,13 @@
 - **Scope**: `adapters/senamhi_scraper.py`, `ports.WarningProvider`
 - **Supersedes**: nothing
 - **Revisit trigger**: see [When to reopen this](#when-to-reopen-this)
+- **Update, 2026-10-02**: the page is still the source and `senamhi_scraper.py`
+  still parses it, but a deployed Lambda cannot fetch it: SENAMHI drops TCP from
+  AWS, and the OGC service is behind the same wall
+  ([evidence](../evidence/2026-10-02-senamhi-unreachable-from-aws.md)).
+  [ADR 0003](0003-senamhi-s3-relay.md) adds a second `WarningProvider`
+  that reads a copy of the page pushed from outside AWS. The decision below is
+  otherwise unchanged.
 
 ## Context
 
