@@ -257,6 +257,41 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
       );
     });
 
+    describe('scheduleEnabled context parsing', () => {
+      const scheduleState = (template: Template): unknown => {
+        const [rule] = Object.values(template.findResources('AWS::Scheduler::Schedule'));
+        return rule.Properties.State;
+      };
+
+      test('the real committed cdk.json context leaves the production schedule ENABLED', () => {
+        // Production was enabled by the owner on 2026-10-03. The switch ships in cdk.json so a deploy that
+        // forgets `-c scheduleEnabled=...` cannot flip it. Disabling durably is a committed "false".
+        const cdkJson = require('../cdk.json') as { context: Record<string, unknown> };
+        const template = synth({ ...baseContext, scheduleEnabled: cdkJson.context.scheduleEnabled });
+
+        expect(cdkJson.context.scheduleEnabled).toBe('true');
+        expect(scheduleState(template)).toBe('ENABLED');
+      });
+
+      test.each([['true'], [true]])('%p enables the schedule', (value) => {
+        expect(scheduleState(synth({ ...baseContext, scheduleEnabled: value }))).toBe('ENABLED');
+      });
+
+      test.each([['false'], [false]])('%p disables the schedule', (value) => {
+        expect(scheduleState(synth({ ...baseContext, scheduleEnabled: value }))).toBe('DISABLED');
+      });
+
+      test('absent disables the schedule (safe default, consistent with relayEnabled)', () => {
+        expect(scheduleState(synth(baseContext))).toBe('DISABLED');
+      });
+
+      test.each([['yes'], [1], [''], [null]])('%p throws a clear synth-time error', (value) => {
+        expect(() =>
+          buildScheduledCycleStack(new App({ context: { ...baseContext, scheduleEnabled: value } })),
+        ).toThrow(/scheduleEnabled/);
+      });
+    });
+
     test('keeps bucket, user and policy in both states', () => {
       for (const relayEnabled of ['true', 'false']) {
         const template = synth({ ...baseContext, relayEnabled });
