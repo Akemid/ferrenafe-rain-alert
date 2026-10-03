@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Annotations, CfnOutput, Stack, StackProps, RemovalPolicy, Duration, TimeZone } from 'aws-cdk-lib/core';
+import { Annotations, Aws, CfnOutput, Stack, StackProps, RemovalPolicy, Duration, TimeZone } from 'aws-cdk-lib/core';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -11,6 +11,7 @@ import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import * as scheduler_targets from 'aws-cdk-lib/aws-scheduler-targets';
 
@@ -200,6 +201,60 @@ export class ScheduledCycleStack extends Stack {
       }),
     );
     const relayObjectArn = relayBucket.arnForObjects(RELAY_CONTRACT.object_key);
+
+    // --- Relay audit trail (D46) ---
+    // Deliberately NOT under the `relayEnabled` switch: the audit record must outlive a rollback and cover
+    // the producer's first push, before the switch is ever flipped on.
+    // Own log bucket, private to CloudTrail: neither the Lambda role nor the producer user is granted on it.
+    // No `bucketName` (no account id in the repo). Retained: it is read after an incident.
+    const auditLogBucket = new s3.Bucket(this, 'RelayAuditLogBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      lifecycleRules: [
+        // One full rainy season plus margin.
+        { expiration: Duration.days(400), noncurrentVersionExpiration: Duration.days(30) },
+        { abortIncompleteMultipartUploadAfter: Duration.days(1) },
+      ],
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    auditLogBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.DENY,
+        principals: [new iam.AnyPrincipal()],
+        actions: ['s3:*'],
+        resources: [auditLogBucket.bucketArn, auditLogBucket.arnForObjects('*')],
+        conditions: { NumericLessThan: { 's3:TlsVersion': '1.2' } },
+      }),
+    );
+    // The L2 adds `aws:SourceArn` to the CloudTrail statements only for organization trails, and a SourceArn
+    // here would need a fixed trail name (a circular reference otherwise). `aws:SourceAccount` closes the
+    // cross-account confused-deputy path without either.
+    auditLogBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.DENY,
+        principals: [new iam.ServicePrincipal('cloudtrail.amazonaws.com')],
+        actions: ['s3:GetBucketAcl', 's3:PutObject'],
+        resources: [auditLogBucket.bucketArn, auditLogBucket.arnForObjects('*')],
+        conditions: { StringNotEquals: { 'aws:SourceAccount': Aws.ACCOUNT_ID } },
+      }),
+    );
+    // The L2 emits classic event selectors only, which is all D46 needs (write-only, one bucket). Both
+    // `isMultiRegionTrail` and `includeGlobalServiceEvents` default to true in the L2, so they are explicit.
+    const relayAuditTrail = new cloudtrail.Trail(this, 'RelayAuditTrail', {
+      bucket: auditLogBucket,
+      isMultiRegionTrail: false,
+      includeGlobalServiceEvents: false,
+      enableFileValidation: true,
+      sendToCloudWatchLogs: false,
+      managementEvents: cloudtrail.ReadWriteType.NONE,
+    });
+    relayAuditTrail.addS3EventSelector([{ bucket: relayBucket }], {
+      readWriteType: cloudtrail.ReadWriteType.WRITE_ONLY,
+      includeManagementEvents: false,
+    });
 
     // --- CloudWatch Logs (D33) ---
     const logGroup = new logs.LogGroup(this, 'FunctionLogs', {

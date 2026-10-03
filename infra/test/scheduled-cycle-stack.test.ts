@@ -395,9 +395,10 @@ describe('ScheduledCycleStack — Observability (D33)', () => {
 });
 
 function relayBucketLogicalId(template: Template): string {
-  const buckets = template.findResources('AWS::S3::Bucket');
-  expect(Object.keys(buckets)).toHaveLength(1);
-  return Object.keys(buckets)[0];
+  // The audit log bucket (D46) is the second bucket; the relay bucket is the one with this id.
+  const ids = Object.keys(template.findResources('AWS::S3::Bucket')).filter((id) => /^RelayBucket[0-9A-F]{8}$/.test(id));
+  expect(ids).toHaveLength(1);
+  return ids[0];
 }
 
 describe('ScheduledCycleStack — relay bucket (D41)', () => {
@@ -410,7 +411,9 @@ describe('ScheduledCycleStack — relay bucket (D41)', () => {
     expect(bucket.UpdateReplacePolicy).toBe('Retain');
     expect(bucket.Properties.BucketName).toBeUndefined();
 
-    template.hasResourceProperties('AWS::S3::Bucket', {
+    // Scoped to the relay bucket alone: the audit log bucket (D46) carries the same properties, so a
+    // stack-wide `hasResourceProperties` would stay green if the relay bucket lost any of them.
+    Template.fromJSON({ Resources: { [id]: bucket } }).hasResourceProperties('AWS::S3::Bucket', {
       PublicAccessBlockConfiguration: {
         BlockPublicAcls: true,
         BlockPublicPolicy: true,
@@ -599,7 +602,8 @@ describe('ScheduledCycleStack — relayEnabled=false rollback switch (D41, D45)'
     expect(alarms.filter((a) => a.Properties.MetricName === 'SenamhiRelayDegraded')).toEqual([]);
     expect(Object.keys(alarms)).toHaveLength(3);
 
-    template.resourceCountIs('AWS::S3::Bucket', 1);
+    template.resourceCountIs('AWS::S3::Bucket', 2); // relay bucket + audit log bucket
+    template.resourceCountIs('AWS::CloudTrail::Trail', 1);
     template.resourceCountIs('AWS::IAM::ManagedPolicy', 1);
     template.resourceCountIs('AWS::IAM::User', 1);
   });
@@ -608,5 +612,123 @@ describe('ScheduledCycleStack — relayEnabled=false rollback switch (D41, D45)'
     const template = synthesizeTemplate();
     const [fn] = Object.values(template.findResources('AWS::Lambda::Function'));
     expect(fn.Properties.Environment.Variables.RAIN_ALERT_RELAY_BUCKET).toBeDefined();
+  });
+});
+
+describe('ScheduledCycleStack — relay audit trail (D46, classic selectors)', () => {
+  const template = synthesizeTemplate();
+  const relayBucketId = (): string => {
+    const ids = Object.keys(template.findResources('AWS::S3::Bucket')).filter((id) => /^RelayBucket[0-9A-F]{8}$/.test(id));
+    expect(ids).toHaveLength(1);
+    return ids[0];
+  };
+
+  test('exactly one trail, single-region, no global events, file validation on, no CloudWatch Logs or KMS', () => {
+    template.resourceCountIs('AWS::CloudTrail::Trail', 1);
+    const [trail] = Object.values(template.findResources('AWS::CloudTrail::Trail'));
+    expect(trail.Properties.IsMultiRegionTrail).toBe(false);
+    expect(trail.Properties.IncludeGlobalServiceEvents).toBe(false);
+    expect(trail.Properties.EnableLogFileValidation).toBe(true);
+    expect(trail.Properties.IsLogging).toBe(true);
+    expect(trail.Properties.CloudWatchLogsLogGroupArn).toBeUndefined();
+    expect(trail.Properties.CloudWatchLogsRoleArn).toBeUndefined();
+    expect(trail.Properties.KMSKeyId).toBeUndefined();
+  });
+
+  test('exactly one classic selector: write-only, no management events, the relay bucket only', () => {
+    const [trail] = Object.values(template.findResources('AWS::CloudTrail::Trail'));
+    expect(trail.Properties.AdvancedEventSelectors).toBeUndefined();
+    expect(trail.Properties.EventSelectors).toHaveLength(1);
+    expect(trail.Properties.EventSelectors[0]).toEqual({
+      ReadWriteType: 'WriteOnly',
+      IncludeManagementEvents: false,
+      DataResources: [
+        {
+          Type: 'AWS::S3::Object',
+          Values: [{ 'Fn::Join': ['', [{ 'Fn::GetAtt': [relayBucketId(), 'Arn'] }, '/']] }],
+        },
+      ],
+    });
+  });
+
+  test('the trail does not depend on relayEnabled: it exists when the switch is off', () => {
+    const off = synthesizeTemplate({ relayEnabled: false });
+    off.resourceCountIs('AWS::CloudTrail::Trail', 1);
+    off.resourceCountIs('AWS::S3::Bucket', 2);
+  });
+});
+
+describe('ScheduledCycleStack — relay audit log bucket (D46)', () => {
+  const template = synthesizeTemplate();
+  const buckets = Object.entries(template.findResources('AWS::S3::Bucket'));
+  const logBuckets = buckets.filter(([id]) => !/^RelayBucket[0-9A-F]{8}$/.test(id));
+  const trailBucketRef = (): unknown => {
+    const [trail] = Object.values(template.findResources('AWS::CloudTrail::Trail'));
+    return trail.Properties.S3BucketName;
+  };
+
+  test('is its own private, retained bucket with a 400-day lifecycle and no fixed name', () => {
+    expect(buckets).toHaveLength(2);
+    expect(logBuckets).toHaveLength(1);
+    const [id, bucket] = logBuckets[0];
+    expect(bucket.DeletionPolicy).toBe('Retain');
+    expect(bucket.UpdateReplacePolicy).toBe('Retain');
+    expect(bucket.Properties.BucketName).toBeUndefined();
+    expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({
+      BlockPublicAcls: true,
+      BlockPublicPolicy: true,
+      IgnorePublicAcls: true,
+      RestrictPublicBuckets: true,
+    });
+    expect(bucket.Properties.BucketEncryption.ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault).toEqual({
+      SSEAlgorithm: 'AES256',
+    });
+    expect(bucket.Properties.OwnershipControls.Rules).toEqual([{ ObjectOwnership: 'BucketOwnerEnforced' }]);
+    expect(bucket.Properties.VersioningConfiguration).toEqual({ Status: 'Enabled' });
+    expect(bucket.Properties.LifecycleConfiguration.Rules).toContainEqual(
+      expect.objectContaining({ Status: 'Enabled', ExpirationInDays: 400 }),
+    );
+    expect(trailBucketRef()).toEqual({ Ref: id });
+  });
+
+  test('bucket policy: CloudTrail service may write, confused-deputy guarded by SourceAccount; plaintext and TLS below 1.2 denied', () => {
+    const [id] = logBuckets[0];
+    const policies = Object.values(template.findResources('AWS::S3::BucketPolicy')).filter(
+      (p) => JSON.stringify(p.Properties.Bucket) === JSON.stringify({ Ref: id }),
+    );
+    expect(policies).toHaveLength(1);
+    const statements = policies[0].Properties.PolicyDocument.Statement as Array<Record<string, any>>;
+    const trailPuts = statements.filter(
+      (s) => s.Principal?.Service === 'cloudtrail.amazonaws.com' && s.Action === 's3:PutObject',
+    );
+    expect(trailPuts).toHaveLength(1);
+    expect(JSON.stringify(trailPuts[0].Condition)).toContain('s3:x-amz-acl');
+    // The L2 only adds `aws:SourceArn` for organization trails (cloudtrail.js), and a SourceArn without a
+    // fixed trail name would be a circular reference. So the confused-deputy guard is `aws:SourceAccount`.
+    const sourceAccountDenies = statements.filter(
+      (s) =>
+        s.Effect === 'Deny' &&
+        s.Principal?.Service === 'cloudtrail.amazonaws.com' &&
+        JSON.stringify(s.Condition) === JSON.stringify({ StringNotEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } } }),
+    );
+    expect(sourceAccountDenies).toHaveLength(1);
+    const denies = statements.filter((s) => s.Effect === 'Deny');
+    expect(denies.some((s) => s.Condition?.Bool?.['aws:SecureTransport'] === 'false')).toBe(true);
+    expect(denies.some((s) => s.Condition?.NumericLessThan?.['s3:TlsVersion'] === '1.2')).toBe(true);
+  });
+
+  test('neither the Lambda role nor the producer user can touch the log bucket', () => {
+    const [id] = logBuckets[0];
+    const needle = JSON.stringify({ 'Fn::GetAtt': [id, 'Arn'] });
+    const identityPolicies = [
+      ...Object.values(template.findResources('AWS::IAM::Policy')),
+      ...Object.values(template.findResources('AWS::IAM::ManagedPolicy')),
+      ...Object.values(template.findResources('AWS::IAM::Role')),
+      ...Object.values(template.findResources('AWS::IAM::User')),
+    ];
+    for (const p of identityPolicies) {
+      expect(JSON.stringify(p.Properties)).not.toContain(needle);
+      expect(JSON.stringify(p.Properties)).not.toContain(JSON.stringify({ Ref: id }));
+    }
   });
 });
