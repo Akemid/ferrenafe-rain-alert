@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Annotations, Stack, StackProps, RemovalPolicy, Duration, TimeZone } from 'aws-cdk-lib/core';
+import { Annotations, CfnOutput, Stack, StackProps, RemovalPolicy, Duration, TimeZone } from 'aws-cdk-lib/core';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -10,6 +10,7 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import * as scheduler_targets from 'aws-cdk-lib/aws-scheduler-targets';
 
@@ -29,6 +30,15 @@ interface ScheduledCycleContract {
 const CONTRACT: ScheduledCycleContract = JSON.parse(
   readFileSync(join(__dirname, '..', '..', 'contracts', 'scheduled-cycle.json'), 'utf-8'),
 ) as ScheduledCycleContract;
+
+/**
+ * The relay contract shared with the Python reader and producer (`contracts/senamhi-relay.json`, design
+ * D37). Only the object key is needed here; reading it at synth time keeps the IAM resource and the Python
+ * constant from drifting.
+ */
+const RELAY_CONTRACT = JSON.parse(
+  readFileSync(join(__dirname, '..', '..', 'contracts', 'senamhi-relay.json'), 'utf-8'),
+) as { readonly object_key: string };
 
 /** design.md D26. Matches `dynamodb_alert_repository.py::TABLE_NAME` by string, not by import — the two
  * languages agree by matching this literal, the same pattern `SSM_PATH_PREFIX` uses on the SSM side. */
@@ -84,6 +94,13 @@ export interface ScheduledCycleStackProps extends StackProps {
    * @default true
    */
   readonly scheduleEnabled?: boolean;
+  /**
+   * Whether the Lambda reads SENAMHI warnings from the relay bucket (design D41/D45's declarative
+   * rollback: `cdk deploy -c relayEnabled=false`). When false the stack omits the
+   * `RAIN_ALERT_RELAY_BUCKET` variable and the relay alarm; the bucket, user and policy remain.
+   * @default true
+   */
+  readonly relayEnabled?: boolean;
 }
 
 /**
@@ -157,6 +174,33 @@ export class ScheduledCycleStack extends Stack {
       deletionProtection: true,
     });
 
+    // --- Relay bucket (D41) ---
+    // No `bucketName`: a generated name embeds no account id, and the repository must never hold one.
+    // Retained: it is the forensic record of what the producer pushed (R5).
+    const relayBucket = new s3.Bucket(this, 'RelayBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      lifecycleRules: [
+        { noncurrentVersionExpiration: Duration.days(90) },
+        { abortIncompleteMultipartUploadAfter: Duration.days(1) },
+      ],
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    // `enforceSSL` only denies plaintext; this denies TLS 1.0/1.1 as well.
+    relayBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.DENY,
+        principals: [new iam.AnyPrincipal()],
+        actions: ['s3:*'],
+        resources: [relayBucket.bucketArn, relayBucket.arnForObjects('*')],
+        conditions: { NumericLessThan: { 's3:TlsVersion': '1.2' } },
+      }),
+    );
+    const relayObjectArn = relayBucket.arnForObjects(RELAY_CONTRACT.object_key);
+
     // --- CloudWatch Logs (D33) ---
     const logGroup = new logs.LogGroup(this, 'FunctionLogs', {
       // The proposal flags never-expire as a cost that grows silently.
@@ -176,6 +220,8 @@ export class ScheduledCycleStack extends Stack {
     const executionRole = new iam.Role(this, 'ExecutionRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
     });
+
+    const relayEnabled = props.relayEnabled ?? true;
 
     // --- Lambda (D30, D31) ---
     const fn = new lambda.Function(this, 'ScheduledCycleFunction', {
@@ -223,6 +269,8 @@ export class ScheduledCycleStack extends Stack {
         // golden contract file `agentcore_invoker.py`'s own test asserts against. Not a hand-copied number.
         RAIN_ALERT_AGENT_TIMEOUT_S: String(CONTRACT.agent_read_timeout_seconds),
         RAIN_ALERT_SNAPSHOT_BUCKET: props.snapshotBucketName,
+        // Presence selects relay mode (D43), so the variable is omitted entirely when disabled.
+        ...(relayEnabled ? { RAIN_ALERT_RELAY_BUCKET: relayBucket.bucketName } : {}),
       },
     });
 
@@ -247,6 +295,12 @@ export class ScheduledCycleStack extends Stack {
     // write erases — the entire dedup audit trail. One table, named, and now the exact four actions, never
     // `*` on either axis (D26).
     table.grant(fn, 'dynamodb:Query', 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem');
+
+    // Relay reads (D39, D41): two explicit statements so the action set is exact, never `grantRead` (which
+    // would add `GetObjectVersion`, `GetBucket*` and `List*`). `ListBucket` is required: without it S3
+    // answers a missing key with 403 instead of 404 (V.1), and the reader could not tell the two apart.
+    fn.addToRolePolicy(new iam.PolicyStatement({ actions: ['s3:GetObject'], resources: [relayObjectArn] }));
+    fn.addToRolePolicy(new iam.PolicyStatement({ actions: ['s3:ListBucket'], resources: [relayBucket.bucketArn] }));
 
     // Seven exact parameter ARNs, never a prefix wildcard (D32, amended fix round 1 — the Python side
     // moved from `GetParametersByPath` to `GetParameters` over exact names for the same reason: a wildcard
@@ -281,6 +335,24 @@ export class ScheduledCycleStack extends Stack {
         resources: [props.agentRuntimeArn, `${props.agentRuntimeArn}/*`],
       }),
     );
+
+    // --- Relay producer identity (D36, D41) ---
+    // The managed policy and user stay even when `relayEnabled` is false. CDK creates NO access key: the
+    // operator creates it in Phase L, so the secret never enters the template or the CloudFormation state.
+    const relayWriter = new iam.ManagedPolicy(this, 'RelayWriter', {
+      statements: [new iam.PolicyStatement({ actions: ['s3:PutObject'], resources: [relayObjectArn] })],
+    });
+    const producerUser = new iam.User(this, 'RelayProducerUser', {
+      userName: 'ferrenafe-relay-producer',
+      managedPolicies: [relayWriter],
+    });
+
+    // The policy name is CDK-generated (a fixed IAM name is account-global), so the operator finds it here.
+    // Outputs carry names only, never ARNs (an ARN embeds the account id).
+    new CfnOutput(this, 'RelayBucketName', { value: relayBucket.bucketName });
+    new CfnOutput(this, 'RelayWriterPolicyName', { value: relayWriter.managedPolicyName });
+    new CfnOutput(this, 'RelayProducerUserName', { value: producerUser.userName });
+    new CfnOutput(this, 'RelayObjectKey', { value: RELAY_CONTRACT.object_key });
 
     // --- EventBridge Scheduler (D35) ---
     const target = new scheduler_targets.LambdaInvoke(fn, {
@@ -373,7 +445,34 @@ export class ScheduledCycleStack extends Stack {
     if (props.alarmEmail) {
       topic.addSubscription(new sns_subscriptions.EmailSubscription(props.alarmEmail));
     }
-    for (const alarm of [errorsAlarm, noInvocationsAlarm, snapshotFailureAlarm]) {
+    const alarms = [errorsAlarm, noInvocationsAlarm, snapshotFailureAlarm];
+
+    // Relay degraded alarm (D40). The filter matches the single-line `on_read` record that
+    // `wiring.py::log_relay_read` prints; `$.degraded` is 1 for any relay Unavailable. No `defaultValue`:
+    // a default of 0 would fill windows with no cycle and defeat `breaching` below.
+    if (relayEnabled) {
+      const relayFilter = new logs.MetricFilter(this, 'RelayDegradedFilter', {
+        logGroup,
+        filterPattern: logs.FilterPattern.stringValue('$.event', '=', 'senamhi_relay'),
+        metricNamespace: 'FerrenafeRainAlert',
+        metricName: 'SenamhiRelayDegraded',
+        metricValue: '$.degraded',
+      });
+      // 21600 s is a sliding window. Two consecutive periods span 12 h, and a healthy schedule puts at
+      // least one record in any 12 h, so normal operation cannot breach both; a stopped cycle can.
+      alarms.push(
+        new cloudwatch.Alarm(this, 'RelayDegradedAlarm', {
+          alarmDescription: 'The SENAMHI relay was degraded or absent for two consecutive cycles.',
+          metric: relayFilter.metric({ period: Duration.seconds(21600), statistic: 'Maximum' }),
+          threshold: 1,
+          evaluationPeriods: 2,
+          datapointsToAlarm: 2,
+          comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+          treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+        }),
+      );
+    }
+    for (const alarm of alarms) {
       alarm.addAlarmAction(new cw_actions.SnsAction(topic));
     }
   }

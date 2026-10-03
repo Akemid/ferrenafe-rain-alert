@@ -154,3 +154,30 @@ Commits, each RED first:
 - design.md D42/D47 amended (RunAtLoad intentional, --frozen, ExpectedBucketOwner, accepted structure-not-authenticity risk).
 
 Gate: pytest 1349 passed, 15 deselected; agent 32 passed; ruff check clean; ruff format 127 files formatted; mypy no issues in 50 files.
+
+---
+
+# Phase 4a / PR 4a (feat/senamhi-relay-4a-infra, stacked on relay-3-producer): tasks 4.1-4.17 [x]
+
+4.18+ (CloudTrail, PR 4b), 4.24 and the 4.25 security review remain open. Synth-only: no deploy, no AWS call.
+
+## Work units (strict TDD, tests in infra/test/scheduled-cycle-stack.test.ts)
+
+1. Bucket (4.1/4.2). RED: `Expected 1 resources of type AWS::S3::Bucket but found 0`. Private, versioned, S3-managed SSE, BucketOwnerEnforced, enforceSSL, two lifecycle rules (noncurrent 90 d; abort MPU 1 d), RETAIN, no `bucketName`.
+2. Lambda grants (4.3/4.4). RED: expected 2 relay statements, found 0. Two explicit statements: `s3:GetObject` on `arnForObjects(contract.object_key)` and `s3:ListBucket` on the bucket ARN. The key is read from `contracts/senamhi-relay.json` in both the stack and the test (independent reads). No GetObjectVersion, Put or `s3:*`.
+3. RelayWriter + producer user (4.5/4.6). RED: no RelayWriter managed policy found. `ManagedPolicy` (PutObject on the key only), `iam.User ferrenafe-relay-producer` with that one managed policy, `AWS::IAM::AccessKey` count 0. Mutation proof: adding `new iam.AccessKey` turned the test red; reverted.
+4. Env and outputs (4.7/4.8). RED: `RAIN_ALERT_RELAY_BUCKET` undefined. Env is `{Ref: bucket}`; outputs RelayBucketName, RelayProducerUserName (Ref of the user), RelayObjectKey; no ARN in outputs.
+5. Alarm (4.9-4.13). RED: no filter, no alarm, alarm count 3 vs 4. Filter `{ $.event = "senamhi_relay" }`, value `$.degraded` (field names match `wiring.py::log_relay_read`; `degraded` is 1 for stale_relay, relay_missing, relay_unreadable and a fresh-but-unparseable object), no DefaultValue. Alarm Maximum/21600/2 of 2/breaching -> existing AlarmsTopic. Mutation proofs, each red then reverted: `NOT_BREACHING`, `datapointsToAlarm: 1`, `defaultValue: 0`, plus the AccessKey one above. A template test proves configuration only, not window alignment, evaluation cadence or a live transition (carried to L.9).
+6. `relayEnabled` (4.14-4.16). RED: env var present with `relayEnabled: false`. Default true; only the string 'false' disables (`bin/infra.ts`, same parsing as `scheduleEnabled`). Disabled omits env var and relay alarm; bucket, policy and user stay. `test/app.test.ts` passthrough test: red when the `relayEnabled` plumbing line was removed; reverted.
+
+## Deviations / notes
+- The existing "no s3:PutObject" test now scopes to the Lambda role statements, because RelayWriter legitimately carries PutObject. The alarm-count assertion went 3 -> 4.
+- Metric filter and alarm sit inside the `relayEnabled` conditional (no alarm that would breach forever after rollback).
+
+## PR-4a review fixes (2026-10-02)
+
+Each RED first, `cd infra && npm test`:
+- ec55786 `relayEnabled` ships `"false"` in `infra/cdk.json`; `parseRelayEnabled` in `bin/infra.ts` (string or boolean; absent disables; other values throw). RED: `Expected path: "relayEnabled"` (real cdk.json lacked the key), `Received: {"Ref": "RelayBucketA541D426"}` for absent context, and `Received function did not throw` for "yes"/1/""/null. Tests in `test/app.test.ts` ("relayEnabled context parsing (D45)").
+- 88353f3 fixed `managedPolicyName` removed; `RelayWriterPolicyName` output added. RED: `Received: "RelayWriter"`. The policy is now found by its `s3:PutObject` statement.
+- 7a2169b bucket policy denies `s3:TlsVersion` below `'1.2'`. RED: TLS floor test found no such statement.
+- Docs: design.md D41/D45 (cdk.json switch, flip procedure, expected creation-time ALARM, 12 h legitimate alarm, rollback does not revoke the key); tasks.md 5.1, L.0 and review note (unticked).

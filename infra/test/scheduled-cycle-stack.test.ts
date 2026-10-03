@@ -11,6 +11,12 @@ const CONTRACT = JSON.parse(
   readFileSync(join(__dirname, '..', '..', 'contracts', 'scheduled-cycle.json'), 'utf-8'),
 ) as { agent_read_timeout_seconds: number; cycle_headroom_seconds: number; ssm_path_prefix: string };
 
+/** The relay contract (design D37/D-contract), read independently of the stack under test so IAM and Python
+ * cannot drift on the object key. */
+const RELAY_CONTRACT = JSON.parse(
+  readFileSync(join(__dirname, '..', '..', 'contracts', 'senamhi-relay.json'), 'utf-8'),
+) as { object_key: string };
+
 /** Fixture ARN, never a plausible twelve-digit account id (design D25's own trap, `tests/hygiene`). */
 const SNAPSHOT_WRITER_POLICY_ARN = 'arn:aws:iam::ACCOUNT:policy/SnapshotWriter';
 const AGENT_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:us-east-2:ACCOUNT:runtime/example-runtime-abc123';
@@ -124,7 +130,9 @@ describe('ScheduledCycleStack — Lambda role and the imported SnapshotWriter po
       ManagedPolicyArns: Match.arrayWith([SNAPSHOT_WRITER_POLICY_ARN]),
     });
 
-    const withPutObject = everyStatement(template).filter((statement) =>
+    // Scoped to the Lambda role: the `RelayWriter` managed policy (design D41) legitimately carries
+    // `s3:PutObject` for the producer user, and is asserted separately below.
+    const withPutObject = findFunctionRoleStatements(template).filter((statement) =>
       actionsOf(statement).some((action) => action === 's3:PutObject' || action === 's3:*'),
     );
     expect(withPutObject).toEqual([]);
@@ -368,7 +376,8 @@ describe('ScheduledCycleStack — Observability (D33)', () => {
     });
 
     const alarms = template.findResources('AWS::CloudWatch::Alarm');
-    expect(Object.keys(alarms)).toHaveLength(3);
+    // Three original alarms plus the relay-degraded alarm (design D40).
+    expect(Object.keys(alarms)).toHaveLength(4);
 
     // Fix round 1, SHOULD 6: Alarm 2 (`Invocations`) is the only detector for this design's defining
     // silent failure — the cycle stops running — and an alarm nobody is subscribed to is decorative. The
@@ -382,5 +391,222 @@ describe('ScheduledCycleStack — Observability (D33)', () => {
     });
     const subscriptions = template.findResources('AWS::SNS::Subscription');
     expect(Object.keys(subscriptions)).toHaveLength(1);
+  });
+});
+
+function relayBucketLogicalId(template: Template): string {
+  const buckets = template.findResources('AWS::S3::Bucket');
+  expect(Object.keys(buckets)).toHaveLength(1);
+  return Object.keys(buckets)[0];
+}
+
+describe('ScheduledCycleStack — relay bucket (D41)', () => {
+  test('relay bucket is private, versioned, encrypted, owner-enforced, retained and unnamed', () => {
+    const template = synthesizeTemplate();
+    const id = relayBucketLogicalId(template);
+    const bucket = template.toJSON().Resources[id];
+
+    expect(bucket.DeletionPolicy).toBe('Retain');
+    expect(bucket.UpdateReplacePolicy).toBe('Retain');
+    expect(bucket.Properties.BucketName).toBeUndefined();
+
+    template.hasResourceProperties('AWS::S3::Bucket', {
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
+      VersioningConfiguration: { Status: 'Enabled' },
+      BucketEncryption: {
+        ServerSideEncryptionConfiguration: [
+          Match.objectLike({ ServerSideEncryptionByDefault: { SSEAlgorithm: 'AES256' } }),
+        ],
+      },
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] },
+      LifecycleConfiguration: {
+        Rules: Match.arrayWith([
+          Match.objectLike({ NoncurrentVersionExpiration: { NoncurrentDays: 90 }, Status: 'Enabled' }),
+          Match.objectLike({ AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }, Status: 'Enabled' }),
+        ]),
+      },
+    });
+
+    template.hasResourceProperties('AWS::S3::BucketPolicy', {
+      Bucket: { Ref: id },
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Effect: 'Deny',
+            Action: 's3:*',
+            Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+          }),
+        ]),
+      },
+    });
+  });
+});
+
+describe('ScheduledCycleStack — relay bucket TLS floor (D41)', () => {
+  test('denies any request below TLS 1.2 alongside the enforceSSL deny', () => {
+    const template = synthesizeTemplate();
+    const id = relayBucketLogicalId(template);
+
+    template.hasResourceProperties('AWS::S3::BucketPolicy', {
+      Bucket: { Ref: id },
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Effect: 'Deny',
+            Principal: { AWS: '*' },
+            Action: 's3:*',
+            Condition: { NumericLessThan: { 's3:TlsVersion': '1.2' } },
+            Resource: [{ 'Fn::GetAtt': [id, 'Arn'] }, { 'Fn::Join': ['', [{ 'Fn::GetAtt': [id, 'Arn'] }, '/*']] }],
+          }),
+        ]),
+      },
+    });
+  });
+});
+
+describe('ScheduledCycleStack — relay grants (D39, D41)', () => {
+  const relayStatements = (template: Template): Array<Record<string, unknown>> =>
+    findFunctionRoleStatements(template).filter((statement) =>
+      actionsOf(statement).some((action) => action.startsWith('s3:')),
+    );
+
+  test('lambda reads exactly the one contract key and may list the bucket, nothing else', () => {
+    const template = synthesizeTemplate();
+    const id = relayBucketLogicalId(template);
+    const statements = relayStatements(template);
+
+    expect(statements).toHaveLength(2);
+    const get = statements.find((s) => actionsOf(s).includes('s3:GetObject'));
+    const list = statements.find((s) => actionsOf(s).includes('s3:ListBucket'));
+    expect(actionsOf(get!)).toEqual(['s3:GetObject']);
+    expect(actionsOf(list!)).toEqual(['s3:ListBucket']);
+    expect(get!.Resource).toEqual({
+      'Fn::Join': ['', [{ 'Fn::GetAtt': [id, 'Arn'] }, `/${RELAY_CONTRACT.object_key}`]],
+    });
+    expect(list!.Resource).toEqual({ 'Fn::GetAtt': [id, 'Arn'] });
+    expect(list!.Condition).toBeUndefined();
+
+    const allActions = statements.flatMap(actionsOf);
+    expect(allActions).not.toContain('s3:GetObjectVersion');
+    expect(allActions).not.toContain('s3:PutObject');
+    expect(allActions).not.toContain('s3:*');
+  });
+});
+
+describe('ScheduledCycleStack — relay writer and producer user (D36, D41)', () => {
+  test('RelayWriter allows PutObject on the one key; the producer user has only that policy and no access key', () => {
+    const template = synthesizeTemplate();
+    const id = relayBucketLogicalId(template);
+
+    const policies = template.findResources('AWS::IAM::ManagedPolicy');
+    const writers = Object.entries(policies).filter(([, policy]) =>
+      JSON.stringify(policy.Properties.PolicyDocument.Statement).includes('s3:PutObject'),
+    );
+    expect(writers).toHaveLength(1);
+    const [writerLogicalId, writer] = writers[0];
+    // No fixed name: IAM names are account-global, so a fixed one risks collision/replacement failures.
+    expect(writer.Properties.ManagedPolicyName).toBeUndefined();
+    expect(Object.keys(template.findOutputs('RelayWriterPolicyName'))).toHaveLength(1);
+    expect(writer.Properties.PolicyDocument.Statement).toEqual([
+      {
+        Action: 's3:PutObject',
+        Effect: 'Allow',
+        Resource: { 'Fn::Join': ['', [{ 'Fn::GetAtt': [id, 'Arn'] }, `/${RELAY_CONTRACT.object_key}`]] },
+      },
+    ]);
+
+    const users = template.findResources('AWS::IAM::User');
+    expect(Object.keys(users)).toHaveLength(1);
+    const [user] = Object.values(users);
+    expect(user.Properties.UserName).toBe('ferrenafe-relay-producer');
+    expect(user.Properties.ManagedPolicyArns).toEqual([{ Ref: writerLogicalId }]);
+    expect(user.Properties.Policies).toBeUndefined();
+
+    // The operator creates the key in Phase L (D36): a key in CloudFormation puts the secret in the state.
+    template.resourceCountIs('AWS::IAM::AccessKey', 0);
+  });
+});
+
+describe('ScheduledCycleStack — relay env and outputs (D41)', () => {
+  test('env var is the bucket ref and the outputs carry no ARN', () => {
+    const template = synthesizeTemplate();
+    const id = relayBucketLogicalId(template);
+
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: { Variables: Match.objectLike({ RAIN_ALERT_RELAY_BUCKET: { Ref: id } }) },
+    });
+
+    const outputs = template.toJSON().Outputs as Record<string, { Value: unknown }>;
+    expect(outputs.RelayBucketName.Value).toEqual({ Ref: id });
+    const [userLogicalId] = Object.keys(template.findResources('AWS::IAM::User'));
+    expect(outputs.RelayProducerUserName.Value).toEqual({ Ref: userLogicalId });
+    expect(outputs.RelayObjectKey.Value).toBe(RELAY_CONTRACT.object_key);
+    expect(JSON.stringify(outputs)).not.toMatch(/arn:|Fn::GetAtt|"Arn"/);
+  });
+});
+
+describe('ScheduledCycleStack — relay degraded alarm (D40)', () => {
+  test('metric filter keys on the single-line record and has no default value', () => {
+    const template = synthesizeTemplate();
+    const filters = template.findResources('AWS::Logs::MetricFilter', {
+      Properties: { FilterPattern: '{ $.event = "senamhi_relay" }' },
+    });
+    expect(Object.keys(filters)).toHaveLength(1);
+    const [filter] = Object.values(filters);
+    expect(filter.Properties.MetricTransformations).toEqual([
+      {
+        MetricName: 'SenamhiRelayDegraded',
+        MetricNamespace: 'FerrenafeRainAlert',
+        MetricValue: '$.degraded',
+      },
+    ]);
+    // A default of 0 would fill the missing windows and defeat `treatMissingData: breaching`.
+    expect(filter.Properties.MetricTransformations[0].DefaultValue).toBeUndefined();
+  });
+
+  test('alarm is Maximum over 21600 s, 2 of 2, missing data breaches, and notifies the existing topic', () => {
+    const template = synthesizeTemplate();
+    const [topicLogicalId] = Object.keys(template.findResources('AWS::SNS::Topic'));
+
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      Namespace: 'FerrenafeRainAlert',
+      MetricName: 'SenamhiRelayDegraded',
+      Statistic: 'Maximum',
+      Period: 21600,
+      EvaluationPeriods: 2,
+      DatapointsToAlarm: 2,
+      Threshold: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'breaching',
+      AlarmActions: [{ Ref: topicLogicalId }],
+    });
+  });
+});
+
+describe('ScheduledCycleStack — relayEnabled=false rollback switch (D41, D45)', () => {
+  test('disabled: no relay env var and no relay alarm, but bucket, policy and user remain', () => {
+    const template = synthesizeTemplate({ relayEnabled: false });
+
+    const [fn] = Object.values(template.findResources('AWS::Lambda::Function'));
+    expect(fn.Properties.Environment.Variables.RAIN_ALERT_RELAY_BUCKET).toBeUndefined();
+
+    const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm'));
+    expect(alarms.filter((a) => a.Properties.MetricName === 'SenamhiRelayDegraded')).toEqual([]);
+    expect(Object.keys(alarms)).toHaveLength(3);
+
+    template.resourceCountIs('AWS::S3::Bucket', 1);
+    template.resourceCountIs('AWS::IAM::ManagedPolicy', 1);
+    template.resourceCountIs('AWS::IAM::User', 1);
+  });
+
+  test('enabled by default', () => {
+    const template = synthesizeTemplate();
+    const [fn] = Object.values(template.findResources('AWS::Lambda::Function'));
+    expect(fn.Properties.Environment.Variables.RAIN_ALERT_RELAY_BUCKET).toBeDefined();
   });
 });

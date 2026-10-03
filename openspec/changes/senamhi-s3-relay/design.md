@@ -203,7 +203,7 @@ IAM:
 
 Env var: `RAIN_ALERT_RELAY_BUCKET = bucket.bucketName`. Outputs: `RelayBucketName`, `RelayProducerUserName`, `RelayObjectKey`. No ARNs, which carry the account id.
 
-Context `relayEnabled` (default `true`, the string `'false'` disables, same parsing as `scheduleEnabled`). When `false`, the stack omits the env var **and** the relay alarm. The bucket, user and policy stay. That gives a declarative rollback (D45) without an alarm that would breach forever.
+Context `relayEnabled` lives in `infra/cdk.json` and ships `"false"` (D45). It is parsed strictly: `"true"`/`true` enable, `"false"`/`false` disable, absent disables, anything else throws at synth time. `-c relayEnabled=...` still overrides. When disabled, the stack omits the env var **and** the relay alarm. The bucket, user and policy stay. That gives a declarative rollback (D45) without an alarm that would breach forever. The writer policy has no fixed `managedPolicyName` (IAM names are account-global); the `RelayWriterPolicyName` output names it. The bucket policy denies TLS below 1.2 (`s3:TlsVersion`) in addition to `enforceSSL`.
 
 Write audit for this bucket: see D46.
 
@@ -267,12 +267,22 @@ Deploy:
 4. `aws lambda invoke` by hand. Confirm `"event":"senamhi_relay","degraded":0` in the log and `senamhi_status: available`.
 5. `launchctl bootstrap gui/$UID` the agent, then watch two scheduled cycles.
 
-Between steps 2 and 3, a cycle reads `RELAY_MISSING`. That is the same forecast-only mode as today, and one degraded period cannot alarm.
+Between steps 2 and 3, a cycle reads `RELAY_MISSING`. That is the same forecast-only mode as today. In steady state one degraded period cannot alarm (two consecutive are needed).
+
+**The switch lives in `infra/cdk.json`** (owner decision, 2026-10-02), so it is durable across deploys and every flip is a reviewed one-line commit. It ships `"relayEnabled": "false"`, so merging and deploying creates the bucket, user, policy and trail but no env var and no alarm.
+
+Flip procedure (enable):
+1. Start the producer and confirm an object is in the bucket and fresh.
+2. Commit `"relayEnabled": "true"`.
+3. Deploy `ScheduledCycleStack`.
+4. Manually invoke the cycle Lambda once so the alarm has a datapoint.
+
+**Expected creation-time ALARM.** With `TreatMissingData=BREACHING`, a brand-new alarm has empty windows and can go to `ALARM` (email) within minutes of being created, until the first record lands. The manual invoke in step 4 clears it. The same happens on every re-enable. If the producer is absent for about 12 h or more after enabling, the alarm fires legitimately.
 
 Rollback, fastest first:
 1. Stop the producer with `launchctl bootout`.
-2. Run `cdk deploy -c relayEnabled=false`. This is declarative and removes the env var and the relay alarm, so the cycle goes back to the direct scraper, which is today's degraded mode.
-3. Deactivate the access key.
+2. Commit `"relayEnabled": "false"` and deploy (or `cdk deploy -c relayEnabled=false` in an emergency, then commit the same value so the next deploy does not revert it). This removes the env var and the relay alarm, so the cycle goes back to the direct scraper, which is today's degraded mode.
+3. **Deactivate and delete the producer's access key.** Rollback does NOT revoke it: the user and policy stay, and CDK never created the key.
 4. Revert the code.
 
 The bucket is retained as the audit trail. A console edit of the env var is drift that the next deploy reverts. That is the D34 trap, named again here.

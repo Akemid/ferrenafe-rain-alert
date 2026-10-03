@@ -4,6 +4,24 @@ import { PublicSnapshotStack } from '../lib/public-snapshot-stack';
 import { ScheduledCycleStack } from '../lib/scheduled-cycle-stack';
 
 /**
+ * Parses the `relayEnabled` context value (design D45). Context from `cdk.json` can arrive as the string
+ * "true"/"false" or as a JSON boolean, and `-c` always yields a string, so both forms are accepted. Absent
+ * means disabled (the safe default, consistent with the committed value). Anything else throws: a typo must
+ * fail loudly at synth time rather than silently enable or disable the relay.
+ */
+export function parseRelayEnabled(value: unknown): boolean {
+  if (value === undefined || value === 'false' || value === false) {
+    return false;
+  }
+  if (value === 'true' || value === true) {
+    return true;
+  }
+  throw new Error(
+    `Invalid context value for relayEnabled: ${JSON.stringify(value)}. Use "true" or "false" (or omit it to disable).`,
+  );
+}
+
+/**
  * Decides whether — and how — to synthesize `ScheduledCycleStack` (design D25, task 3.24).
  *
  * `snapshotBucketName` gates the *attempt*: it is committed to `cdk.json`'s `context` block (fix round 1,
@@ -56,6 +74,10 @@ export function buildScheduledCycleStack(app: cdk.App): ScheduledCycleStack | un
   // absence, means enabled. Never a boolean context value — CDK context values from the CLI are strings.
   const scheduleEnabledContext = app.node.tryGetContext('scheduleEnabled') as string | undefined;
 
+  // The relay switch lives in `cdk.json`'s `context` and ships "false" (design D45); `-c relayEnabled=...`
+  // on the CLI still overrides it. Parsed strictly: see `parseRelayEnabled`.
+  const relayEnabled = parseRelayEnabled(app.node.tryGetContext('relayEnabled'));
+
   return new ScheduledCycleStack(app, 'ScheduledCycleStack', {
     stackName: 'ferrenafe-scheduled-cycle',
     // Same region as `PublicSnapshotStack` and the AgentCore runtime (design D25).
@@ -65,6 +87,7 @@ export function buildScheduledCycleStack(app: cdk.App): ScheduledCycleStack | un
     agentRuntimeArn,
     alarmEmail,
     scheduleEnabled: scheduleEnabledContext !== 'false',
+    relayEnabled,
   });
 }
 

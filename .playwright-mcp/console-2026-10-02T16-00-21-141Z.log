@@ -1,0 +1,6 @@
+[    3701ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:4399/data/status.json:0
+[    3701ms] [ERROR] failed to load /data/status.json Error: status endpoint responded with 500
+    at L (http://localhost:4399/_astro/index.astro_astro_type_script_index_0_lang.B0EAfJd9.js:1:7742) @ http://localhost:4399/_astro/index.astro_astro_type_script_index_0_lang.B0EAfJd9.js:0
+[    3761ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:4399/data/status.json:0
+[    3761ms] [ERROR] failed to load /data/status.json Error: status endpoint responded with 500
+    at L (http://localhost:4399/_astro/index.astro_astro_type_script_index_0_lang.B0EAfJd9.js:1:7742) @ http://localhost:4399/_astro/index.astro_astro_type_script_index_0_lang.B0EAfJd9.js:0
