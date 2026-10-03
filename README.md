@@ -14,7 +14,10 @@ warnings — it is not a replacement for them.** It is provided **without warran
 always follow official guidance during an emergency.
 
 Warning data is scraped from a public SENAMHI page for non-commercial,
-community-safety use. Forecast data comes from the
+community-safety use. SENAMHI does not answer connections from AWS, so the
+deployed cycle reads that page from a copy pushed by a machine outside AWS (see
+[ADR 0003](./docs/decisions/0003-senamhi-s3-relay.md) and its
+[evidence](./docs/evidence/2026-10-02-senamhi-unreachable-from-aws.md)). Forecast data comes from the
 [Open-Meteo](https://open-meteo.com/) API, used under its non-commercial
 terms.
 
@@ -81,6 +84,8 @@ obvious, with the evidence they were made on:
   complement](./docs/decisions/0001-senamhi-source-strategy.md)
 - [0002 — Attribute the fact, quote the words, or say
   nothing](./docs/decisions/0002-senamhi-attribution-rule.md)
+- [0003 — Fetch SENAMHI outside AWS and relay it through
+  S3](./docs/decisions/0003-senamhi-s3-relay.md)
 
 ## License
 

@@ -1,6 +1,6 @@
 # The adapters layer
 
-This document covers every module in `src/rain_alert/adapters/`, including the six under `local/`. Adapters are where the outside world enters: HTTP, HTML, JSON files, standard output. Read it if you are debugging a source that reported unavailable, changing a threshold value, or trying to understand why the scraper refuses to parse a page. Read [README.md](./README.md) for the cycle and [ports-and-application.md](./ports-and-application.md) for the contracts these modules implement.
+This document covers every module in `src/rain_alert/adapters/`, including the six under `local/`. Adapters are where the outside world enters: HTTP, HTML, JSON files, standard output. Read it if you are debugging a source that reported unavailable (including the SENAMHI relay), changing a threshold value, or trying to understand why the scraper refuses to parse a page. Read [README.md](./README.md) for the cycle and [ports-and-application.md](./ports-and-application.md) for the contracts these modules implement.
 
 ## Map of the layer
 
@@ -9,6 +9,8 @@ This document covers every module in `src/rain_alert/adapters/`, including the s
 | `http.py` | none directly | The shared fetch seam, and the rule that no `httpx` exception escapes. |
 | `open_meteo.py` | `ForecastProvider` | Fetches four days of hourly data and slices forward from the current hour. |
 | `senamhi_scraper.py` | `WarningProvider` | Locates the table by header signature and fails loudly on anything it cannot read. |
+| `senamhi_relay.py` | `WarningProvider` | Reads the SENAMHI page from one S3 object a producer outside AWS keeps fresh, refuses a stale one, and parses it with the scraper's own parser. |
+| `s3_relay_reader.py` | `RelayObjectReader` | Fetches and validates that one S3 object, and maps every failure to a named reason. |
 | `senamhi_classification.py` | none directly | Translates SENAMHI's Spanish title vocabulary into domain hazard terms. |
 | `console_notifier.py` | `Notifier` | Prints, and structurally cannot transmit. |
 | `serialization.py` | none directly | The persisted document shape, carried forward for DynamoDB. |
@@ -230,6 +232,73 @@ That decision stands after the security review, and it is worth saying why the r
 The port implementation. The fetch is an injected `HtmlFetcher`, so parsing is unit-tested against pinned fixtures with zero HTTP.
 
 `fetch_current_warnings` catches `FetchError` and, separately, catches bare `Exception`. **An outright parser bug must degrade the cycle, not abort it**, because `RunAlertCycle` has a fully tested degraded path and no exception handler. An unexpected exception is reported as `TRANSPORT_ERROR` with the exception type named in the detail.
+
+## `senamhi_relay.py` and `s3_relay_reader.py`
+
+The deployed cycle cannot fetch SENAMHI: the host drops TCP from AWS in every region tried ([evidence](../evidence/2026-10-02-senamhi-unreachable-from-aws.md), [ADR 0003](../decisions/0003-senamhi-s3-relay.md)). A producer outside AWS, `rain-alert-relay-push`, fetches the page and writes it to one S3 object. These two modules are the Lambda's side of that: they read the object, decide whether it is fresh, and hand the text to the **same** `parse_warnings_page` the scraper uses. [`docs/runbooks/senamhi-relay.md`](../runbooks/senamhi-relay.md) is the operating procedure.
+
+The module split is the usual one. `senamhi_relay.py` is pure policy plus a seam; `s3_relay_reader.py` is the boto3 leaf. Neither imports from `entrypoints`, and `tests/architecture/test_layer_boundaries.py` pins that, with a planted-violation case to show the scan can fail.
+
+### `contracts/senamhi-relay.json`
+
+One file carries the object key (`senamhi/lambayeque/latest.html`), the age limit (10800 seconds), the size cap (4194304 bytes), the producer-clock skew tolerance (900 seconds) and the future-timestamp tolerance (60 seconds). The Python constants (`OBJECT_KEY`, `MAX_AGE`, `MAX_OBJECT_BYTES`, `SKEW_TOLERANCE`, `FUTURE_TOLERANCE`) are asserted equal to it, and the CDK stack reads the key from it for both IAM grants. **The key is not an environment override.** The grant names exactly one key, so an override could only ever produce `AccessDenied`. Only the bucket comes from the environment.
+
+### `RelayWarningProvider`
+
+`fetch_current_warnings(region, now)` runs these steps, and **no exception escapes**, for the same reason as the scraper: `RunAlertCycle` has a tested degraded path and no handler.
+
+1. `reader.read()`. A `FetchError` becomes `Unavailable` with the reader's reason; any other exception becomes `RELAY_UNREADABLE`. A cycle clock or a `LastModified` without a timezone is also `RELAY_UNREADABLE`.
+2. **A `LastModified` more than 60 seconds ahead of the cycle clock is `RELAY_UNREADABLE`.** Up to 60 seconds is clock jitter. Beyond it the timestamp cannot be trusted, and a future-dated object would otherwise look permanently fresh.
+3. **Freshness.** `age = now - last_modified`, clamped to zero, where `now` is the injected cycle clock and `last_modified` is S3's server clock. `is_stale` is inclusive: **an object exactly 3 hours old is stale.** A stale object returns `Unavailable(STALE_RELAY)` and **is not parsed**. A stale "nothing in force" would be a false calm, the same defect class as the scraper's silent-calm rule. A test uses a four-hour-old calm page to prove the result is `Unavailable`, not `Available(())`.
+4. `parse_warnings_page(text, region, now)`. A `FetchError` passes through with the **same reason and detail the scraper would give** for that page. Any other exception becomes `TRANSPORT_ERROR`.
+5. `Available(data, fetched_at=min(last_modified, now), notes=...)`. `fetched_at` is the relay time, not the cycle time, so the operator view shows how old the data is. The notes are the scraper's `parse_notes` plus, when the producer's own claimed fetch time differs from `LastModified` by more than 15 minutes, a `producer clock skew` note.
+
+The producer's `fetched-at` metadata is **informational**. It only feeds the skew note and never decides freshness. A naive or out-of-range claim is ignored.
+
+The three new `UnavailableReason` members exist so the operator can tell what broke:
+
+| Reason | Meaning |
+|---|---|
+| `STALE_RELAY` | The object exists and is 3 hours old or more. The producer is down or the machine is asleep. |
+| `RELAY_MISSING` | `NoSuchKey`: the producer has never pushed. |
+| `RELAY_UNREADABLE` | The relay could not be read or trusted: access denied, any other S3 error, an oversize or corrupt object, a bad timestamp, a fresh object that no longer parses, or an empty bucket variable. |
+
+The resident message is untouched. `snapshot.py` and the template render only `assessment.reasons`, never `Unavailable.reason` or `detail`, so a stale relay produces the byte-identical "SENAMHI no estuvo disponible" text. Only the operator notice differs. For `STALE_RELAY` its detail leads with the object's version id so truncation drops the least useful part: `version=<id> age=4h12m limit=3h modified=<utc> skew=+20m`, at most 160 characters, never page content.
+
+### The single-line `on_read` record
+
+The provider calls an injected `on_read` callback **exactly once per call**, on every path (success, stale, missing, unreadable, parse failure), with a `RelayReadRecord`: `degraded`, `reason`, `version_id`, `last_modified`, `age_seconds`, `skew_seconds`. `degraded` is `1` for every `Unavailable` the provider returns, including a fresh object that fails to parse (which only happens if the producer's and the Lambda's parser versions drift), and `0` for success. The callback is observability, so a callback that raises is reduced to one line on standard error instead of aborting the cycle.
+
+In the cloud wiring `on_read` is `wiring.py::log_relay_read`, which prints **one compact JSON line**:
+
+```json
+{"event":"senamhi_relay","degraded":1,"reason":"stale_relay","version_id":"...","last_modified":"2026-10-02T05:00:00Z","age_seconds":15120,"skew_seconds":1200}
+```
+
+Why a dedicated line and not the cycle's own JSON: the cycle log is `json.dumps(..., indent=2)`, which is multi-line, and a CloudWatch JSON metric filter needs one record per line. The whole record goes through `json.dumps` (never string formatting) and the one S3-supplied value, `version_id`, is sanitized and capped at 100 characters first, so it can neither split the line nor forge a second record. The metric filter in `infra/lib/scheduled-cycle-stack.ts` keys on `event = "senamhi_relay"` and publishes `degraded`, which feeds the relay alarm.
+
+### `S3RelayReader`
+
+Structure copied from `s3_snapshot_publisher.py`: a lazily built boto3 client with an explicit bounded `Config` (connect timeout 3 s, read timeout 5 s, 2 total attempts), the client injectable as `Any`. `GetObject` is idempotent, so the retry is safe. It reads exactly `OBJECT_KEY`.
+
+| What happens | Reason |
+|---|---|
+| `ClientError` with code `NoSuchKey` | `RELAY_MISSING` |
+| any other `ClientError` code (`AccessDenied`, `403`, unknown), or a `BotoCoreError` (timeout, endpoint) | `RELAY_UNREADABLE`, the code or exception type in the detail |
+| `ContentLength` over the cap | `RELAY_UNREADABLE`, **before a single byte is read** |
+| body over the cap on a bounded read of cap plus one byte (a lying `ContentLength`) | `RELAY_UNREADABLE` |
+| `Content-Type` charset is not `utf-8`, empty body, invalid UTF-8 | `RELAY_UNREADABLE` |
+| `sha256` metadata absent or not equal to the body's digest | `RELAY_UNREADABLE` |
+
+Missing is the **error code** `NoSuchKey`, never a bare HTTP 404. `NoSuchBucket` is also a 404, and treating it as "the producer has not pushed" would hide a deleted or misconfigured bucket. This only works because the Lambda role is granted `s3:ListBucket`: without it S3 answers `403` for a missing key, and `RELAY_MISSING` could never occur. The body is closed in a `finally`, decoding is strict (never `errors="replace"`, which would let a corrupt byte change a classification), and the stored text is decoded exactly as the producer encoded it, so the Lambda parses byte for byte what the producer's gate accepted.
+
+### `UnconfiguredRelayReader`
+
+A relay variable that is **present but empty** is a misconfigured relay, and it must degrade the cycle rather than become a direct scrape. Raising at wiring time was rejected because it would abort the cycle before the forecast ran. So the reader that wiring builds for an empty value defers the failure to `read()`, which raises `FetchError(RELAY_UNREADABLE, "relay bucket not configured")`. The provider turns it into `Unavailable`. A whitespace-only value is treated like an empty one.
+
+### The producer, `entrypoints/relay_push.py`
+
+The producer lives under `entrypoints/` because it is a command, not an adapter. It fetches with `HttpxHtmlFetcher` (capped in flight at the size limit, 30 second overall deadline), runs `parse_warnings_page` as a gate, and only then uploads exactly the text it parsed, encoded as UTF-8, with `ContentType`, a SHA-256 checksum and `sha256`, `fetched-at` and `producer` metadata. **No parse, no upload**: every failure before the upload returns without writing, so a failing producer lets the last good object age out into `STALE_RELAY` instead of replacing it with garbage. Exit codes: 0 pushed, 1 not configured or bad usage, 2 fetch or parse failed, 3 over the size cap, 4 the S3 client or write failed. Messages carry no page content and no raw exception message. The runbook has the full table.
 
 ## `console_notifier.py`
 
