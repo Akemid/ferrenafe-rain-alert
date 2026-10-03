@@ -181,3 +181,20 @@ Each RED first, `cd infra && npm test`:
 - 88353f3 fixed `managedPolicyName` removed; `RelayWriterPolicyName` output added. RED: `Received: "RelayWriter"`. The policy is now found by its `s3:PutObject` statement.
 - 7a2169b bucket policy denies `s3:TlsVersion` below `'1.2'`. RED: TLS floor test found no such statement.
 - Docs: design.md D41/D45 (cdk.json switch, flip procedure, expected creation-time ALARM, 12 h legitimate alarm, rollback does not revoke the key); tasks.md 5.1, L.0 and review note (unticked).
+
+---
+
+# Phase 4b / PR 4b (feat/senamhi-relay-4b-trail, stacked on relay-4a-infra): tasks 4.18-4.24 [x]
+
+4.25 (security review) remains open. Synth-only: no deploy, no AWS call. Skills read: aws-cdk, aws-security, aws-storage, work-unit-commits, strict-tdd.md.
+
+## Work units (strict TDD)
+
+1. Trail + log bucket (4.18-4.23). RED: `Expected 1 resources of type AWS::CloudTrail::Trail but found 0` (plus second-bucket and policy reds). `cloudtrail.Trail` L2 with `isMultiRegionTrail: false`, `includeGlobalServiceEvents: false`, `enableFileValidation: true`, `sendToCloudWatchLogs: false`, `managementEvents: NONE`, then `addS3EventSelector([{bucket: relayBucket}], {WRITE_ONLY, includeManagementEvents: false})`. Synth emits exactly one classic EventSelectors entry, no AdvancedEventSelectors. Log bucket `RelayAuditLogBucket`: BLOCK_ALL, enforceSSL + TLS 1.2 deny, AES256, BucketOwnerEnforced, versioned, expiration 400 d (+ noncurrent 30 d, abort MPU 1 d), RETAIN, no bucketName. Trail and bucket sit outside `relayEnabled` (audit survives rollback and covers the first push; confirmed against D46 "Not affected by relayEnabled=false" and task 4.22).
+2. Mutation proofs, each red then reverted: `readWriteType ALL`, `managementEvents ALL`, `logAllS3DataEvents` instead of the bucket selector, `isMultiRegionTrail true`. All failed the selector/trail assertions.
+
+## Findings / deviations
+- The CDK L2 adds `aws:SourceArn` to the CloudTrail bucket statements ONLY for organization trails (cloudtrail.js). The standard `GetBucketAcl`/`PutObject` statements carry only `s3:x-amz-acl`. A SourceArn needs a fixed `trailName` (rejected: no fixed names) and would be circular. Added an explicit Deny for the cloudtrail principal when `aws:SourceAccount` != `Aws.ACCOUNT_ID` (a token, no literal). Test asserts it. This deviates from the lead's "assert SourceArn".
+- Existing bucket-count assertions (1 -> 2) and `relayBucketLogicalId` updated for the second bucket; app.test.ts too.
+- Offline synth verified with `./node_modules/.bin/cdk synth ScheduledCycleStack -c ... -o <tmp>` (exit 0). `npx cdk` via npm swallows `-c`, so the binary is called directly. Fixture ARNs with a 12-digit id were passed on the CLI only, never committed.
+- Cost: about 28 write data events a day at $0.10 per 100k, nothing to code.
