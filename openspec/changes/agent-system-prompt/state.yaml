@@ -1,0 +1,136 @@
+schema: spec-driven
+change: agent-system-prompt
+title: Agent System Prompt (fixed rules in the system channel, data in the user turn)
+created: 2026-10-03
+updated: 2026-10-03
+
+artifact_store:
+  mode: hybrid
+  openspec_root: openspec/changes/agent-system-prompt
+  engram_prefix: sdd/agent-system-prompt
+
+execution:
+  mode: interactive
+  delivery_strategy: ask-on-risk
+  chain_strategy: null  # decided at tasks if chained PRs are needed
+  strict_tdd: true
+  security_review: >-
+    A fresh-context security review runs on the branch diff before every pull
+    request.
+
+baseline:
+  branch: main
+  evidence: docs/evidence/2026-10-03-senamhi-relay-live.md  # section 6
+  amends:
+    - openspec/changes/composer-agent/design.md  # D20 prompt shape; D16/D17 untouched
+
+phases:
+  explore:
+    status: done
+    artifact: openspec/changes/agent-system-prompt/explore.md
+    engram_topic_key: sdd/agent-system-prompt/explore
+    engram_saved: true
+    note: 5 live calls, 2 accepted, 3 rejected; checklist hypothesis refuted.
+  proposal:
+    status: done
+    artifact: openspec/changes/agent-system-prompt/proposal.md
+    engram_topic_key: sdd/agent-system-prompt/proposal
+    engram_saved: true
+    note: Rules R1-R6; owner decisions of 2026-10-03 recorded.
+  spec:
+    status: done
+    depends_on: [proposal]
+    artifact: openspec/changes/agent-system-prompt/specs/agent-message-composition/spec.md
+  design:
+    status: done
+    depends_on: [proposal]
+    artifact: openspec/changes/agent-system-prompt/design.md
+    engram_topic_key: sdd/agent-system-prompt/design
+    engram_saved: true
+    note: >-
+      D48-D54. SYSTEM_PROMPT in agent/prompts.py; contracts/composer-fence.json;
+      scripts/agent_live_acceptance.py; agent launched from branch before merge.
+  tasks:
+    status: done
+    depends_on: [spec, design]
+    artifact: openspec/changes/agent-system-prompt/tasks.md
+    engram_topic_key: sdd/agent-system-prompt/tasks
+    engram_saved: true
+    note: >-
+      4 stacked-to-main PRs (contract+characterization, live script+docs,
+      agent prompt+launch+gate, app trim+deploy). High 400-line risk.
+  apply:
+    status: pending
+    depends_on: [tasks]
+    artifact: null
+  verify:
+    status: pending
+    depends_on: [apply]
+    artifact: null
+  archive:
+    status: pending
+    depends_on: [verify]
+    artifact: null
+
+capabilities:
+  new: []
+  modified:
+    - agent-message-composition  # spec lives in composer-agent change, not yet archived
+
+resolved_decisions:
+  - id: quality-gate
+    decision: >-
+      At least 8/10 drafts accepted by the unchanged validator over 10 live
+      invocations of the deployed runtime on an incident-like request, recorded
+      in docs/evidence/. Owner, 2026-10-03.
+  - id: dates
+    decision: >-
+      Window dates copied exactly as the data writes them (DD/MM/AAAA HH:MM);
+      never reworded. Validator unchanged. Owner, 2026-10-03.
+  - id: city
+    decision: City must appear in the body, not only the title. Owner, 2026-10-03.
+  - id: fence-contract-test
+    decision: >-
+      A contract test keeps the fence-marker format aligned between
+      agent_prompt.py and the agent's system prompt without cross-imports.
+      Owner, 2026-10-03.
+  - id: validator-unchanged
+    decision: Validator and template fallback are not changed or loosened.
+  - id: deploy-order
+    decision: >-
+      Agent first (duplicated user-turn rules harmless), then the app change
+      that trims the user turn. Rollback by redeploying the previous agent and
+      reverting the app.
+
+design_decisions:
+  - id: prompt-wording-ownership
+    resolution: D49 - owner owns wording, reviewed in PR diff, every change re-gated (D53).
+  - id: system-prompt-module-location
+    resolution: D48 - agent/prompts.py SYSTEM_PROMPT, passed via Agent(system_prompt=...).
+  - id: contract-test-mechanism
+    resolution: D51 - golden contracts/composer-fence.json asserted from both suites.
+  - id: deploy-and-live-check-steps
+    resolution: D52-D54 - scripts/agent_live_acceptance.py, agent first from branch, app after merge with build-lambda.sh.
+
+
+resolved_owner_decisions_2026_10_03:
+  - id: approve-system-prompt-wording
+    decision: >-
+      D49 approved, with one added sentence: checklist sentences keep their
+      own wording, number words included. Owner, 2026-10-03.
+  - id: launch-agent-from-unmerged-branch
+    decision: >-
+      agentcore launch from the PR branch only after that PR's fresh-context
+      security and correctness reviews pass; then the 10-call gate, evidence
+      committed to the same PR, merge, then the app deploy. Owner, 2026-10-03.
+  - id: pin-prompt-key-in-contract
+    decision: >-
+      PROMPT_KEY ("prompt") is also pinned in contracts/composer-fence.json and
+      asserted on both sides. Owner, 2026-10-03.
+
+open_decisions: []
+
+next_recommended:
+  - sdd-apply  # after the orchestrator resolves the Review Workload Guard (chained PRs)
+
+blocked_reasons: []
