@@ -54,3 +54,17 @@ Gotcha: a doc comment containing a 12-digit example id tripped tests/hygiene (it
 | side effect | `tests/architecture/test_layer_boundaries.py` pinned agent file list `["app.py","models.py"]` -> added `prompts.py` (intended; failed first) | | |
 
 SYSTEM_PROMPT == D49 block from design.md: verified by script (regex-extracted block + "\n" == SYSTEM_PROMPT -> True). Gate: pytest 1385 passed; agent 52 passed; ruff, format, mypy clean.
+
+## Batch 4 (PR4 offline, feat/agent-sp-4-app-trim): tasks 4.1-4.6 [x]
+
+`TestWhatTheInstructionBlockStates` replaced by `TestTheUserTurnCarriesNoFixedRule` (pre-fence text only). `render_instructions` trimmed to the one per-call sentence (D50), signature kept. Runbook `docs/runbooks/agentcore-deploy.md` rewritten for the real Node AgentCore CLI deploy (separate docs commit).
+
+| Task | Test | RED | Notes |
+|---|---|---|---|
+| 4.1 | no "checklist/digits/phone number/motivos" before the fence | old block carried the rules | |
+| 4.2 | equals the Interfaces sentence | old block longer than the sentence | markers/token/differ/digit-free passed at once (characterization) |
+| 4.4 | system prompt source has no recipient data / 12-digit literal | passed at once (CHAR) | contact leak test existing, green |
+| 4.5 | Phase 1 contract tests | green | |
+
+Gate: pytest 1386 passed; agent 52 passed; ruff, format, mypy clean; hygiene 61 passed after commit.
+Pending: 4.7 security review; 4.8-4.9 owner tasks.

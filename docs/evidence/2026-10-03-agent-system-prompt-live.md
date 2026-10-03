@@ -9,7 +9,7 @@
 ## Deploy
 
 The deploy used `agentcore deploy` (Node CLI 0.30.0, CDK-managed, target `default` in `us-east-2`), not the
-`agentcore launch` flow the runbook still describes. `agentcore deploy --diff -y` beforehand showed a single
+`agentcore launch` flow the runbook described at the time (corrected in `agent-system-prompt` PR 4). `agentcore deploy --diff -y` beforehand showed a single
 in-place change, so the runtime ARN the cycle Lambda holds stayed valid:
 
 ```
@@ -91,3 +91,29 @@ run 10: ACCEPTED rules=[-] title='Ferreñafe - Alerta inminent' body='Alerta inm
 
 **The gate is met (10/10 ≥ 8/10).** PR #43 may merge after #40 and #41. The level-label follow-up is
 tracked separately and does not block it.
+
+## Round 1b — the trimmed user turn (PR 4), before merge
+
+The gate above ran with the fixed rules duplicated in the user turn, because the app had not been trimmed
+yet. PR 4 removes them, so the agent depends on its system prompt alone. The live script builds the prompt
+with the repository's own `build_prompt`, so running it on `feat/agent-sp-4-app-trim` (commit `2dd6e46`)
+measures exactly what production will send after PR 4. It ran against the same runtime, version 3. Nothing
+was deployed.
+
+`10/10 accepted (minimum 8)`: **PASS**. The level-label issue persists: runs 03, 06 and 10 write
+"inminent". The follow-up stands.
+
+```text
+run 01: ACCEPTED rules=[-] title='Ferreñafe - Nivel inminente' body='Alerta de precipitaciones en Ferreñafe.\n\nSe espera lluvia entre 02/10/2026 00:00 y 05/10/2026 00:00.\n\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia.'
+run 02: ACCEPTED rules=[-] title='Ferreñafe: Alerta Inmediata' body='Alerta inmediata por precipitaciones en Ferreñafe.\n\nPRECIPITACIONES EN LA SIERRA NORTE Y COSTA NORTE\n\nVigencia: 02/10/2026 00:00 a 05/10/2026 00:00\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia.'
+run 03: ACCEPTED rules=[-] title='Ferreñafe - Nivel inminent' body='Alerta de precipitaciones en Ferreñafe del 02/10/2026 00:00 al 05/10/2026 00:00.\n\nPRECIPITACIONES EN LA SIERRA NORTE Y COSTA NORTE\n\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia.'
+run 04: ACCEPTED rules=[-] title='Ferreñafe: Alerta inminente' body='Ferreñafe está bajo alerta inminente por precipitaciones entre 02/10/2026 00:00 y 05/10/2026 00:00.\n\nMotivos:\nPRECIPITACIONES EN LA SIERRA NORTE Y COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia.'
+run 05: ACCEPTED rules=[-] title='Ferreñafe - Alerta inmediata' body='Alerta inmediata en Ferreñafe por PRECIPITACIONES EN LA SIERRA NORTE Y COSTA NORTE, válida desde 02/10/2026 00:00 hasta 05/10/2026 00:00.\n\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia.'
+run 06: ACCEPTED rules=[-] title='Ferreñafe - Alerta inminent' body='Alerta inminent en Ferreñafe por precipitaciones en la sierra norte y costa norte, válida desde 02/10/2026 00:00 hasta 05/10/2026 00:00.\n\nMotivos:\nPRECIPITACIONES EN LA SIERRA NORTE Y COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia.'
+run 07: ACCEPTED rules=[-] title='Ferreñafe - Alerta inmediata' body='Ferreñafe está bajo alerta inmediata por precipitaciones en la sierra norte y costa norte, válida desde 02/10/2026 00:00 hasta 05/10/2026 00:00.\n\nMotivos:\nPRECIPITACIONES EN LA SIERRA NORTE Y COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia.'
+run 08: ACCEPTED rules=[-] title='Ferreñafe: Alerta Inminente' body='Ferreñafe está bajo alerta inminente por precipitaciones. La alerta rige desde 02/10/2026 00:00 hasta 05/10/2026 00:00.\n\nMotivos:\nPRECIPITACIONES EN LA SIERRA NORTE Y COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia.'
+run 09: ACCEPTED rules=[-] title='Ferreñafe: Alerta Inmediata' body='Alerta inmediata en Ferreñafe por PRECIPITACIONES EN LA SIERRA NORTE Y COSTA NORTE.\n\nVigencia: 02/10/2026 00:00 a 05/10/2026 00:00\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia.'
+run 10: ACCEPTED rules=[-] title='Ferreñafe: Nivel inminent' body='Alerta por precipitaciones en Ferreñafe del 02/10/2026 00:00 al 05/10/2026 00:00.\n\nPRECIPITACIONES EN LA SIERRA NORTE Y COSTA NORTE\n\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia.'
+10/10 accepted (minimum 8): PASS
+```
+

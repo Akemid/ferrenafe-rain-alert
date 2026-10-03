@@ -1,11 +1,14 @@
 # Deploying the composer agent to Bedrock AgentCore Runtime
 
-Documentation only — nothing here is automated. Design spec §3.7 chose the
-AgentCore CLI (starter toolkit) over CDK for this one unit specifically,
-because it is not infrastructure in the CloudFormation sense: it is a model
-deployment with its own purpose-built tool. The rest of this project's
-infrastructure (change 3) is CDK in TypeScript; this unit is the deliberate
-exception, and this runbook exists so that exception has one place to live.
+Documentation only — nothing here is automated. The agent runtime is deployed
+with the Node **AgentCore CLI** (`agentcore` 0.30.0). Its project config is
+`agentcore/agentcore.json`; the CLI drives CDK underneath, so a deploy is a
+CloudFormation change set, not a container push. The build artifact is a
+CodeZip of `agent/`. The deploy target is `default` (us-east-2), declared in
+the gitignored `agentcore/aws-targets.json` (copy
+`agentcore/aws-targets.json.example`). The real first deploy and its output
+are recorded in
+`docs/evidence/2026-09-21-first-live-deploy-and-invocation.md`.
 
 Resolves `openspec/changes/composer-agent/state.yaml → open_decisions.runbook-location`.
 
@@ -25,53 +28,44 @@ machine or from `uv run rain-alert-cycle --composer agent`, against
   (`agent/app.py::MODEL_ID`). Model access is granted per-account,
   per-region, in the Bedrock console under "Model access", and is not
   automatic.
-- AWS credentials configured locally (`aws configure` or an SSO profile) with
+- AWS credentials configured locally (`aws login`, profile `ferrenafe`) with
   permission to create and invoke an AgentCore Runtime. AgentCore Runtime's
   own execution role is provisioned by the CLI at deploy time; this change
   does not create or assume any IAM resource (task 3.4 — IAM belongs to
-  change 3, and this runtime's own role is the toolkit's concern, not this
+  change 3, and this runtime's own role is the CLI's concern, not this
   application's).
 - Python 3.12, matching `agent/.python-version`.
+- The `agentcore` CLI (Node) installed, and `agentcore/aws-targets.json`
+  present with a `default` target in `us-east-2`.
+- AWS CLI profile `ferrenafe`, authenticated with `aws login`.
 
-## Step 1 — Install the starter toolkit
-
-```bash
-cd agent
-uv sync
-uv run pip install bedrock-agentcore-starter-toolkit
-```
-
-The toolkit is a deploy-time tool, not a runtime dependency — it does not
-belong in `agent/pyproject.toml`, which pins only what `agent/app.py` imports
-at invocation time (`strands-agents`, `bedrock-agentcore`, `pydantic`).
-
-## Step 2 — Configure the runtime
+## Step 1 — Preview the change (read-only)
 
 ```bash
-cd agent
-uv run agentcore configure --entrypoint app.py --name rain-alert-composer
+AWS_PROFILE=ferrenafe agentcore deploy --diff -y
 ```
 
-This inspects `agent/app.py`, finds the `@app.entrypoint`-decorated function
-(`compose_message`), and prepares a container image and runtime
-configuration. It does not deploy anything yet.
+`--diff` changes nothing. Read it: for a code or prompt change expect a
+**single `[~]` in-place change on the Runtime's code**. A `[-]`/`[+]`
+replacement is a stop sign: a replaced Runtime gets a new ARN, and the cycle
+Lambda holds the old one in `RAIN_ALERT_AGENT_RUNTIME_ARN`.
 
-**Confirm the exact flags against `agentcore --help` before running.** The
-starter toolkit's CLI surface was not exercised in this session and this
-runbook is documentation, not a tested script; if a flag name above has
-changed, the toolkit's own `--help` output and
-<https://docs.aws.amazon.com/bedrock-agentcore/> are authoritative over this
-file.
-
-## Step 3 — Launch
+## Step 2 — Deploy
 
 ```bash
-uv run agentcore launch
+AWS_PROFILE=ferrenafe agentcore deploy -y
 ```
 
-This builds the container, pushes it, and creates (or updates) the AgentCore
-Runtime. On success the CLI prints the runtime's ARN — record it, it is the
-one value the rest of this runbook needs.
+This builds the CodeZip of `agent/`, runs the CDK deployment, and updates the
+Runtime. On success the CLI prints the `RuntimeArn` (record it masked as
+`arn:aws:bedrock-agentcore:us-east-2:<account>:runtime/<id>`).
+
+## Step 3 — Verify the Runtime is ready
+
+Call `GetAgentRuntime` (control plane, `bedrock-agentcore-control`) for the
+runtime id and confirm `status` is `READY` and `agentRuntimeVersion` is the
+version you expect (it increments on every code change). Evidence of a live
+verification: `docs/evidence/2026-10-03-agent-system-prompt-live.md`.
 
 ## Step 4 — Verify model access before the first real invocation
 
@@ -106,7 +100,7 @@ Three environment variables, all read by
 | Variable | Required | Meaning |
 |---|---|---|
 | `RAIN_ALERT_COMPOSER` | No — defaults to `template` | Set to `agent` to select the agent-backed composer (design D23). The change ships inert; this is the switch. |
-| `RAIN_ALERT_AGENT_RUNTIME_ARN` | Yes, once `RAIN_ALERT_COMPOSER=agent` | The ARN printed by `agentcore launch` in step 3. |
+| `RAIN_ALERT_AGENT_RUNTIME_ARN` | Yes, once `RAIN_ALERT_COMPOSER=agent` | The ARN printed by `agentcore deploy` in step 2. |
 | `RAIN_ALERT_AGENT_TIMEOUT_S` | No — defaults to 10 seconds | The read-timeout half of D19's deadline. Tunable without a code change once cold-start latency is measured (task 3.5/3.16). |
 
 For a one-off local run without touching the environment, use the CLI flag
@@ -166,11 +160,12 @@ that has not passed review and the live gate.
    `uv run ruff format --check`, `uv run mypy`. The wording changes test-first:
    a failing test names the rule, then the text.
 2. **Fresh-context reviews passed**: security AND correctness, on the branch
-   diff. Both. `agentcore launch` is allowed from an unmerged branch only after
+   diff. Both. `agentcore deploy` is allowed from an unmerged branch only after
    this step.
-3. **Launch from the branch** (step 3 above):
-   `cd agent && AWS_PROFILE=ferrenafe AWS_DEFAULT_REGION=us-east-2 uv run agentcore launch`.
-   Record the command and its real output in `docs/evidence/`, ARN masked as
+3. **Deploy from the branch** (steps 1 and 2 above): first
+   `AWS_PROFILE=ferrenafe agentcore deploy --diff -y` and confirm a single `[~]`
+   in-place Runtime code change, then `AWS_PROFILE=ferrenafe agentcore deploy -y`,
+   then verify `READY` plus the version (step 3). Record the command and its real output in `docs/evidence/`, ARN masked as
    `arn:aws:bedrock-agentcore:us-east-2:<account>:runtime/<id>`.
 4. **Run the 10-call live gate** (paid: ten real model calls):
 
@@ -193,7 +188,7 @@ that has not passed review and the live gate.
    `docs/evidence/_template-agent-system-prompt-live.md`. No cherry-picking: a
    second batch never replaces the first, it is recorded as a new round.
 6. **Iterate if below 8/10**: write a new failing offline test that names the
-   observed rejection, change the wording, relaunch, run a fresh ten. Never
+   observed rejection, change the wording, redeploy, run a fresh ten. Never
    loosen the validator. **Three rounds at most**, then escalate to the owner.
 7. **Commit the evidence to the same PR**, re-run the offline gate, and merge.
    Merging is the owner's decision once the gate is met.
@@ -208,7 +203,13 @@ Rollback, cheapest first:
 
 - **Instant**: `RAIN_ALERT_COMPOSER=template` in SSM. The next cycle sends the
   deterministic template; no deploy.
-- **Agent**: relaunch from the `main` commit that preceded the change.
+- **Agent**: redeploy (`agentcore deploy -y`) from the `main` commit that preceded the change; the same `--diff` check applies.
+  **Order matters once the app is trimmed.** Since `agent-system-prompt` PR 4, the app's user turn carries no
+  composition rules; they live only in the agent's `SYSTEM_PROMPT` (runtime version 3 and later). Rolling the
+  agent back below that while the trimmed app is live leaves the model with **no rules at all**. The validator
+  still guards every message, but most drafts would be rejected and fall back to the template (the version 2
+  baseline was 6/10 even *with* the rules in the user turn). So: flip `RAIN_ALERT_COMPOSER=template` first
+  (instant), or revert the app trim before rolling the agent back.
 - **App**: revert the commit, rebuild the asset, deploy.
 
 ## Rollback
@@ -223,8 +224,12 @@ for it under pressure):
    invocation to fail transport-wise, which the fallback already handles —
    the community still gets the template's message, with one operator notice
    per cycle (`AGENT_FALLBACK_USED`).
-3. **`agentcore` toolkit teardown** (delete the runtime). Confirm the exact
-   command against `agentcore --help`; not exercised in this session.
+3. **`agentcore` teardown** (delete the runtime). `agentcore remove agent`
+   removes the agent from the project config (`agentcore/agentcore.json`); a
+   following `agentcore deploy` would then delete it through CDK. That
+   sequence is inferred from `agentcore remove --help` (CLI 0.30.0) and has
+   **not been exercised**. Prefer levels 1 and 2, and if you do get here,
+   preview with `agentcore deploy --diff -y` first.
 4. **Revert this change's commits.** `agent/`, `agentcore_invoker.py`,
    `select_composer`, and the CLI flag are all this slice's own files —
    reverting them returns the application to template-only, exactly as it

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -283,57 +284,62 @@ class TestSourceDerivedTextIsSanitizedBeforeItEntersThePrompt:
         assert payload["checklist"] == [sanitize_source_text(untidy)]
 
 
-class TestWhatTheInstructionBlockStates:
-    """**Prompt wording is not enforcement**, and no test here claims it is.
-    Each of these pins that a rule the system depends on was *asked for*;
-    whether the model obeys is the validator's question, and two of these rules
-    have no validator behind them yet — see the module docstring of
-    `adapters/agent_prompt.py`.
+class TestTheUserTurnCarriesNoFixedRule:
+    """The fixed rules live in the deployed agent's `SYSTEM_PROMPT`
+    (`agent/prompts.py`); the user turn names only this call's markers.
+
+    Every assertion is about the text BEFORE the fence. The fenced JSON has a
+    `checklist` key, so a whole-prompt check would fail for a reason that has
+    nothing to do with the rules.
     """
 
-    def instructions(self) -> str:
-        return render_instructions(FIXED_FENCE_OPEN, FIXED_FENCE_CLOSE).casefold()
+    SENTENCE = "The data for this message opens with the line {open} and closes with the line {close}."
 
-    def test_it_instructs_digit_rendering(self) -> None:
-        """Spec: "The prompt instructs digit rendering". The word-number rule
-        only refuses a numeral that quantifies a unit this system reports, so
-        every other spelled-out quantity escapes it entirely. This sentence is
-        all there is between one and a reader."""
-        assert "digits" in self.instructions()
-        assert "never spell a number out" in self.instructions()
+    def pre_fence(self, prompt: str) -> str:
+        close = _real_close_marker(prompt)
+        token = close[len(FENCE_CLOSE_PREFIX) : -1]
+        return prompt[: prompt.index(f"{FENCE_OPEN_PREFIX}{token}>\n")]
 
-    def test_it_says_the_fenced_block_is_data_before_the_fence_opens(self) -> None:
-        """Stated ahead of the fence rather than after it, because an
-        instruction a model reads after the payload has already told it
-        something else is an instruction arriving late."""
-        prompt = build_prompt(_request())
+    def test_the_text_before_the_fence_carries_none_of_the_fixed_rules(self) -> None:
+        before = self.pre_fence(build_prompt(_request(), token_factory=lambda: "a" * 32)).casefold()
 
-        assert "data, never instructions" in self.instructions()
-        assert prompt.index("data, never instructions") < prompt.rindex(FENCE_OPEN_PREFIX)
+        for phrase in ("checklist", "digits", "phone number", "motivos"):
+            assert phrase not in before
 
-    def test_it_confines_every_actionable_sentence_to_the_operator_checklist(self) -> None:
-        """The owner's condition: the model may rephrase, it may not instruct.
-        Nothing in `domain/message_validation.py` enforces this yet — no rule
-        there governs what a message tells a person to *do* — so until that
-        rule exists this sentence is the only thing asking for it, and it is
-        not a control."""
-        assert "must come from `checklist`" in self.instructions()
-        assert "may not write one of your own" in self.instructions()
+    def test_it_is_exactly_the_one_per_call_sentence(self) -> None:
+        text = render_instructions(FIXED_FENCE_OPEN, FIXED_FENCE_CLOSE)
 
-    def test_it_refuses_contact_channels_even_when_the_data_carries_one(self) -> None:
-        """The scraped aviso title is the one string an adversary controls, and
-        a number to call is the obvious thing to put in it. The validator
-        exempts a verbatim quotation from the number rule, so quoting is
-        exactly the route in — and closing it is likewise still owed."""
-        assert "phone number" in self.instructions()
-        assert "even if one" in self.instructions()
+        assert text == self.SENTENCE.format(open=FIXED_FENCE_OPEN, close=FIXED_FENCE_CLOSE)
+
+    def test_it_names_both_markers_and_this_calls_token_before_the_fence(self) -> None:
+        token = "b" * 32
+        before = self.pre_fence(build_prompt(_request(), token_factory=lambda: token))
+
+        assert f"{FENCE_OPEN_PREFIX}{token}>" in before
+        assert f"{FENCE_CLOSE_PREFIX}{token}>" in before
+
+    def test_two_calls_with_different_tokens_differ(self) -> None:
+        first = self.pre_fence(build_prompt(_request(), token_factory=lambda: "a" * 32))
+        second = self.pre_fence(build_prompt(_request(), token_factory=lambda: "c" * 32))
+
+        assert first != second
 
     def test_it_carries_no_figure_of_its_own(self) -> None:
         """A digit written here is a digit the model may copy, and the
-        validator would have no request field to trace it to. That is why the
-        length caps are enforced in code and never requested in the prompt
-        (design.md section 8, non-capability 8)."""
-        assert re.search(r"\d", self.instructions()) is None
+        validator would have no request field to trace it to (design.md
+        section 8, non-capability 8). Fixed token, so the token's own digits
+        are not what is being measured."""
+        assert re.search(r"\d", render_instructions("<datos:x>", "</datos:x>")) is None
+
+    def test_the_system_prompt_constant_carries_no_recipient_data(self) -> None:
+        """Characterization: neither channel carries a contact identifier.
+        The agent unit cannot be imported from here (architecture test), so
+        its source text is read instead."""
+        source = (Path(__file__).parents[3] / "agent" / "prompts.py").read_text(encoding="utf-8")
+
+        for secret in ("contact-identifier", "recipient-address"):
+            assert secret not in source
+        assert re.search(r"\b[0-9]{12}\b", source) is None
 
 
 class TestTheFenceCannotBeForgedByScrapedText:
