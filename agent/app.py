@@ -19,7 +19,8 @@ inevitably drift from. What crosses the wire is already-sanitized, already-
 fenced text. This module adds nothing to it and takes nothing away.
 
 **Prompt wording is not enforcement, and this file is not where the message is
-made safe.** The instructions `build_prompt` writes ask the model to keep
+made safe.** The fixed rules live in `prompts.SYSTEM_PROMPT`, passed to the
+`Agent` as its system prompt; the user turn carries the fenced data. Those rules ask the model to keep
 every actionable sentence to the operator's own checklist, to write every
 quantity in digits, and to treat the fenced block as data. A model can ignore
 all three. What actually holds is `domain/message_validation.py`, on the other
@@ -38,6 +39,7 @@ from typing import Any, Protocol
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from models import CompositionOutput
+from prompts import SYSTEM_PROMPT
 from strands import Agent
 from strands.models import BedrockModel
 
@@ -85,9 +87,8 @@ TEMPERATURE = 0.2
 #: The one key the invocation payload must carry. The application's invoker
 #: writes it, as `PROMPT_PAYLOAD_KEY`.
 #:
-#: **Nothing pins the two together yet.** A contract file asserted from both
-#: suites is planned and belongs to the composer change; until it exists, a
-#: rename on either side is caught by nothing.
+#: Pinned against the application's side by `contracts/composer-fence.json`,
+#: asserted from both suites (`agent/tests/test_fence_contract.py`).
 PROMPT_KEY = "prompt"
 
 app = BedrockAgentCoreApp()
@@ -116,8 +117,11 @@ def build_agent() -> Agent:
     property "this agent reaches no side effect" is the reason this whole
     capability was acceptable, and a property that depends on a default is one
     a later version of the library can change without anyone noticing.
+
+    The fixed rules travel in the system channel (`prompts.SYSTEM_PROMPT`), so
+    the caller controls only the data in the user turn.
     """
-    return Agent(model=build_model(), tools=[])
+    return Agent(model=build_model(), tools=[], system_prompt=SYSTEM_PROMPT)
 
 
 #: Built once at import rather than per invocation, so a deploy that cannot

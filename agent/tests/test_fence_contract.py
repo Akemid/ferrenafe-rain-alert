@@ -12,8 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from app import PROMPT_KEY
+from prompts import SYSTEM_PROMPT
 
 CONTRACT_PATH = Path(__file__).resolve().parents[2] / "contracts" / "composer-fence.json"
 
@@ -27,12 +27,7 @@ def test_the_payload_key_matches_the_contract() -> None:
     assert _contract()["prompt_key"] == PROMPT_KEY
 
 
-@pytest.mark.xfail(
-    strict=True, reason="SYSTEM_PROMPT lands in PR 3 (agent-system-prompt tasks 3.2); 3.4 removes this marker"
-)
 def test_the_system_prompt_names_the_contract_markers() -> None:
-    from prompts import SYSTEM_PROMPT  # type: ignore[import-not-found]
-
     contract = _contract()
     placeholder = str(contract["prompt_placeholder"])
     assert str(contract["open_marker"]).format(token=placeholder) in SYSTEM_PROMPT

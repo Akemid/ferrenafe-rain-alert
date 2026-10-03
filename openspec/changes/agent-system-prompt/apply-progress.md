@@ -40,3 +40,17 @@ Design notes: run_gate uses real build_prompt, parse_candidate, validate_message
 | `--from-lambda` tests with a fake Lambda client; runbook uses `read -rs` for the ARN | characterization: passed at once (path already existed) | 8940efe |
 
 Gotcha: a doc comment containing a 12-digit example id tripped tests/hygiene (it scans history); fixed by rewriting the 4 unpushed commits (filter-branch) and dropping refs/original + gc. Never write a literal 12-digit id, even as an example.
+
+## Batch 3 (PR 3 offline, branch feat/agent-sp-3-system-prompt): tasks 3.1-3.9 [x]; 3.10+ not run
+
+| Task | Test | RED (observed) | GREEN |
+|---|---|---|---|
+| 3.1/3.2 | `agent/tests/test_prompts.py` digit-free | `ModuleNotFoundError: No module named 'prompts'` | stub `"x"` passed it trivially (noted), triangulated by the full text |
+| 3.3/3.4/3.4a | one test per rule (14 tests incl. date/city/checklist/markers/SENAMHI) | against stub `"x"`: 14 failed, each on its own phrase (e.g. `'If you mention SENAMHI, do it in one of two ways only' in 'x'`) | `agent/prompts.py` filled with D49 incl. SENAMHI bullet: 15 passed |
+| 3.4 | `agent/tests/test_fence_contract.py` | xfail(strict) marker removed once prompts.py existed | passes (real pass, not xpass) |
+| 3.5/3.6 | `test_the_built_agent_carries_the_system_prompt` | `assert None == 'You write one community...'` (system_prompt None) | `build_agent` passes `system_prompt=SYSTEM_PROMPT`; docstring/PROMPT_KEY comment updated |
+| 3.7 | transitional old-rules user turn | characterization: passed at once | |
+| 3.8 | hostile title only in user turn | characterization: passed at once | |
+| side effect | `tests/architecture/test_layer_boundaries.py` pinned agent file list `["app.py","models.py"]` -> added `prompts.py` (intended; failed first) | | |
+
+SYSTEM_PROMPT == D49 block from design.md: verified by script (regex-extracted block + "\n" == SYSTEM_PROMPT -> True). Gate: pytest 1385 passed; agent 52 passed; ruff, format, mypy clean.
