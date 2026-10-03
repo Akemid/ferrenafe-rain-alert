@@ -96,13 +96,13 @@ Satisfies: spec requirements "constructed with a system prompt", "no digit", "de
 - [x] 3.7 [RED/CHAR] Transitional compatibility: a hand-written spy model receives a user turn that still contains the old rule text; `compose` runs the same parse path and the outcome depends only on the programmed draft (spec "Duplicated rules are harmless"). Also assert the payload shape stays `{"prompt": ...}`. Record honestly whether it failed first or passed at once.
 - [x] 3.8 [CHAR] Hostile title only appears in the fenced user turn and never in `SYSTEM_PROMPT` (spec "Untrusted data stays only in the user turn"). The system prompt is a constant, so assert it contains none of the hostile fixture string.
 - [x] 3.9 PR-3 gate (offline): the five commands plus `uv run pytest tests/hygiene` after `git add`. `cd infra && npm test` NOT required (infra untouched; run only if a file under `infra/` changed).
-- [ ] 3.10 **Security review** (fresh context) on the PR-3 branch diff. Scope: the prompt carries no secret, ARN, account id or token; instructions cannot be overridden by the data section as worded; the validator is untouched.
-- [ ] 3.11 **Correctness review** (fresh context) on the same diff: the prompt text equals D49 as approved, every rule in the spec has its test, the contract tests are not vacuous. Both reviews MUST pass before 3.12 (owner, 2026-10-03). Record both outcomes.
+- [x] 3.10 **Security review** (fresh context) on the PR-3 branch diff. Scope: the prompt carries no secret, ARN, account id or token; instructions cannot be overridden by the data section as worded; the validator is untouched.
+- [x] 3.11 **Correctness review** (fresh context) on the same diff: the prompt text equals D49 as approved, every rule in the spec has its test, the contract tests are not vacuous. Both reviews MUST pass before 3.12 (owner, 2026-10-03). Record both outcomes.
 
 ### Operator and live phase (not run by sdd-apply; PR 3 branch)
 
-- [ ] 3.12 [Owner, AWS] From the PR 3 branch, only after 3.10 and 3.11 pass: `cd agent && AWS_PROFILE=ferrenafe AWS_DEFAULT_REGION=us-east-2 uv run agentcore launch`. Record the command and real output in `docs/evidence/` (ARN masked).
-- [ ] 3.13 [Owner, AWS] Gate: `uv run python scripts/agent_live_acceptance.py --runs 10`. Record ALL 10 outcomes, failures included, in `docs/evidence/<date>-agent-system-prompt-live.md` using the 2.8 template. No cherry-picking (D53). Exit 0 requires at least 8 of 10 accepted by the unchanged validator.
+- [x] 3.12 [Owner, AWS] From the PR 3 branch, only after 3.10 and 3.11 pass: `cd agent && AWS_PROFILE=ferrenafe AWS_DEFAULT_REGION=us-east-2 uv run agentcore launch`. Record the command and real output in `docs/evidence/` (ARN masked).
+- [x] 3.13 [Owner, AWS] Gate: `uv run python scripts/agent_live_acceptance.py --runs 10`. Record ALL 10 outcomes, failures included, in `docs/evidence/<date>-agent-system-prompt-live.md` using the 2.8 template. No cherry-picking (D53). Exit 0 requires at least 8 of 10 accepted by the unchanged validator.
 - [ ] 3.14 [Owner] If fewer than 8/10: iterate the D49 wording TEST-FIRST (a new failing offline test naming the observed rejection, then the wording change, then relaunch and a fresh 10). Never loosen the validator. Maximum 3 rounds, then escalate to the owner. Record each round. Re-check SSM checklist equals `CHECKLIST` before the gate if SSM was edited.
 - [ ] 3.15 [Owner] Commit the evidence to the PR 3 branch, re-run the gate commands, then merge PR 3. Merging is the owner's decision after the gate is met.
 

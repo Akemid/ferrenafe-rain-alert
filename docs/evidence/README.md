@@ -63,3 +63,7 @@ happened.
   — fill-in template for the agent system prompt's 10-call live gate
   (`scripts/agent_live_acceptance.py`): date, commit, command, ten outcome
   rows, tally, rounds, masked ARN, verdict.
+- [`2026-10-03-agent-system-prompt-live.md`](2026-10-03-agent-system-prompt-live.md)
+  — the composer agent's system prompt deployed (runtime version 3, in-place
+  update): live gate 10/10 accepted by the unchanged validator, against a 6/10
+  baseline; a level-label spelling issue the validator does not catch.
