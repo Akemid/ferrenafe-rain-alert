@@ -117,3 +117,24 @@ run 10: ACCEPTED rules=[-] title='Ferreñafe: Nivel inminent' body='Alerta por p
 10/10 accepted (minimum 8): PASS
 ```
 
+## App deploy (PR 4, after merge)
+
+On `main` at `94a2140`, `infra/scripts/build-lambda.sh` rebuilt the asset ("no compiled artifact found"). The
+rebuilt asset holds the trimmed user turn: its new sentence is present and the old rule text is absent. `cdk diff ScheduledCycleStack`
+showed exactly one change, the `ScheduledCycleFunction` code (`[~] Code.S3Key`). It showed no schedule,
+relay or IAM change, because both switches now live in `infra/cdk.json`. `cdk deploy` published the new code
+in 19 s: `CodeSha256` prefix `I6nh2cDgzRIW`, LastModified 2026-10-03T06:50:00Z.
+
+Manual cycle invoke (`InvocationType=Event`, 202) at 06:50:31Z, 2.8 s:
+
+```
+{"event":"senamhi_relay","degraded":0,"reason":null,"version_id":"ttPfHO0QZArAmSND9UGNB0EyzD_5R6eZ","last_modified":"2026-10-03T06:00:04Z","age_seconds":3029,"skew_seconds":-4}
+senamhi_status: available   level: imminent   (warning level: orange)
+decision: "not an escalation over prior level imminent", send: false
+```
+
+The alert for this window was recorded at 04:43Z, so deduplication correctly declined to resend, and the
+agent was not invoked on this run. The agent path with the trimmed user turn is covered by Round 1b above
+(10/10). The relay object the cycle read was pushed by the LaunchAgent at 06:00:04Z on its own. This is the
+first observed scheduled `StartCalendarInterval {Minute: 0}` push, not the `RunAtLoad` one.
+
