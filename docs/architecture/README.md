@@ -1,6 +1,6 @@
 # Rain alert core: what every part of the code does
 
-This is the entry point for understanding the code in `src/rain_alert/`. It explains what the system decides, the seven steps it runs to decide it, the four layers the code is split into, and what each of the 34 source files is for. Read it on its own if you want the whole picture in a few minutes. Follow the links at the end if you need a specific layer in depth.
+This is the entry point for understanding the code in `src/rain_alert/`. It explains what the system decides, the seven steps it runs to decide it, the four layers the code is split into, and what each of the 50 source files is for. Read it on its own if you want the whole picture in a few minutes. Follow the links at the end if you need a specific layer in depth.
 
 ## What the system decides
 
@@ -23,18 +23,26 @@ The verdict is one of three levels defined in `Level`.
 | `prepare` | Elevated risk with lead time. Preparation is warranted. |
 | `imminent` | Flooding rain is expected inside the near horizon. |
 
-## What this code does not do yet
+## What is deployed, and what is not
 
-State this plainly before reading further, because the design documents describe a larger system than the one that exists.
+The cycle runs on AWS in `us-east-2` today, on a schedule, and it composes its message with a language model. It does not deliver that message to anyone. Read this before the rest, because the older design documents describe a different system in places.
 
-- **No cloud.** There is no Lambda, no DynamoDB, no Parameter Store, no EventBridge. Storage is a local JSON file.
-- **No scheduler.** Nothing runs the cycle on a timer. A person runs it from a terminal.
-- **No language model.** The message composer in this change is a deterministic template. No model is called anywhere.
-- **No delivery.** Nothing is transmitted to any recipient. The only notifier that exists prints to a stream.
+| Piece | Where it is defined | What it is |
+|---|---|---|
+| `ferrenafe-scheduled-cycle` stack | `infra/lib/scheduled-cycle-stack.ts` | An EventBridge Scheduler cron at 00, 06, 12 and 18 in `America/Lima`, invoking the Lambda `ferrenafe-rain-alert-cycle` (Python 3.12, ARM64). It also owns the DynamoDB table `ferrenafe-alerts-sent`, the SENAMHI relay bucket, a CloudTrail trail on that bucket, an SNS alarms topic and the CloudWatch alarms. |
+| `ferrenafe-public-snapshot` stack | `infra/lib/public-snapshot-stack.ts` | A public S3 bucket holding one object, `status.json`, plus the `SnapshotWriter` policy that lets the cycle replace it. |
+| AgentCore stack | `agentcore/`, code in `agent/` | The AgentCore Runtime `rainalert`: a Strands agent on Bedrock Claude Haiku 4.5 (`agent/app.py`), which only drafts message text. |
+| Relay producer | `ops/launchd/pe.ferrenafe.relay-push.plist`, `src/rain_alert/entrypoints/relay_push.py` | A macOS LaunchAgent outside AWS that runs `rain-alert-relay-push` every hour, because SENAMHI does not answer AWS. |
+| Public page | `web/`, `amplify.yml` | An Astro page hosted on Amplify that reads `status.json`. |
 
-Those arrive in changes 2 and 3 of the `core-alert-cycle` rollout. Everything in `src/` today is the decision engine and the calibration harness around it.
+Four things hold the deployed shape together.
 
-The design documents under `docs/superpowers/` and the planning artifacts under `openspec/` describe the full three-change system. Where they and the code disagree, the code is what runs, and this guide follows the code.
+- **The relay.** The Lambda never fetches SENAMHI. The producer puts the page into the relay bucket, and `S3RelayReader` and `RelayWarningProvider` read it back. An object that is 3 hours old or more is refused as `STALE_RELAY`, and the cycle degrades to forecast-only. See [ADR 0003](../decisions/0003-senamhi-s3-relay.md) and `docs/evidence/2026-10-03-senamhi-relay-live.md`. `infra/cdk.json` sets `scheduleEnabled` and `relayEnabled` to `"true"`.
+- **Configuration.** Seven SSM parameters under `/ferrenafe/rain-alert/` are read by `SsmConfigRepository`. They are seeded by hand (`docs/runbooks/seed-ssm-parameters.md`), not created by the CDK. The `composer` parameter switches between the agent and the template.
+- **The agent only writes words.** The risk level is decided by `RiskEvaluator` before the agent is called. `AgentBackedComposer` computes the template message first, validates the agent's draft with `validate_message`, and sends the template instead whenever the draft is rejected or the call fails.
+- **No delivery.** The only notifier is `ConsoleNotifier`, which writes to the Lambda's log and cannot transmit. Nothing reaches a resident by message. The public channel is the page above, which shows the last published snapshot.
+
+The design documents under `docs/superpowers/` and the planning artifacts under `openspec/` describe the planned system. Where they and the code disagree, the code is what runs, and this guide follows the code.
 
 ## The cycle, in seven steps
 
@@ -46,11 +54,11 @@ The design documents under `docs/superpowers/` and the planning artifacts under 
 4. **Evaluate outage.** `evaluate_outage` compares which sources are down now against the outage record persisted from the last run. It returns operator notices to send and the next state to store. Notices are sent, and state is written only when it changed.
 5. **Evaluate risk.** `RiskEvaluator.evaluate` walks five ordered branches, most severe first, and returns a `RiskAssessment` carrying the level, the affected window, and structured reasons.
 6. **Apply the dedup policy.** `AlertPolicy.decide` queries prior sent alerts for the overlapping window and delegates to the pure `should_send` rule.
-7. **Compose, notify, record.** Only if step 6 authorised a send, and step 4 did not suppress community alerts. The composer produces the Spanish message, the notifier receives it, and an `AlertRecord` is written so step 6 of the next run can see it.
+7. **Compose, notify, record.** Only if step 6 authorised a send, and step 4 did not suppress community alerts. The composer produces the Spanish message (the template, or the agent's draft once it passes validation), the notifier receives it, and an `AlertRecord` is written so step 6 of the next run can see it.
 
-Every run returns a `CycleResult`, whether or not anything was sent. The CLI renders that result. `CycleResult.message_request` is always populated even on a non-send, which is what lets the CLI print a message preview without invoking any composer.
+Every run returns a `CycleResult`, whether or not anything was sent. The CLI renders that result, and `run_once` in `src/rain_alert/entrypoints/run_once.py` (shared by the CLI and the Lambda) publishes the public snapshot after the cycle, where a failed publish is logged and does not fail the run. `CycleResult.message_request` is always populated even on a non-send, which is what lets the CLI print a message preview without invoking any composer.
 
-The system diagram in `docs/rain-alert-core-architecture.drawio` shows the target cloud topology from the approved design. It is the shape the code is preparing for, not the shape it runs in today. The seven numbered pipeline steps on that diagram are the design specification's numbering, which differs slightly from the code's: the code inserts outage evaluation as step 4, and message validation is not part of this change.
+The system diagram in `docs/rain-alert-core-architecture.drawio` is the original target topology from the approved design, drawn before the deployment existed. It is not a picture of what is deployed: the table above is. The seven numbered pipeline steps on that diagram are the design specification's numbering, which differs slightly from the code's: the code inserts outage evaluation as step 4.
 
 ## The layers, and why they are separated
 
@@ -67,8 +75,8 @@ entrypoints  ->  application  ->  ports  ->  domain
 | Domain | `src/rain_alert/domain/` | Types, rules, the evaluator, the template | Standard library and other domain modules only |
 | Ports | `src/rain_alert/ports/` | Eight `Protocol` classes: seven describing what the use case needs, plus `SnapshotPublisher` for the entry point | `typing`, `collections.abc`, `datetime`, `rain_alert.domain` |
 | Application | `src/rain_alert/application/` | The use case, the dependency bundle, the policy shell | Ports and domain |
-| Adapters | `src/rain_alert/adapters/` | HTTP, HTML scraping, JSON persistence, console output | Anything |
-| Entrypoints | `src/rain_alert/entrypoints/` | The CLI and the object graph it builds | Anything |
+| Adapters | `src/rain_alert/adapters/` | HTTP, HTML scraping, the S3 relay, the agent, DynamoDB, SSM, S3 publishing, console output, local JSON persistence | Anything |
+| Entrypoints | `src/rain_alert/entrypoints/` | The CLI, the Lambda handler, the relay producer and the object graphs they build | Anything |
 
 The separation buys three things a reader should look for.
 
@@ -108,6 +116,9 @@ These are the decisions that are not visible from the code shape alone. Each one
 | `risk.py` | `RiskEvaluator`, five ordered branches from most severe to least, each producing its own reasons. |
 | `dedup.py` | `should_send`, the pure rule deciding whether an assessment authorises a new community send. |
 | `outage.py` | `evaluate_outage`, the dual-outage state machine that returns notices and the next state as data. |
+| `snapshot.py` | `build_snapshot`, the pure document the public page reads, including its Spanish labels. |
+| `sanitize.py` | `sanitize_source_text`, the one sanitizer every source-derived free text passes through before it is rendered. |
+| `message_validation.py` | `validate_message`, the rules a drafted message must satisfy before it is sent. |
 | `messages.py` | `MessageRequest`, `AlertMessage`, `AlertRecord`, `OutageRecord`, `OperatorNotice` and the two summary types the composer receives. |
 | `template.py` | The deterministic `MessageComposer`, which renders the same structured reasons into neutral Spanish with local times. |
 
@@ -136,9 +147,16 @@ These are the decisions that are not visible from the code shape alone. Each one
 | `senamhi_scraper.py` | The warnings scraper: header-signature table location, in-force detection, relevance filtering, and loud failure. |
 | `senamhi_relay.py` | `RelayWarningProvider`: reads the SENAMHI page from one S3 object, refuses a stale one, and parses it with the scraper's parser. |
 | `s3_relay_reader.py` | `S3RelayReader` and `UnconfiguredRelayReader`: fetch and validate that object, and name every failure. |
+| `agent_composer.py` | `AgentBackedComposer`: asks the agent for a draft, validates it, and falls back to the template. |
+| `agent_invoker.py` | The `AgentInvoker` seam, so the offline suite needs no model. |
+| `agentcore_invoker.py` | `BedrockAgentCoreInvoker`, the real invoker of the AgentCore Runtime. |
+| `agent_prompt.py` | `build_prompt`, the pure function that turns a `MessageRequest` into the agent's prompt. |
+| `dynamodb_alert_repository.py` | `DynamoDbAlertRepository`, the `AlertRepository` over `ferrenafe-alerts-sent`. |
+| `ssm_config_repository.py` | `SsmConfigRepository`, the `ConfigRepository` over the seven SSM parameters. |
+| `s3_snapshot_publisher.py` | `S3SnapshotPublisher`, which writes `status.json` to the public bucket. |
 | `senamhi_classification.py` | The SENAMHI Spanish title vocabulary translated into domain `Phenomenon` and `Zone` terms, by word-boundary regular expressions over normalized text. |
 | `console_notifier.py` | `ConsoleNotifier`, which prints community alerts and operator notices under distinct prefixes and cannot transmit. |
-| `serialization.py` | The persisted document shape for alerts, outages and reasons, carried forward unchanged for change 3's DynamoDB adapter. |
+| `serialization.py` | The persisted document shape for alerts, outages and reasons, which `DynamoDbAlertRepository` stores unchanged. |
 
 ### Local adapters, `src/rain_alert/adapters/local/`
 
@@ -149,6 +167,7 @@ These are the decisions that are not visible from the code shape alone. Each one
 | `static_contact_repository.py` | `StaticContactRepository`: one synthetic local contact whose handle is literally `stdout`, carrying no personal data. |
 | `in_memory_alert_repository.py` | `InMemoryAlertRepository`: the whole key-range query rule, with no I/O. |
 | `json_alert_repository.py` | `JsonFileAlertRepository`: the same store persisted atomically to one gitignored JSON file, so separate process invocations share state. |
+| `json_file_snapshot_publisher.py` | `JsonFileSnapshotPublisher`: the same snapshot written to a local file instead of S3. |
 | `offline_sources.py` | `FileHtmlFetcher` and `OfflineOpenMeteoProvider`, which swap the fetch leaf only so the real parsers still do the work. |
 
 ### Entrypoints, `src/rain_alert/entrypoints/`
@@ -156,7 +175,10 @@ These are the decisions that are not visible from the code shape alone. Each one
 | File | What it is for |
 |---|---|
 | `__init__.py` | Package marker. |
-| `wiring.py` | `build_local_deps`, the real object graph, which can only construct `ConsoleNotifier`. |
+| `wiring.py` | `build_local_deps` and `build_cloud_deps`, the real object graphs, plus the composer, warning-provider and snapshot-publisher selection. Both can only construct `ConsoleNotifier`. |
+| `run_once.py` | `run_once`, the sequence the CLI and the Lambda share: load configuration, run the cycle, publish the snapshot. |
+| `lambda_handler.py` | `handler`, the Lambda entry point the schedule invokes. |
+| `relay_push.py` | The `rain-alert-relay-push` command: fetches the SENAMHI page outside AWS and replaces the relay object. |
 | `cli.py` | The `rain-alert-cycle` command: argument parsing, the operator text rendering, and the `--json` calibration document. |
 
 ## Running it
@@ -171,7 +193,7 @@ uv run ruff format --check .
 uv run mypy
 ```
 
-At the time of writing, `uv run pytest` reports 549 passed and 15 deselected. The deselected tests are the live-network canaries, which are opt-in by the `addopts = "-q -m 'not integration'"` setting in `pyproject.toml`.
+At the time of writing, `uv run pytest` reports 1351 passed and 15 deselected. The deselected tests are the live-network canaries, which are opt-in by the `addopts = "-q -m 'not integration'"` setting in `pyproject.toml`.
 
 ```bash
 uv run pytest -m integration
