@@ -78,7 +78,7 @@ Satisfies: spec "Live acceptance gate" tooling. Design D52, D53, D54 (amended).
 - [x] 2.7 [Docs] `docs/runbooks/agentcore-deploy.md`: add "Changing the system prompt" following `docs/runbooks/README.md`: the ordered procedure from D54 as amended (offline gate green; security AND correctness reviews passed; `agentcore launch` from the branch; 10-call gate; evidence in the same PR; merge; app deploy via `infra/scripts/build-lambda.sh`, `cdk diff`, `cdk deploy`); the 3-round iteration cap and escalation; rollback options. Placeholders `<account>` and `<arn>` only.
 - [x] 2.8 [Docs] Create `docs/evidence/_template-agent-system-prompt-live.md` or the template section the evidence README prescribes: date, commit, command, 10 rows (rule ids, accepted yes/no), tally, rounds, masked ARN, verdict. Read `docs/evidence/README.md` first and follow it.
 - [x] 2.9 PR-2 gate: the five commands plus `uv run pytest tests/hygiene` after `git add`. Confirm `uv run python scripts/agent_live_acceptance.py --help` exits 0 offline.
-- [ ] 2.10 **Security review** (fresh context) on the PR-2 branch diff. Scope: the script never prints the ARN, token or credentials; no network at import; no account id in the template.
+- [ ] 2.10 **Security review** (fresh context) on the PR-2 branch diff. Scope: the script never prints the ARN, token or credentials; no network at import; no account id in the template. _Review fixes applied (76d1c3d, c966f04, 03d1711, 8940efe); fresh re-review pending._
 
 ---
 

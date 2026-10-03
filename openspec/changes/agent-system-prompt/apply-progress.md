@@ -29,3 +29,14 @@ TDD cycle evidence:
 | 2.9 gate | n/a | pytest 1376 passed; agent 33 passed 1 xfailed; ruff, format, mypy clean; hygiene 61 passed; `--help` exits 0 offline | |
 
 Design notes: run_gate uses real build_prompt, parse_candidate, validate_message (injectable for tests); region passed explicitly (default us-east-2, AWS_DEFAULT_REGION override); ARN from RAIN_ALERT_AGENT_RUNTIME_ARN or `--from-lambda` (get_function_configuration on ferrenafe-rain-alert-cycle). Imports private `_fence_token` from agent_prompt for the default token factory.
+
+## Batch 2 review fixes (task 2.10 annotated "review fixes applied"; checkbox left open)
+
+| Fix | RED (observed) | Commit |
+|---|---|---|
+| `_mask` also masks a bare 12-digit id as `<account>` | `AssertionError: the bare id still in the masked text` | 76d1c3d |
+| `main()` masks lookup/invoker-construction failures, one stderr line, exit 2 | the RuntimeError (with role ARN + account id) escaped `main()` | c966f04 |
+| `--runs` fixed at 10 (other value: usage error, exit 2); 7/10 exit 1, 8/10 exit 0 | `DID NOT RAISE SystemExit` for `--runs 20` | 03d1711 |
+| `--from-lambda` tests with a fake Lambda client; runbook uses `read -rs` for the ARN | characterization: passed at once (path already existed) | 8940efe |
+
+Gotcha: a doc comment containing a 12-digit example id tripped tests/hygiene (it scans history); fixed by rewriting the 4 unpushed commits (filter-branch) and dropping refs/original + gc. Never write a literal 12-digit id, even as an example.
