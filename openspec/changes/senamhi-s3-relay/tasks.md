@@ -300,7 +300,7 @@ V.10, V.11 recorded.
 - [x] 5.4 `docs/architecture/adapters.md` -- document `RelayWarningProvider`, `S3RelayReader`, the producer entrypoint and the single-line `on_read` record; update the entrypoints doc for `select_warning_provider`.
 - [x] 5.5 Correct stale docs found by `git grep` for "SENAMHI" reachability claims in `docs/` and `README` only where the evidence file contradicts them (edit narrowly, cite the evidence).
 - [x] 5.6 PR-5 gate: `uv run pytest tests/hygiene` (account id regex, docstring citations) after `git add`; proofread that every runbook command matches `contracts/senamhi-relay.json` and the CDK outputs exactly.
-- [ ] 5.7 **Security review** (fresh context) on the PR-5 diff. Scope: no account id, ARN, access key id, secret, email or bucket name; Keychain commands show placeholders only.
+- [ ] 5.7 **Security review** (fresh context) on the PR-5 diff. Scope: no account id, ARN, access key id, secret, email or bucket name; Keychain commands show placeholders only. Note: review fixes applied.
 
 ---
 
