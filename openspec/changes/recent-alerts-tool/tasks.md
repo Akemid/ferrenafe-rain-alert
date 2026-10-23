@@ -30,14 +30,14 @@ Tags: [DEMO] needed for the live before/after. [REQ] invariant, not cuttable. [P
 ## Phase 1: Agent tool (PR 1) [DEMO]
 
 - [ ] 1.0 [OWNER] Owner approves D9 prompt wording before 1.7.
-- [ ] 1.1 Create `contracts/recent-alerts.json` (table, `ALERT#` prefix, 7 d, max n 5, partitions, fixture cases); add `history_key` + schema_version 2 to `contracts/composer-fence.json`. RED: fence contract test.
-- [ ] 1.2 RED/GREEN `agent/tests/test_history.py` + `agent/history.py` binding parser: invalid or missing -> empty history; partition never a tool arg.
-- [ ] 1.3 RED/GREEN `summarize` in `agent/history.py` vs fixture (`agent/tests/test_history_contract.py`): Lima dates, gaps, same-day, `sent_at >= as_of`, 7 d; facts `consecutive_days`, `previous_level`, `escalated`, `trend`.
-- [ ] 1.4 RED/GREEN DDB reader (botocore Stubber): projected Query on `ALERT#<partition>`, no title/body/mm; client timeouts 1 s/2 s, 2 attempts.
-- [ ] 1.5 RED/GREEN tool factory: `n` clamped 1..5, schema only `n`, per-request result cache, `ClientError`/`BotoCoreError`/`KeyError`/`ValueError` -> empty history, no write calls.
-- [ ] 1.6 RED/GREEN `agent/app.py`: `MODEL` at import, new `Agent` per request, `agent(prompt, structured_output_model=...)`, payload `history`; update `agent/tests/test_app.py` (`tool_names == ["get_recent_alerts"]`, two-call isolation).
-- [ ] 1.7 RED/GREEN `agent/prompts.py` D9 amendment (tool-first, digits, no decimals); remove "no tools" docstrings.
-- [ ] 1.8 PR 1 gate: agent suite, `uv run pytest`, ruff, mypy.
+- [x] 1.1 Create `contracts/recent-alerts.json` (table, `ALERT#` prefix, 7 d, max n 5, partitions, fixture cases); add `history_key` + schema_version 2 to `contracts/composer-fence.json`. RED: fence contract test.
+- [x] 1.2 RED/GREEN `agent/tests/test_history.py` + `agent/history.py` binding parser: invalid or missing -> empty history; partition never a tool arg.
+- [x] 1.3 RED/GREEN `summarize` in `agent/history.py` vs fixture (`agent/tests/test_history_contract.py`): Lima dates, gaps, same-day, `sent_at >= as_of`, 7 d; facts `consecutive_days`, `previous_level`, `escalated`, `trend`.
+- [x] 1.4 RED/GREEN DDB reader (botocore Stubber): projected Query on `ALERT#<partition>`, no title/body/mm; client timeouts 1 s/2 s, 2 attempts.
+- [x] 1.5 RED/GREEN tool factory: `n` clamped 1..5, schema only `n`, per-request result cache, `ClientError`/`BotoCoreError`/`KeyError`/`ValueError` -> empty history, no write calls.
+- [x] 1.6 RED/GREEN `agent/app.py`: `MODEL` at import, new `Agent` per request, `agent(prompt, structured_output_model=...)`, payload `history`; update `agent/tests/test_app.py` (`tool_names == ["get_recent_alerts"]`, two-call isolation).
+- [ ] 1.7 (BLOCKED on 1.0; wording drafted, awaiting owner approval) RED/GREEN `agent/prompts.py` D9 amendment (tool-first, digits, no decimals); remove "no tools" docstrings.
+- [ ] 1.8 (gate green except 1.7 pending; re-run after 1.7) PR 1 gate: agent suite, `uv run pytest`, ruff, mypy.
 
 ## Phase 2: IAM + seed (PR 2) [DEMO]
 
