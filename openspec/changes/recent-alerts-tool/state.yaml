@@ -1,0 +1,147 @@
+schema: spec-driven
+change: recent-alerts-tool
+title: Recent Alerts Tool (agent continuity via get_recent_alerts)
+created: 2026-10-23
+updated: 2026-10-23
+
+artifact_store:
+  mode: hybrid
+  openspec_root: openspec/changes/recent-alerts-tool
+  engram_prefix: sdd/recent-alerts-tool
+
+execution:
+  mode: auto
+  delivery_strategy: ask-on-risk
+  chain_strategy: null  # asked only if tasks recommends chained PRs
+  strict_tdd: true
+
+context:
+  purpose: >-
+    AWS Builder Center hackathon "Give your Agent a Tool", deadline
+    2026-10-26 13:00 PDT.
+  baseline:
+    tag: baseline-no-tools
+    commit: 94a2140
+    runtime: v3
+    scenario: >-
+      3-day escalation, yellow 14.2 mm -> orange 31.5 mm -> red 68.4 mm;
+      9 messages, none reference prior days. AFTER reuses the same inputs.
+
+phases:
+  explore:
+    status: done
+    artifact: openspec/changes/recent-alerts-tool/explore.md
+    engram_topic_key: sdd/recent-alerts-tool/explore
+    engram_saved: true
+    note: >-
+      Materialized to file from Engram observation #3123 during the proposal
+      phase; the explore phase could not write files.
+  proposal:
+    status: done
+    artifact: openspec/changes/recent-alerts-tool/proposal.md
+    engram_topic_key: sdd/recent-alerts-tool/proposal
+    engram_saved: true
+  spec:
+    status: done
+    depends_on: [proposal]
+    artifact: openspec/changes/recent-alerts-tool/specs/
+    capabilities_written:
+      - agent-alert-history
+      - agent-message-composition
+      - alert-cycle
+    engram_topic_key: sdd/recent-alerts-tool/spec
+    engram_saved: true
+  design:
+    status: done
+    depends_on: [proposal]
+    artifact: openspec/changes/recent-alerts-tool/design.md
+    engram_topic_key: sdd/recent-alerts-tool/design
+    engram_saved: true
+    resolved_open_decisions:
+      - id: partition-binding-mechanism
+        choice: >-
+          Payload field `history` {partition, as_of, current_level,
+          current_warning_level} beside `prompt`, written by the app's invoker
+          from ContinuitySummary; `history_key` added to composer-fence.json
+          (schema_version 2). Env var rejected (would redirect production
+          reads on the shared runtime). Model never sees the partition.
+  tasks:
+    status: done
+    depends_on: [spec, design]
+    artifact: openspec/changes/recent-alerts-tool/tasks.md
+    engram_topic_key: sdd/recent-alerts-tool/tasks
+    engram_saved: true
+    forecast: "~1300-1700 lines, High risk, chained PRs recommended, decision pending (chain_strategy)"
+  apply:
+    status: pending
+    depends_on: [tasks]
+    artifact: null
+    engram_topic_key: sdd/recent-alerts-tool/apply-progress
+  verify:
+    status: pending
+    depends_on: [apply]
+    artifact: null
+    engram_topic_key: sdd/recent-alerts-tool/verify-report
+  archive:
+    status: pending
+    depends_on: [verify]
+    artifact: null
+
+capabilities:
+  new:
+    - agent-alert-history
+  modified:
+    - agent-message-composition  # not yet in openspec/specs; lives in composer-agent and agent-system-prompt changes
+    - alert-cycle
+
+reopened_decisions:
+  - id: agent-has-no-tools
+    source: openspec/changes/composer-agent/state.yaml
+    reopened: 2026-10-23
+    evidence: >-
+      The only blocker (alert store was a local JSON file, unreadable from
+      AgentCore) was removed by scheduled-cycle, which moved the store to
+      DynamoDB table ferrenafe-alerts-sent (deployed 2026-10-01). The agent
+      gains exactly one read-only tool.
+  - id: no-continuity-tool
+    source: openspec/changes/composer-agent/state.yaml
+    reopened: 2026-10-23
+    evidence: Deferred "to change 3"; change 3 (scheduled-cycle) has shipped.
+
+preserved_decisions:
+  - no-warning-detail-tool  # stays dropped
+  - agent-runs-only-after-authorization  # LLM never decides whether to alert
+  - strict-number-validation  # continuity figures must be traceable to MessageRequest
+  - pydantic-boundary  # agent/ does not import rain_alert
+
+assumptions_pending_owner_review:
+  - id: iam-snapshotwriter-pattern
+    detail: >-
+      ManagedPolicy AlertHistoryReader (dynamodb:Query on table ARN,
+      LeadingKeys condition) in ScheduledCycleStack, ARN output, attached to
+      the CLI-provisioned AgentCore role via a runbook step. Moving the grant
+      into CDK is a non-goal.
+  - id: d49-continuity-amendment
+    detail: >-
+      Narrow, continuity-only amendment to "do not describe anything as
+      already having happened", re-gated by the live acceptance script.
+  - id: partition-never-model-chosen
+    detail: >-
+      The city partition is never a tool argument. The demo uses a separate
+      demo partition and never writes fake records into the real city
+      partition (a fake record suppresses real alerts up to 72 h).
+
+open_decisions:
+  - id: partition-binding-mechanism
+    owner: sdd-design
+    detail: >-
+      Env var on the runtime vs. a field carried in the invocation payload
+      beside `prompt`. An env var on the shared production runtime would
+      redirect production reads to the demo partition; a payload field
+      changes the invoker seam and its contract.
+
+next_recommended:
+  - sdd-spec
+  - sdd-design
+
+blocked_reasons: []
