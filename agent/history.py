@@ -33,7 +33,10 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from botocore.session import get_session
+from strands import tool
+from strands.tools.decorator import DecoratedFunctionTool
 
 logger = logging.getLogger(__name__)
 
@@ -260,3 +263,73 @@ def _top_warning_level(reasons: dict[str, Any]) -> str | None:
         if top is None or _WARNING_RANK[level] > _WARNING_RANK[top]:
             top = level
     return top
+
+
+DEFAULT_N = 1
+
+
+def clamp_n(value: object) -> int:
+    """`value` as a count in `1..MAX_N`. Total: nothing raises, nothing widens.
+
+    A bool is not a count (`True` is an `int` in Python), and a float or any
+    other type is a model that misread the schema; both get the smallest read.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return DEFAULT_N
+    return max(1, min(MAX_N, value))
+
+
+def build_tool(binding: HistoryBinding | None, source: AlertSource) -> DecoratedFunctionTool[Any, dict[str, Any]]:
+    """The `get_recent_alerts` tool for **one request**, closed over its binding.
+
+    Built per request (design D5) so that neither the binding nor the cached
+    result can outlive the invocation on a warm runtime. The function takes
+    `n` and nothing else: there is no parameter through which a model could name
+    a partition, and `binding` is not reachable from the prompt.
+
+    The first call reads the store and caches the result; a repeated call in
+    the same request returns it unchanged, so a model that asks twice costs one
+    read and sees one consistent answer.
+
+    Every failure degrades to `empty_history()` and is logged by class or by AWS
+    error code only (the message of a `ClientError` can carry ARNs). That
+    includes unexpected exceptions: the spec requires that the tool never raise
+    into the agent loop, because history is optional and the send is already
+    authorized.
+    """
+    cached: dict[str, Any] | None = None
+
+    @tool(name=TOOL_NAME)
+    def get_recent_alerts(n: int = DEFAULT_N) -> dict[str, Any]:
+        """Return facts about the alerts already sent for this city.
+
+        Call this once before writing. The result lists the most recent alerts
+        (newest first, local date and time, level, warning level) and states
+        `consecutive_days`, `previous_level`, `escalated` and `trend`, all
+        computed for you. An empty result (`consecutive_days` 0) means there is
+        nothing earlier to mention.
+
+        Args:
+            n: How many recent alerts to list, from 1 to 5.
+        """
+        nonlocal cached
+        if cached is not None:
+            return cached
+        cached = _read_facts(binding, source, clamp_n(n))
+        return cached
+
+    return get_recent_alerts
+
+
+def _read_facts(binding: HistoryBinding | None, source: AlertSource, n: int) -> dict[str, Any]:
+    if binding is None:
+        return empty_history()
+    try:
+        return summarize(source.read(binding.partition), binding, n)
+    except ClientError as error:
+        logger.warning("recent-alerts read failed: %s", error.response.get("Error", {}).get("Code", "unknown"))
+    except BotoCoreError as error:
+        logger.warning("recent-alerts read failed: %s", type(error).__name__)
+    except Exception as error:
+        logger.warning("recent-alerts unexpected failure: %s", type(error).__name__)
+    return empty_history()
