@@ -1,6 +1,6 @@
 """The agent's half of `contracts/recent-alerts.json` (design D2).
 
-`agent/history.py` and `rain_alert/domain/continuity.py` compute the same
+`agent/history.py` and the application's domain-layer continuity module compute the same
 continuity facts on opposite sides of an import boundary that must not be
 crossed. The contract file holds the constants and the fixture cases; this
 suite asserts the agent side, and the application suite asserts the other.
