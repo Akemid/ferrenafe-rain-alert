@@ -1,0 +1,330 @@
+{
+  "schema_version": 1,
+  "table_name": "ferrenafe-alerts-sent",
+  "key_prefix": "ALERT#",
+  "timezone": "America/Lima",
+  "utc_offset_hours": -5,
+  "lookback_days": 7,
+  "max_n": 5,
+  "allowed_partitions": [
+    "ferrenafe",
+    "demo-ferrenafe"
+  ],
+  "local_format": "%d/%m/%Y %H:%M",
+  "tool_name": "get_recent_alerts",
+  "cases": [
+    {
+      "name": "empty_history",
+      "as_of": "2026-10-12T15:00:00Z",
+      "current_level": "prepare",
+      "current_warning_level": null,
+      "records": [],
+      "expected": {
+        "consecutive_days": 0,
+        "previous_level": null,
+        "escalated": false,
+        "trend": "none",
+        "alerts": []
+      }
+    },
+    {
+      "name": "three_consecutive_days_rising",
+      "as_of": "2026-10-12T15:00:00Z",
+      "current_level": "imminent",
+      "current_warning_level": "red",
+      "records": [
+        {
+          "sent_at": "2026-10-10T13:00:00Z",
+          "level": "prepare",
+          "warning_level": "yellow"
+        },
+        {
+          "sent_at": "2026-10-11T13:00:00Z",
+          "level": "prepare",
+          "warning_level": "orange"
+        }
+      ],
+      "expected": {
+        "consecutive_days": 3,
+        "previous_level": "prepare",
+        "escalated": true,
+        "trend": "rising",
+        "alerts": [
+          {
+            "sent_local": "11/10/2026 08:00",
+            "level": "prepare",
+            "warning_level": "orange"
+          },
+          {
+            "sent_local": "10/10/2026 08:00",
+            "level": "prepare",
+            "warning_level": "yellow"
+          }
+        ]
+      }
+    },
+    {
+      "name": "gap_breaks_the_streak",
+      "as_of": "2026-10-12T15:00:00Z",
+      "current_level": "prepare",
+      "current_warning_level": null,
+      "records": [
+        {
+          "sent_at": "2026-10-09T13:00:00Z",
+          "level": "prepare",
+          "warning_level": null
+        },
+        {
+          "sent_at": "2026-10-10T13:00:00Z",
+          "level": "prepare",
+          "warning_level": null
+        }
+      ],
+      "expected": {
+        "consecutive_days": 1,
+        "previous_level": "prepare",
+        "escalated": false,
+        "trend": "steady",
+        "alerts": [
+          {
+            "sent_local": "10/10/2026 08:00",
+            "level": "prepare",
+            "warning_level": null
+          },
+          {
+            "sent_local": "09/10/2026 08:00",
+            "level": "prepare",
+            "warning_level": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "same_day_duplicates_count_once",
+      "as_of": "2026-10-12T15:00:00Z",
+      "current_level": "prepare",
+      "current_warning_level": null,
+      "records": [
+        {
+          "sent_at": "2026-10-10T13:00:00Z",
+          "level": "prepare",
+          "warning_level": null
+        },
+        {
+          "sent_at": "2026-10-10T19:00:00Z",
+          "level": "prepare",
+          "warning_level": null
+        },
+        {
+          "sent_at": "2026-10-11T13:00:00Z",
+          "level": "prepare",
+          "warning_level": null
+        },
+        {
+          "sent_at": "2026-10-11T19:00:00Z",
+          "level": "prepare",
+          "warning_level": null
+        }
+      ],
+      "expected": {
+        "consecutive_days": 3,
+        "previous_level": "prepare",
+        "escalated": false,
+        "trend": "steady",
+        "alerts": [
+          {
+            "sent_local": "11/10/2026 14:00",
+            "level": "prepare",
+            "warning_level": null
+          },
+          {
+            "sent_local": "11/10/2026 08:00",
+            "level": "prepare",
+            "warning_level": null
+          },
+          {
+            "sent_local": "10/10/2026 14:00",
+            "level": "prepare",
+            "warning_level": null
+          },
+          {
+            "sent_local": "10/10/2026 08:00",
+            "level": "prepare",
+            "warning_level": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "lima_date_not_utc_date",
+      "as_of": "2026-10-11T15:00:00Z",
+      "current_level": "prepare",
+      "current_warning_level": null,
+      "records": [
+        {
+          "sent_at": "2026-10-11T03:30:00Z",
+          "level": "prepare",
+          "warning_level": null
+        }
+      ],
+      "expected": {
+        "consecutive_days": 2,
+        "previous_level": "prepare",
+        "escalated": false,
+        "trend": "steady",
+        "alerts": [
+          {
+            "sent_local": "10/10/2026 22:30",
+            "level": "prepare",
+            "warning_level": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "sent_at_not_before_as_of_is_excluded",
+      "as_of": "2026-10-12T15:00:00Z",
+      "current_level": "prepare",
+      "current_warning_level": null,
+      "records": [
+        {
+          "sent_at": "2026-10-12T15:00:00Z",
+          "level": "imminent",
+          "warning_level": null
+        },
+        {
+          "sent_at": "2026-10-12T18:00:00Z",
+          "level": "imminent",
+          "warning_level": null
+        },
+        {
+          "sent_at": "2026-10-11T13:00:00Z",
+          "level": "prepare",
+          "warning_level": null
+        }
+      ],
+      "expected": {
+        "consecutive_days": 2,
+        "previous_level": "prepare",
+        "escalated": false,
+        "trend": "steady",
+        "alerts": [
+          {
+            "sent_local": "11/10/2026 08:00",
+            "level": "prepare",
+            "warning_level": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "seven_day_lookback_is_inclusive_and_cuts_older",
+      "as_of": "2026-10-12T15:00:00Z",
+      "current_level": "prepare",
+      "current_warning_level": null,
+      "records": [
+        {
+          "sent_at": "2026-10-05T15:00:00Z",
+          "level": "prepare",
+          "warning_level": null
+        },
+        {
+          "sent_at": "2026-10-05T14:59:00Z",
+          "level": "imminent",
+          "warning_level": null
+        }
+      ],
+      "expected": {
+        "consecutive_days": 1,
+        "previous_level": "prepare",
+        "escalated": false,
+        "trend": "steady",
+        "alerts": [
+          {
+            "sent_local": "05/10/2026 10:00",
+            "level": "prepare",
+            "warning_level": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "falling_level",
+      "as_of": "2026-10-12T15:00:00Z",
+      "current_level": "prepare",
+      "current_warning_level": null,
+      "records": [
+        {
+          "sent_at": "2026-10-11T13:00:00Z",
+          "level": "imminent",
+          "warning_level": "red"
+        }
+      ],
+      "expected": {
+        "consecutive_days": 2,
+        "previous_level": "imminent",
+        "escalated": false,
+        "trend": "falling",
+        "alerts": [
+          {
+            "sent_local": "11/10/2026 08:00",
+            "level": "imminent",
+            "warning_level": "red"
+          }
+        ]
+      }
+    },
+    {
+      "name": "same_level_higher_warning_is_rising",
+      "as_of": "2026-10-12T15:00:00Z",
+      "current_level": "prepare",
+      "current_warning_level": "orange",
+      "records": [
+        {
+          "sent_at": "2026-10-11T13:00:00Z",
+          "level": "prepare",
+          "warning_level": "yellow"
+        }
+      ],
+      "expected": {
+        "consecutive_days": 2,
+        "previous_level": "prepare",
+        "escalated": true,
+        "trend": "rising",
+        "alerts": [
+          {
+            "sent_local": "11/10/2026 08:00",
+            "level": "prepare",
+            "warning_level": "yellow"
+          }
+        ]
+      }
+    },
+    {
+      "name": "warning_dropped_is_falling",
+      "as_of": "2026-10-12T15:00:00Z",
+      "current_level": "prepare",
+      "current_warning_level": null,
+      "records": [
+        {
+          "sent_at": "2026-10-11T13:00:00Z",
+          "level": "prepare",
+          "warning_level": "yellow"
+        }
+      ],
+      "expected": {
+        "consecutive_days": 2,
+        "previous_level": "prepare",
+        "escalated": false,
+        "trend": "falling",
+        "alerts": [
+          {
+            "sent_local": "11/10/2026 08:00",
+            "level": "prepare",
+            "warning_level": "yellow"
+          }
+        ]
+      }
+    }
+  ]
+}

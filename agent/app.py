@@ -91,6 +91,11 @@ TEMPERATURE = 0.2
 #: asserted from both suites (`agent/tests/test_fence_contract.py`).
 PROMPT_KEY = "prompt"
 
+#: Where the application binds the continuity context (partition, `as_of`, the
+#: current level) — a sibling of the prompt, never inside the fenced data.
+#: Pinned by `contracts/composer-fence.json` (schema 2).
+HISTORY_KEY = "history"
+
 app = BedrockAgentCoreApp()
 
 
