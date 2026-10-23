@@ -30,7 +30,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Protocol
+
+from botocore.config import Config
+from botocore.session import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -169,3 +172,91 @@ def summarize(rows: list[AlertRow], binding: HistoryBinding, n: int) -> dict[str
 def empty_history() -> dict[str, Any]:
     """The result when there is nothing to report, or nothing could be read."""
     return {"alerts": [], "consecutive_days": 0, "previous_level": None, "escalated": False, "trend": "none"}
+
+
+class AlertSource(Protocol):
+    """The one read the tool needs. Narrow on purpose: a fake is one method."""
+
+    def read(self, partition: str) -> list[AlertRow]: ...
+
+
+#: Rows read per request. Cycles are six-hourly and deduplicated, so a week of
+#: history is a handful of items; the cap bounds the worst case rather than
+#: serving as a page size, and no pagination loop is written for it.
+QUERY_LIMIT = 50
+
+
+def client_config() -> Config:
+    """Tight bounds, because this read sits inside an authorized send.
+
+    Connect 1 s and read 2 s with two attempts in total: a store that cannot
+    answer in about that time is treated as having no history (design D6)
+    instead of eating the cycle's time budget.
+    """
+    return Config(connect_timeout=1, read_timeout=2, retries={"max_attempts": 1, "total_max_attempts": 2})
+
+
+class DynamoAlertReader:
+    """Reads one partition of the alerts table. Read-only by construction: the
+    only call this class can make is `Query`.
+
+    Like the application's adapters, the client is built lazily so that
+    importing this module (and constructing the agent) needs no region and no
+    credentials.
+    """
+
+    def __init__(self, client: Any | None = None) -> None:
+        self._client = client
+
+    def read(self, partition: str) -> list[AlertRow]:
+        """Every stored alert of `partition`, newest sort key first.
+
+        Projects only `pk, sk, sent_at, level, reasons`, which is also the whole
+        of what the IAM grant allows (design D8). `level` is a DynamoDB
+        reserved word, hence the expression-attribute name. The reasons are
+        projected only to extract the top warning level; their titles and
+        amounts are dropped here and never leave this function.
+
+        Raises:
+            KeyError, ValueError: A stored item is malformed. The tool turns
+                either into the empty history rather than guessing.
+        """
+        if self._client is None:
+            self._client = get_session().create_client("dynamodb", config=client_config())
+        response = self._client.query(
+            TableName=TABLE_NAME,
+            KeyConditionExpression="pk = :pk",
+            ExpressionAttributeValues={":pk": {"S": f"{KEY_PREFIX}{partition}"}},
+            ProjectionExpression="pk, sk, sent_at, #lvl, reasons",
+            ExpressionAttributeNames={"#lvl": "level"},
+            Select="SPECIFIC_ATTRIBUTES",
+            ScanIndexForward=False,
+            ConsistentRead=True,
+            Limit=QUERY_LIMIT,
+        )
+        return [_row_from_item(item) for item in response.get("Items", [])]
+
+
+def _row_from_item(item: dict[str, Any]) -> AlertRow:
+    sent_at = _parse_instant(item["sent_at"]["S"])
+    if sent_at is None:
+        raise ValueError("sent_at is not an offset-aware ISO 8601 instant")
+    level = item["level"]["S"]
+    if level not in _LEVEL_RANK:
+        raise ValueError(f"unknown level {level!r}")
+    return AlertRow(sent_at=sent_at, level=level, warning_level=_top_warning_level(item.get("reasons", {})))
+
+
+def _top_warning_level(reasons: dict[str, Any]) -> str | None:
+    """The highest official-warning level among the stored reasons, if any."""
+    top: str | None = None
+    for entry in reasons.get("L", []):
+        fields = entry["M"]
+        if fields.get("kind", {}).get("S") != "official_warning":
+            continue
+        level = fields["level"]["S"]
+        if level not in _WARNING_RANK:
+            raise ValueError(f"unknown warning level {level!r}")
+        if top is None or _WARNING_RANK[level] > _WARNING_RANK[top]:
+            top = level
+    return top
