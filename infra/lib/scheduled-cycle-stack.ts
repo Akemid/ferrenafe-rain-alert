@@ -41,6 +41,23 @@ const RELAY_CONTRACT = JSON.parse(
   readFileSync(join(__dirname, '..', '..', 'contracts', 'senamhi-relay.json'), 'utf-8'),
 ) as { readonly object_key: string };
 
+/**
+ * The history contract shared with the agent's reader (`contracts/recent-alerts.json`, recent-alerts design
+ * D2/D8). Only the key prefix and the partitions are needed: reading them at synth time keeps the IAM
+ * `LeadingKeys` condition and `agent/history.py` from drifting.
+ */
+const HISTORY_CONTRACT = JSON.parse(
+  readFileSync(join(__dirname, '..', '..', 'contracts', 'recent-alerts.json'), 'utf-8'),
+) as { readonly key_prefix: string; readonly allowed_partitions: readonly string[] };
+
+/**
+ * The only attributes the agent's `Query` names (`agent/history.py::DynamoAlertReader.read` projects exactly
+ * these). `pk` and `sk` are listed because AWS requires the key attributes in any `dynamodb:Attributes`
+ * list ("DynamoDB can't use these key attributes to perform the requested action" otherwise) and the
+ * `KeyConditionExpression` names them. A prior alert's title and body are deliberately absent.
+ */
+const HISTORY_ATTRIBUTES = ['pk', 'sk', 'sent_at', 'level', 'reasons'];
+
 /** design.md D26. Matches `dynamodb_alert_repository.py::TABLE_NAME` by string, not by import — the two
  * languages agree by matching this literal, the same pattern `SSM_PATH_PREFIX` uses on the SSM side. */
 export const TABLE_NAME = 'ferrenafe-alerts-sent';
@@ -401,6 +418,37 @@ export class ScheduledCycleStack extends Stack {
       userName: 'ferrenafe-relay-producer',
       managedPolicies: [relayWriter],
     });
+
+    // --- Agent history reader (recent-alerts design D8) ---
+    // For the AgentCore execution role, which the agentcore CLI provisions and this stack does not own, so
+    // the operator attaches it (`docs/runbooks/agent-alert-history.md`). `Query` on the table ARN only; the
+    // three conditions are what make it safe to hand to a model-driven process:
+    //  - `LeadingKeys` limits which partitions can be read; `ForAllValues` is vacuously true when the key is
+    //    absent, so the `Null` guard demands that it be present.
+    //  - `Attributes` is an allow-list. It is evaluated ONLY on attributes the request names, so it alone
+    //    would let a Query with no ProjectionExpression read everything (AWS: "Ensuring attribute-based
+    //    restrictions are enforced")...
+    //  - ...hence `Select = SPECIFIC_ATTRIBUTES`, as plain `StringEquals` (not `...IfExists`): a request
+    //    without Select is denied, which forces the projection that `Attributes` then checks.
+    const alertHistoryReader = new iam.ManagedPolicy(this, 'AlertHistoryReader', {
+      statements: [
+        new iam.PolicyStatement({
+          actions: ['dynamodb:Query'],
+          resources: [table.tableArn],
+          conditions: {
+            'ForAllValues:StringEquals': {
+              'dynamodb:LeadingKeys': HISTORY_CONTRACT.allowed_partitions.map(
+                (slug) => `${HISTORY_CONTRACT.key_prefix}${slug}`,
+              ),
+              'dynamodb:Attributes': HISTORY_ATTRIBUTES,
+            },
+            Null: { 'dynamodb:LeadingKeys': 'false' },
+            StringEquals: { 'dynamodb:Select': 'SPECIFIC_ATTRIBUTES' },
+          },
+        }),
+      ],
+    });
+    new CfnOutput(this, 'AlertHistoryReaderPolicyName', { value: alertHistoryReader.managedPolicyName });
 
     // The policy name is CDK-generated (a fixed IAM name is account-global), so the operator finds it here.
     // Outputs carry names only, never ARNs (an ARN embeds the account id).
