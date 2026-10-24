@@ -18,6 +18,13 @@ real template composer, and the item is written by `DynamoDbAlertRepository`
 (`pk`, `sk`, `expires_at` included). Items expire by TTL 30 days after
 `sent_at`, so a forgotten demo clears itself.
 
+Dates are FIXED (2026-10-20 to 2026-10-22), not relative to today. Items expire
+by TTL about 30 days after `sent_at`, so after that the history is gone and the
+demo needs a re-seed. The demo shows continuity only when the invocation passes
+an explicit `as_of` matching the scenario day (as
+docs/runbooks/agent-alert-history.md does); a real-time `as_of` is days after
+the seeded alerts and shows none.
+
 Dates: each day's window starts at 00:00 America/Lima and the alert is sent at
 08:00 Lima the same day, so replaying the days in order with `as_of` at each
 window start yields one more consecutive day each time (design D3).
@@ -35,6 +42,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from botocore.exceptions import ClientError
 
 from rain_alert.adapters.dynamodb_alert_repository import (
     TABLE_NAME,
@@ -242,6 +251,10 @@ def main(argv: Sequence[str] | None = None, client: Any | None = None) -> int:
         else:
             record = seed_day(SCENARIO[args.day - 1], partition=args.partition, client=client)
             print(f"wrote day {args.day} to {alert_item_pk(args.partition)} sent_at={record.sent_at.isoformat()}")
+    except ClientError as error:
+        # The code only: an AWS message can quote an ARN or an account id.
+        print(f"error: ClientError {error.response.get('Error', {}).get('Code', 'unknown')}", file=sys.stderr)
+        return 1
     except Exception as error:  # noqa: BLE001 - one masked line; AWS messages can quote ARNs
         print(f"error: {type(error).__name__}", file=sys.stderr)
         return 1

@@ -195,3 +195,29 @@ class TestRefusals:
             script.seed_day(script.SCENARIO[0], partition="ferrenafe", client=client)
 
         assert _items(client, REAL_PK) == []
+
+
+class TestAwsFailure:
+    def test_a_rejected_call_prints_the_error_code_but_never_the_message(
+        self, script: ModuleType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from botocore.exceptions import ClientError
+
+        class Denied:
+            def put_item(self, **_: Any) -> None:
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "AccessDeniedException",
+                            "Message": "not allowed on SECRET-RESOURCE-MARKER",
+                        }
+                    },
+                    "PutItem",
+                )
+
+        code = script.main(["--day", "1"], client=Denied())
+
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "AccessDeniedException" in err
+        assert "SECRET-RESOURCE-MARKER" not in err
