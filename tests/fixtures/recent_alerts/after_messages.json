@@ -1,0 +1,96 @@
+{
+  "_comment": "The nine AFTER messages captured live on 2026-10-24 from AgentCore runtime v4 (get_recent_alerts). Scenario inputs are synthetic (yellow 14.2 mm, orange 31.5 mm, red 68.4 mm); no recipient or account data. Days 2 and 3 were rejected with UNKNOWN_NUMBER by the validator before DAYS existed.",
+  "city": "Ferreñafe",
+  "timezone": "America/Lima",
+  "days": {
+    "1": {
+      "as_of": "2026-10-20T05:00:00Z",
+      "level": "prepare",
+      "warning_level": "yellow",
+      "warning_title": "LLUVIAS MODERADAS EN LA COSTA NORTE",
+      "mm_24h": 14.2,
+      "mm_48h": 22.6,
+      "probability_pct": 70,
+      "peak_at": "2026-10-20T22:00:00Z",
+      "window_days": 2
+    },
+    "2": {
+      "as_of": "2026-10-21T05:00:00Z",
+      "level": "imminent",
+      "warning_level": "orange",
+      "warning_title": "LLUVIAS INTENSAS EN LA COSTA NORTE",
+      "mm_24h": 31.5,
+      "mm_48h": 52.8,
+      "probability_pct": 85,
+      "peak_at": "2026-10-21T21:00:00Z",
+      "window_days": 2
+    },
+    "3": {
+      "as_of": "2026-10-22T05:00:00Z",
+      "level": "imminent",
+      "warning_level": "red",
+      "warning_title": "LLUVIAS EXTREMAS EN LA COSTA NORTE",
+      "mm_24h": 68.4,
+      "mm_48h": 104.9,
+      "probability_pct": 95,
+      "peak_at": "2026-10-22T20:00:00Z",
+      "window_days": 2
+    }
+  },
+  "messages": [
+    {
+      "day": 1,
+      "run": 1,
+      "title": "Ferreñafe - Alerta Amarilla",
+      "body": "Ferreñafe está bajo alerta por lluvias moderadas en la costa norte.\n\nSe esperan 14.2 mm de lluvia en 24 horas con 70% de probabilidad, con pico de intensidad el 20/10/2026 17:00.\n\nMotivos:\nLLUVIAS MODERADAS EN LA COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia."
+    },
+    {
+      "day": 1,
+      "run": 2,
+      "title": "Ferreñafe - Alerta Amarilla",
+      "body": "Ferreñafe está bajo alerta por lluvias moderadas en la costa norte.\n\nSe esperan 14.2 mm de lluvia en 24 horas con 70% de probabilidad, con máxima intensidad el 20/10/2026 17:00.\n\nMotivos:\nLLUVIAS MODERADAS EN LA COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia."
+    },
+    {
+      "day": 1,
+      "run": 3,
+      "title": "Ferreñafe: Alerta Amarilla por Lluvias",
+      "body": "Ferreñafe está bajo alerta amarilla por lluvias moderadas en la costa norte.\n\nSe esperan 14.2 mm de lluvia en 24 horas con 70% de probabilidad, con pico máximo el 20/10/2026 17:00.\n\nMotivos:\nLLUVIAS MODERADAS EN LA COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia."
+    },
+    {
+      "day": 2,
+      "run": 1,
+      "title": "Ferreñafe: Alerta Inminente",
+      "body": "Ferreñafe está bajo alerta inminente por lluvias intensas desde el 21/10/2026 00:00 hasta el 23/10/2026 00:00.\n\nSe esperan 31.5 mm de lluvia en 24 horas con 85% de probabilidad, con pico máximo el 21/10/2026 16:00.\n\nEsta alerta ha estado activa 2 días consecutivos y la situación está empeorando.\n\nMotivos:\nLLUVIAS INTENSAS EN LA COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia."
+    },
+    {
+      "day": 2,
+      "run": 2,
+      "title": "Ferreñafe: Alerta Inminente",
+      "body": "Ferreñafe está en alerta inminente por lluvias intensas desde el 21/10/2026 00:00 hasta el 23/10/2026 00:00.\n\nSe esperan 31.5 mm de lluvia en 24 horas con probabilidad del 85%, con intensidad máxima el 21/10/2026 16:00.\n\nLa situación se agrava tras 2 días consecutivos de alertas.\n\nMotivos:\nLLUVIAS INTENSAS EN LA COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia."
+    },
+    {
+      "day": 2,
+      "run": 3,
+      "title": "Ferreñafe: Alerta Inminente",
+      "body": "Ferreñafe está bajo alerta inminente por lluvias intensas desde el 21/10/2026 00:00 hasta el 23/10/2026 00:00.\n\nSe pronostica acumulación de 31.5 mm en 24 horas con 85% de probabilidad, con intensidad máxima el 21/10/2026 16:00.\n\nLa situación se está agravando. Esta es la continuación de 2 días consecutivos de alertas.\n\nMotivos:\nLLUVIAS INTENSAS EN LA COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia."
+    },
+    {
+      "day": 3,
+      "run": 1,
+      "title": "Ferreñafe: Alerta Inmediata",
+      "body": "Ferreñafe enfrenta lluvias extremas en la costa norte. Se esperan 68.4 mm de lluvia en 24 horas con 95% de probabilidad, con pico máximo el 22/10/2026 15:00.\n\nLa alerta ha estado activa durante 3 días consecutivos y la situación está empeorando.\n\nMotivos:\nLLUVIAS EXTREMAS EN LA COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia."
+    },
+    {
+      "day": 3,
+      "run": 2,
+      "title": "Ferreñafe: Alerta Inminente",
+      "body": "Ferreñafe está bajo alerta por lluvias extremas en la costa norte. Se esperan 68.4 mm de lluvia en 24 horas con 95% de probabilidad, con pico máximo el 22/10/2026 15:00. La situación se está agravando tras 3 días consecutivos de alertas.\n\nMotivos:\nLLUVIAS EXTREMAS EN LA COSTA NORTE\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia."
+    },
+    {
+      "day": 3,
+      "run": 3,
+      "title": "Ferreñafe: Alerta Inmediata",
+      "body": "Ferreñafe enfrenta LLUVIAS EXTREMAS EN LA COSTA NORTE desde 22/10/2026 00:00 hasta 24/10/2026 00:00.\n\nSe pronostican 68.4 mm de lluvia en 24 horas con 95% de probabilidad, con intensidad máxima alrededor de las 22/10/2026 15:00. La situación se está agravando tras 3 días consecutivos de alerta.\n\nMotivos:\nAdvertencia oficial de lluvias extremas en la costa norte.\n\nRecomendaciones:\nAlmacena agua potable para al menos dos días.\nProtege documentos y aparatos eléctricos por encima del nivel del piso.\nLimpia canaletas, techos y desagües cercanos.\nAsegura objetos sueltos y calaminas.\nTen a mano una linterna, un botiquín y los teléfonos de emergencia."
+    }
+  ]
+}
