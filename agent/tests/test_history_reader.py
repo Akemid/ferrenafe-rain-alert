@@ -78,6 +78,7 @@ def test_the_query_bounds_the_sort_key_eight_days_back_in_utc() -> None:
 
         stubber.assert_no_pending_responses()
 
+
 def test_items_become_rows_with_the_top_warning_level_taken_from_the_reasons() -> None:
     client = _client()
     items = [
@@ -106,7 +107,9 @@ def test_items_become_rows_with_the_top_warning_level_taken_from_the_reasons() -
     ],
     ids=["missing sent_at", "bad sent_at", "unknown level", "naive sent_at", "unknown warning"],
 )
-def test_a_malformed_item_is_skipped_and_the_rest_survive(broken: dict[str, Any], caplog: pytest.LogCaptureFixture) -> None:
+def test_a_malformed_item_is_skipped_and_the_rest_survive(
+    broken: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
     client = _client()
     good = _item("2026-10-11T13:00:00+00:00", "prepare")
     with Stubber(client) as stubber:
@@ -135,6 +138,7 @@ def test_no_client_is_built_until_the_first_read() -> None:
     reader = DynamoAlertReader()
 
     assert reader._client is None
+
 
 def test_the_client_region_comes_from_aws_region_because_botocore_ignores_it(monkeypatch: pytest.MonkeyPatch) -> None:
     created: dict[str, Any] = {}
