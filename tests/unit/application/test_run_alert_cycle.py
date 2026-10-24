@@ -669,3 +669,42 @@ class TestTheHistoryIsReadOnlyForAComposerThatConsumesIt:
         )
 
         assert composer.consumes_history is True
+
+
+class TestTheSummaryAndTheAgentBindingShareOneInstant:
+    """Design S1: the app summary and the agent's tool count days from the same `as_of`."""
+
+    def test_the_summary_carries_the_cycle_clock(self) -> None:
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70), prior_alerts=[_history(1)])
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.message_request.continuity.as_of == NOW
+
+    def test_a_failed_read_still_carries_the_cycle_clock(self) -> None:
+        deps = replace(
+            build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70)),
+            alerts=_HistoryReadFails(OSError("timeout")),
+        )
+
+        assert RunAlertCycle(deps).execute().message_request.continuity.as_of == NOW
+
+    def test_the_binding_the_agent_receives_equals_the_summarys(self) -> None:
+        invoker = FakeAgentInvoker(response=_accepted_draft(NOW + timedelta(hours=48)))
+        deps = build_fake_deps(
+            forecast=_forecast(24, mm_total=29.8, probability_pct=70),
+            prior_alerts=[_history(1)],
+            composer=lambda notifier, now: AgentBackedComposer(
+                invoker=invoker,
+                build_prompt=lambda _request: "<prompt>",
+                notifier=notifier,
+                now=lambda: NOW + timedelta(seconds=30),  # a composer clock that has moved on
+                history_partition="ferrenafe",
+            ),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        binding = invoker.histories[0]
+        assert binding is not None
+        assert binding["as_of"] == result.message_request.continuity.as_of.isoformat()  # type: ignore[union-attr]

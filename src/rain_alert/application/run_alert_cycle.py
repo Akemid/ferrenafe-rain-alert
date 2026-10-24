@@ -180,17 +180,18 @@ def _read_continuity(
         records = alerts.alerts_with_window_start_between(
             config.city_slug, now - _HISTORY_READ_BEFORE, now + _HISTORY_READ_AFTER
         )
-        return summarize(
+        summary = summarize(
             records,
             as_of=now,
             tz=ZoneInfo(config.timezone),
             current_level=assessment.level,
             current_warning_level=top_warning_level(assessment.reasons),
         )
+        return replace(summary, as_of=now)
     except Exception as exc:  # noqa: BLE001 - history must never block an authorized send
         # The class only: a store's message can carry a table name or an ARN.
         logger.warning("continuity read failed: %s", type(exc).__name__)
-        return EMPTY_CONTINUITY
+        return replace(EMPTY_CONTINUITY, as_of=now)
 
 
 class RunAlertCycle:

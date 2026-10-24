@@ -764,6 +764,19 @@ class TestTheHistoryBindingTheInvokerReceives:
             }
         ]
 
+    def test_it_uses_the_instant_the_summary_was_built_at_not_the_composers_own_clock(self) -> None:
+        """One instant per cycle: the tool's `as_of` and the validator's summary must agree."""
+        invoker = FakeAgentInvoker(response=draft())
+        built_at = NOW - timedelta(seconds=7)
+        request = replace(BASELINE_REQUEST, continuity=replace(_with_continuity(3).continuity, as_of=built_at))
+
+        _composer(invoker, FakeNotifier(), history_partition="ferrenafe").compose(request)
+
+        binding = invoker.histories[0]
+        assert binding is not None
+        assert binding["as_of"] == request.continuity.as_of.isoformat()  # type: ignore[union-attr]
+        assert binding["as_of"] != NOW.isoformat()
+
     def test_with_no_official_warning_the_current_warning_level_is_null(self) -> None:
         invoker = FakeAgentInvoker(response=draft())
         request = replace(BASELINE_REQUEST, reasons=())

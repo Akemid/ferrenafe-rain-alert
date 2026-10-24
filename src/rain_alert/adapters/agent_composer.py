@@ -219,15 +219,17 @@ class AgentBackedComposer:
     def _history_binding(self, request: MessageRequest) -> Mapping[str, object] | None:
         """The binding the agent's tool is closed over, or `None` without a partition.
 
-        `as_of` is the cycle clock, so the agent counts days from the same
-        instant the application's own `ContinuitySummary` was built at.
+        `as_of` is the instant the request's own `ContinuitySummary` was built
+        at, so the agent counts days from exactly where the application did.
+        The composer's own clock is only the fallback for a request no cycle
+        stamped.
         """
         if self._history_partition is None:
             return None
         warning = top_warning_level(request.reasons)
         return {
             "partition": self._history_partition,
-            "as_of": self._now().isoformat(),
+            "as_of": (request.continuity.as_of or self._now()).isoformat(),
             "current_level": request.level.value,
             "current_warning_level": None if warning is None else warning.value,
         }

@@ -89,6 +89,11 @@ class ContinuitySummary:
     #: of them (`MAX_PRIOR_ALERTS`), and the validator reads no more than that
     #: many: what a body may restate is bounded by what the model was shown.
     prior_alerts: tuple[PriorAlert, ...] = ()
+    #: The instant the summary is read from. `RunAlertCycle` stamps it with the
+    #: cycle clock, and the agent composer binds the same instant into the
+    #: tool, so day counting on both sides of the boundary starts from one
+    #: moment. `None` means no cycle built this summary.
+    as_of: datetime | None = None
 
 
 EMPTY_CONTINUITY = ContinuitySummary()
