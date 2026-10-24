@@ -2,7 +2,7 @@ schema: spec-driven
 change: recent-alerts-tool
 title: Recent Alerts Tool (agent continuity via get_recent_alerts)
 created: 2026-10-23
-updated: 2026-10-23
+updated: 2026-10-24
 
 artifact_store:
   mode: hybrid
@@ -139,6 +139,14 @@ open_decisions:
       beside `prompt`. An env var on the shared production runtime would
       redirect production reads to the demo partition; a payload field
       changes the invoker seam and its contract.
+
+owner_approvals:
+  - id: d9-prompt-wording
+    date: 2026-10-24
+    detail: >-
+      Owner approved the D9 system-prompt amendment exactly as drafted: the
+      tool-first bullet, the continuity exception bullet, and the digits
+      sentence for consecutive days. Applied in agent/prompts.py (task 1.7).
 
 next_recommended:
   - sdd-spec
