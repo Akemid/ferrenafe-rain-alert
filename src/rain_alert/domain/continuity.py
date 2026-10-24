@@ -30,10 +30,15 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, tzinfo
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
-from rain_alert.domain.messages import AlertRecord
 from rain_alert.domain.reasons import Reason, WarningReason
 from rain_alert.domain.values import LEVEL_RANK, Level, WarningLevel
+
+if TYPE_CHECKING:
+    # `MessageRequest` carries a `ContinuitySummary`, so `messages` imports this
+    # module; the record type is needed only for annotations.
+    from rain_alert.domain.messages import AlertRecord
 
 #: Pinned by `contracts/recent-alerts.json` (`lookback_days`).
 LOOKBACK_DAYS = 7

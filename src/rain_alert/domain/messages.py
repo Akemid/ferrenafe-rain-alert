@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from rain_alert.domain.continuity import EMPTY_CONTINUITY, ContinuitySummary
 from rain_alert.domain.reasons import Reason
 from rain_alert.domain.values import ComposerName, Level, NoticeKind, SourceName, TimeWindow, WarningLevel
 
@@ -44,6 +45,12 @@ class MessageRequest:
     senamhi_status: str
     open_meteo_status: str
     checklist: tuple[str, ...]
+    #: What the community was already told on earlier days. **Defaulted**, so
+    #: it is purely additive for every construction site that predates it, and
+    #: the default is the conservative value: the empty summary allows a
+    #: message to claim no continuity at all. Only `RunAlertCycle` fills it,
+    #: and only inside an authorized send.
+    continuity: ContinuitySummary = EMPTY_CONTINUITY
 
 
 @dataclass(frozen=True, slots=True)

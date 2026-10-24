@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from rain_alert.domain.config import RiskThresholds
+from rain_alert.domain.continuity import ContinuitySummary, PriorAlert, Trend
 from rain_alert.domain.entities import Forecast, HourlyPoint
 from rain_alert.domain.message_validation import MAX_BODY_LENGTH
 from rain_alert.domain.messages import AlertMessage, MessageRequest
@@ -516,3 +517,23 @@ class TestTheResidentTextIgnoresWhyTheOfficialSourceFailed:
         for word in ("stale", "relay", "S3"):
             assert word not in message.title
             assert word not in message.body
+
+
+class TestTheTemplateIgnoresContinuity:
+    """The template may ignore the summary, and does (alert-cycle spec)."""
+
+    def test_a_non_empty_summary_does_not_change_the_message(self) -> None:
+        summary = ContinuitySummary(
+            consecutive_days=3,
+            previous_level=Level.PREPARE,
+            escalated=True,
+            trend=Trend.RISING,
+            prior_alerts=(PriorAlert(sent_at=NOW - timedelta(days=1), level=Level.PREPARE, warning_level=None),),
+        )
+
+        plain = MessageComposer().compose(_request())
+        with_summary = MessageComposer().compose(_request(continuity=summary))
+
+        assert with_summary == plain
+        assert "Ferreñafe" in with_summary.body
+        assert "consecutivos" not in with_summary.body
