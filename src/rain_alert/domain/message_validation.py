@@ -446,8 +446,21 @@ _UNIT_AFTER_A_NUMBER: tuple[tuple[re.Pattern[str], NumberUnit], ...] = (
         NumberUnit.MILLIMETRES,
     ),
     (re.compile(_BETWEEN_A_FIGURE_AND_ITS_UNIT + r"(?:horas?|hs?)(?!\w)", re.IGNORECASE), NumberUnit.HOURS),
-    (re.compile(_BETWEEN_A_FIGURE_AND_ITS_UNIT + r"d[ií]as?(?!\w)", re.IGNORECASE), NumberUnit.DAYS),
+    # `3er día`, `2º día`, `3ra día`: an ordinal figure counts days all the same.
+    (
+        re.compile(_BETWEEN_A_FIGURE_AND_ITS_UNIT + r"(?:(?:er|ro|ra|º|ª)[ \t]*)?d[ií]as?(?!\w)", re.IGNORECASE),
+        NumberUnit.DAYS,
+    ),
 )
+
+#: `día 3`, `dia 12`: the figure after the word counts days, so it is held to
+#: the day count and cannot borrow a millimetre or percentage value.
+_DAY_WORD_RIGHT_BEFORE = re.compile(r"d[ií]as?[ \t]+\Z", re.IGNORECASE)
+
+
+def _day_word_before(residue: str, position: int) -> NumberUnit | None:
+    """`DAYS` when a day word sits directly in front of `position`, else `None`."""
+    return NumberUnit.DAYS if _DAY_WORD_RIGHT_BEFORE.search(residue[:position]) else None
 
 
 def _unit_after(residue: str, position: int) -> NumberUnit | None:
@@ -733,7 +746,11 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
             # own statement about itself, and it beats anything the clause
             # merely implies. `probabilidad de 60 %` is a percentage because
             # it says so, not because `probabilidad` opens the clause.
-            unit = _unit_after(residue, match.end()) or _unit_before_a_figure(residue, match.start())
+            unit = (
+                _unit_after(residue, match.end())
+                or _day_word_before(residue, match.start())
+                or _unit_before_a_figure(residue, match.start())
+            )
             permitted = any_unit if unit is None else allowed_numbers[unit]
             if _canonical(token) not in permitted:
                 unknown.append(

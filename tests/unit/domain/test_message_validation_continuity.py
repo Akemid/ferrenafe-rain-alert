@@ -154,6 +154,33 @@ class TestADayCountIsAcceptedOnlyWhenItIsTheConsecutiveDays:
         assert found == {ValidationRule.UNKNOWN_NUMBER}
 
 
+class TestAnOrdinalDigitBeforeDiaIsADayCount:
+    """`3er día` and `día 3` state a day count. Without a unit they fell back to the union of every
+    unit's values and could borrow a millimetre figure."""
+
+    @staticmethod
+    def _with_forecast(summary: ContinuitySummary) -> MessageRequest:
+        forecast = ForecastSummary(mm_24h=3.0, mm_48h=5.0, peak_at=NOW + timedelta(hours=6), peak_probability_pct=60)
+        return replace(request(summary), forecast=forecast)
+
+    @pytest.mark.parametrize(
+        "sentence",
+        ["Es el 3er día de lluvia.", "Es el 3º día de lluvia.", "Es la 3ra día de lluvia.", "Hoy es el día 3."],
+    )
+    def test_a_figure_the_forecast_carries_cannot_stand_in_for_the_day_count(self, sentence: str) -> None:
+        message_request = self._with_forecast(_summary(2, PRIOR_A))
+
+        found = rules(message_request, with_sentence(message_request, sentence))
+
+        assert ValidationRule.UNKNOWN_NUMBER in found
+
+    @pytest.mark.parametrize("sentence", ["Es el 3er día de lluvia.", "Hoy es el día 3."])
+    def test_the_consecutive_days_value_is_accepted(self, sentence: str) -> None:
+        message_request = self._with_forecast(_summary(3, PRIOR_A, PRIOR_B))
+
+        assert rules(message_request, with_sentence(message_request, sentence)) == set()
+
+
 class TestDaysWrittenInWordsAreRefused:
     @pytest.mark.parametrize("word", ["dos", "tres", "cinco", "veintiún"])
     def test_a_spelled_out_continuity_count_is_rejected_even_when_it_is_true(self, word: str) -> None:
