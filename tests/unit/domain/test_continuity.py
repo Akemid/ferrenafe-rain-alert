@@ -19,6 +19,7 @@ import pytest
 from rain_alert.domain.continuity import (
     EMPTY_CONTINUITY,
     LOOKBACK_DAYS,
+    MAX_PRIOR_ALERTS,
     ContinuitySummary,
     Trend,
     summarize,
@@ -86,6 +87,7 @@ def test_the_constants_match_the_contract() -> None:
     contract = _contract()
 
     assert contract["lookback_days"] == LOOKBACK_DAYS
+    assert contract["max_n"] == MAX_PRIOR_ALERTS
     assert contract["timezone"] == "America/Lima"
     assert contract["local_format"] == LOCAL_FORMAT
 

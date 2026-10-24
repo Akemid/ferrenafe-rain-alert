@@ -43,6 +43,11 @@ if TYPE_CHECKING:
 #: Pinned by `contracts/recent-alerts.json` (`lookback_days`).
 LOOKBACK_DAYS = 7
 
+#: How many prior alerts the agent's tool can show the model (`max_n` in the
+#: contract). The validator reads no more than this many from a summary, so a
+#: body can restate only what the model was actually shown.
+MAX_PRIOR_ALERTS = 5
+
 _WARNING_RANK: Mapping[WarningLevel, int] = {
     WarningLevel.YELLOW: 1,
     WarningLevel.ORANGE: 2,
@@ -81,8 +86,8 @@ class ContinuitySummary:
     escalated: bool = False
     trend: Trend = Trend.NONE
     #: Every qualifying alert, newest first. The agent's tool lists at most five
-    #: of them; accepting the superset is deliberate, because what a body may
-    #: restate is bounded by what the model was shown, never by this tuple.
+    #: of them (`MAX_PRIOR_ALERTS`), and the validator reads no more than that
+    #: many: what a body may restate is bounded by what the model was shown.
     prior_alerts: tuple[PriorAlert, ...] = ()
 
 

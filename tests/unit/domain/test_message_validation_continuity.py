@@ -250,11 +250,53 @@ class TestAPriorDateIsAcceptedOnlyWhenItIsInTheSummary:
         assert rules(message_request, with_sentence(message_request, "Ya hubo aviso el 20/10/2026.")) == set()
         assert rules(message_request, with_sentence(message_request, "Y también el 21/10/2026.")) == set()
 
-    def test_a_prior_time_is_accepted(self) -> None:
+    def test_a_prior_time_is_accepted_beside_its_own_date(self) -> None:
         message_request = request(_summary(3, PRIOR_A, PRIOR_B))
 
-        assert rules(message_request, with_sentence(message_request, "El aviso de las 08:00 sigue vigente.")) == set()
-        assert rules(message_request, with_sentence(message_request, "Y el de las 14:00.")) == set()
+        assert rules(message_request, with_sentence(message_request, "El aviso del 20/10/2026 08:00 sigue.")) == set()
+        assert rules(message_request, with_sentence(message_request, "Y el del 21/10/2026 14:00.")) == set()
+
+    def test_a_prior_time_with_a_single_digit_hour_and_date_is_read_like_strftime(self) -> None:
+        early = datetime(2026, 10, 7, 13, tzinfo=UTC)  # 07/10/2026 08:00 in Lima
+        message_request = request(_summary(2, early))
+
+        assert rules(message_request, with_sentence(message_request, "Hubo aviso el 7/10/2026 8:00.")) == set()
+
+    def test_a_prior_time_on_its_own_is_rejected(self) -> None:
+        message_request = request(_summary(3, PRIOR_A, PRIOR_B))
+
+        assert rules(message_request, with_sentence(message_request, "El aviso de las 08:00 sigue vigente.")) == {
+            ValidationRule.UNKNOWN_NUMBER
+        }
+
+    def test_a_prior_date_and_another_priors_time_cannot_be_mixed(self) -> None:
+        """08:00 belongs to the 20th and 14:00 to the 21st: neither may borrow the other's date."""
+        message_request = request(_summary(3, PRIOR_A, PRIOR_B))
+
+        assert rules(message_request, with_sentence(message_request, "Pico el 20/10/2026 14:00.")) == {
+            ValidationRule.UNKNOWN_NUMBER
+        }
+        assert rules(message_request, with_sentence(message_request, "Pico el 21/10/2026 08:00.")) == {
+            ValidationRule.UNKNOWN_NUMBER
+        }
+
+    def test_a_prior_date_alone_stays_acceptable(self) -> None:
+        message_request = request(_summary(3, PRIOR_A, PRIOR_B))
+
+        assert rules(message_request, with_sentence(message_request, "Hubo aviso el 20/10/2026.")) == set()
+
+    def test_only_the_five_most_recent_priors_count(self) -> None:
+        """The agent's tool lists at most five, so a sixth is something the model was never shown."""
+        sent = [datetime(2026, 10, day, 13, tzinfo=UTC) for day in (21, 20, 19, 18, 17, 16)]  # newest first
+        message_request = request(_summary(7, *sent))
+
+        assert rules(message_request, with_sentence(message_request, "Hubo aviso el 17/10/2026 08:00.")) == set()
+        assert rules(message_request, with_sentence(message_request, "Hubo aviso el 16/10/2026.")) == {
+            ValidationRule.UNKNOWN_NUMBER
+        }
+        assert rules(message_request, with_sentence(message_request, "Hubo aviso el 16/10/2026 08:00.")) == {
+            ValidationRule.UNKNOWN_NUMBER
+        }
 
     def test_a_date_in_neither_the_window_nor_the_summary_is_rejected(self) -> None:
         message_request = request(_summary(3, PRIOR_A, PRIOR_B))
@@ -282,7 +324,7 @@ class TestAPriorDateIsAcceptedOnlyWhenItIsInTheSummary:
         late = datetime(2026, 10, 21, 3, 30, tzinfo=UTC)
         message_request = request(_summary(2, late))
 
-        assert rules(message_request, with_sentence(message_request, "Hubo aviso el 20/10/2026 a las 22:30.")) == set()
+        assert rules(message_request, with_sentence(message_request, "Hubo aviso el 20/10/2026 22:30.")) == set()
         assert rules(message_request, with_sentence(message_request, "Hubo aviso el 21/10/2026.")) == {
             ValidationRule.UNKNOWN_NUMBER
         }

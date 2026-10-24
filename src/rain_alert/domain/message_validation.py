@@ -34,6 +34,7 @@ from decimal import Decimal
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
+from rain_alert.domain.continuity import MAX_PRIOR_ALERTS
 from rain_alert.domain.messages import AlertMessage, MessageRequest
 from rain_alert.domain.reasons import ForecastThresholdReason, WarningReason
 from rain_alert.domain.sanitize import has_unsafe_characters, sanitize_source_text
@@ -600,22 +601,44 @@ def _allowed_numbers(request: MessageRequest) -> dict[NumberUnit, set[Decimal]]:
     return allowed
 
 
-def _allowed_moments(request: MessageRequest) -> tuple[set[str], set[str]]:
-    """The local dates and local times the request's own instants render as,
-    including those of the earlier alerts its `ContinuitySummary` carries."""
+def _allowed_moments(request: MessageRequest) -> tuple[set[str], set[str], set[str]]:
+    """The local dates, local times and prior date-time pairs the request's own
+    instants render as.
+
+    A prior alert's date is allowed on its own, but its time only beside that
+    same date as one `DD/MM/YYYY HH:MM` pair: allowing the two independently
+    let `20/10/2026 14:00` through when 14:00 belonged to another day's alert.
+    Only the `MAX_PRIOR_ALERTS` most recent priors count, the ones the agent's
+    tool could have shown the model.
+    """
     zone = ZoneInfo(request.timezone)
     moments: list[datetime] = [request.window.start, request.window.end]
     if request.warning is not None:
         moments.extend((request.warning.window.start, request.warning.window.end))
     if request.forecast is not None:
         moments.append(request.forecast.peak_at)
-    if request.continuity.consecutive_days > 0:
-        moments.extend(prior.sent_at for prior in request.continuity.prior_alerts)
     local = [moment.astimezone(zone) for moment in moments]
-    return (
-        {moment.strftime(_LOCAL_DATE_FORMAT) for moment in local},
-        {moment.strftime(_LOCAL_TIME_FORMAT) for moment in local},
-    )
+    dates = {moment.strftime(_LOCAL_DATE_FORMAT) for moment in local}
+    times = {moment.strftime(_LOCAL_TIME_FORMAT) for moment in local}
+    pairs: set[str] = set()
+    if request.continuity.consecutive_days > 0:
+        newest = sorted(request.continuity.prior_alerts, key=lambda prior: prior.sent_at, reverse=True)
+        for prior in newest[:MAX_PRIOR_ALERTS]:
+            moment = prior.sent_at.astimezone(zone)
+            dates.add(moment.strftime(_LOCAL_DATE_FORMAT))
+            pairs.add(f"{moment.strftime(_LOCAL_DATE_FORMAT)} {moment.strftime(_LOCAL_TIME_FORMAT)}")
+    return dates, times, pairs
+
+
+#: A date written directly in front of a time, the only shape a prior alert's
+#: time is accepted in.
+_DATE_RIGHT_BEFORE = re.compile(r"(\d{1,2}/\d{1,2}/\d{4})[ \t]+$")
+
+
+def _is_a_prior_pair(residue: str, start: int, time_token: str, pairs: set[str]) -> bool:
+    """Whether the time at `start` sits right after a date it is paired with."""
+    match = _DATE_RIGHT_BEFORE.search(residue[:start])
+    return match is not None and f"{_normalized_date(match.group(1))} {_normalized_time(time_token)}" in pairs
 
 
 def _normalized_date(token: str) -> str:
@@ -684,7 +707,7 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
     any_unit = set[Decimal]().union(
         *(values for unit, values in allowed_numbers.items() if unit is not NumberUnit.DAYS)
     )
-    allowed_dates, allowed_times = _allowed_moments(request)
+    allowed_dates, allowed_times, prior_pairs = _allowed_moments(request)
     unknown: list[str] = []
     for match in _CANDIDATE_NUMBER.finditer(residue):
         token = match.group()
@@ -692,7 +715,9 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
             if _normalized_date(token) not in allowed_dates:
                 unknown.append(f"{token!r} traces to no date on the request")
         elif ":" in token:
-            if _normalized_time(token) not in allowed_times:
+            if _normalized_time(token) not in allowed_times and not _is_a_prior_pair(
+                residue, match.start(), token, prior_pairs
+            ):
                 unknown.append(f"{token!r} traces to no time on the request")
         elif (prose := _prose_date_day_and_month(residue, token, match.start(), match.end())) is not None:
             # A date written out is still a date, and is held to the request's
