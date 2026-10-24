@@ -17,10 +17,12 @@ alert of the season. The tool is closed over the request's history binding, so
 the model chooses a count and never a place (`history.py`).
 
 **The structured output is requested through the agent loop**:
-`agent(prompt, structured_output_model=CompositionOutput)`. That path runs
-tools before forcing the structured output (strands 1.55.1,
+`agent(prompt, structured_output_model=CompositionOutput)`. That path lets the
+model call tools before the structured output (strands 1.55.1,
 `event_loop.py:369-389`); the legacy `Agent.structured_output()` bypasses tool
-execution and must not be used for composition.
+execution and must not be used for composition. The prompt instructs the model
+to call the tool first, but the loop does not enforce it: a model that emits the
+structured output directly skips the tool, and the only loss is continuity.
 
 **The prompt arrives built, and that is where the sanitizer boundary is
 resolved.** The one string on the request an adversary controls is the scraped

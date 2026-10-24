@@ -118,14 +118,19 @@ The agent and its tool binding MUST be created per request, or its conversation 
 - WHEN the second composes
 - THEN its model input contains nothing from the first invocation
 
-### Requirement: Structured output is obtained through a call shape that runs tools [offline]
+### Requirement: Structured output is obtained through a call shape that can run tools [offline]
 
-The agent call MUST use the form in which the agent loop executes tools before producing the structured output. The legacy structured-output entry point that bypasses tool execution MUST NOT be used for composition.
+The agent call MUST use the form in which the agent loop can execute tools before producing the structured output. The system prompt instructs the model to call the tool first; the loop does not enforce it, and a model that skips the tool only loses continuity (the result is still valid, with empty continuity). The legacy structured-output entry point that bypasses tool execution MUST NOT be used for composition.
 
 #### Scenario: Tool is invokable under the chosen call shape
 - GIVEN a fake model that requests the tool and then returns a structured output
 - WHEN the agent runs
 - THEN the tool was executed exactly once and the structured output is returned
+
+#### Scenario: Model skips the tool
+- GIVEN a fake model that returns the structured output without requesting the tool
+- WHEN the agent runs
+- THEN a valid structured output is returned and the store was not read
 
 ### Requirement: Read access is least-privilege and scoped to the bound partition [ops]
 

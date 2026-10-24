@@ -2,7 +2,7 @@
 
 ## Technical Approach
 
-The application binds the history context. The model only chooses `n`. The app builds a `ContinuitySummary` from DynamoDB inside the authorized-send branch. `AgentComposer` sends `{prompt, history}`. The agent builds one `Agent` per request, with one closure-bound tool `get_recent_alerts(n)`, and calls `agent(prompt, structured_output_model=CompositionOutput)`. This is the event-loop path; it is verified in strands 1.55.1 at `event_loop.py:369-389`. The validator accepts continuity figures only when they come from the summary. The facts are computed twice, once per side of the import boundary, and a shared contract fixture pins both. The LLM still runs only after `AlertPolicy` has authorized the send.
+The application binds the history context. The model only chooses `n`. The app builds a `ContinuitySummary` from DynamoDB inside the authorized-send branch. `AgentComposer` sends `{prompt, history}`. The agent builds one `Agent` per request, with one closure-bound tool `get_recent_alerts(n)`, and calls `agent(prompt, structured_output_model=CompositionOutput)`. This is the event-loop path; it is verified in strands 1.55.1 at `event_loop.py:369-389`. The prompt instructs the model to call the tool first; the loop does not enforce it, and skipping it only loses continuity. The validator accepts continuity figures only when they come from the summary. The facts are computed twice, once per side of the import boundary, and a shared contract fixture pins both. The LLM still runs only after `AlertPolicy` has authorized the send.
 
 ## Architecture Decisions
 

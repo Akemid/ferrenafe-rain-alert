@@ -7,7 +7,7 @@ standing rule in `tests/support/fakes.py`. The tests that touch the real
 `BedrockModel` and `Agent` only *construct* them, which reaches no network:
 `BedrockModel` builds no client until it is invoked, so the assertions below
 hold with every AWS environment variable unset. How the real agent loop runs
-the tool before the structured output is in `test_app_tool_loop.py`.
+the tool, and what happens when the model skips it, is in `test_app_tool_loop.py`.
 """
 
 from __future__ import annotations
