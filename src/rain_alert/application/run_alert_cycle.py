@@ -11,6 +11,7 @@ Steps: load config -> fetch warnings -> fetch forecast -> evaluate outage
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -42,6 +43,8 @@ from rain_alert.domain.risk import IMMINENT_HORIZON_HOURS, evaluated_horizon
 from rain_alert.domain.sources import Available, SourceResult
 from rain_alert.domain.values import WarningLevel
 from rain_alert.ports import AlertRepository
+
+logger = logging.getLogger(__name__)
 
 _WARNING_SEVERITY_ORDER: Mapping[WarningLevel, int] = {
     WarningLevel.YELLOW: 1,
@@ -184,7 +187,9 @@ def _read_continuity(
             current_level=assessment.level,
             current_warning_level=top_warning_level(assessment.reasons),
         )
-    except Exception:  # noqa: BLE001 - history must never block an authorized send
+    except Exception as exc:  # noqa: BLE001 - history must never block an authorized send
+        # The class only: a store's message can carry a table name or an ARN.
+        logger.warning("continuity read failed: %s", type(exc).__name__)
         return EMPTY_CONTINUITY
 
 

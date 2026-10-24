@@ -5,8 +5,11 @@ Uses `build_fake_deps()` and hand-written recording spies (design.md
 section 10) — no `unittest.mock`.
 """
 
+import logging
 from dataclasses import replace
 from datetime import datetime, timedelta
+
+import pytest
 
 from rain_alert.adapters.agent_composer import AgentBackedComposer
 from rain_alert.adapters.agent_invoker import AgentInvocationError
@@ -596,3 +599,30 @@ class TestAFailedHistoryReadNeverBlocksTheSend:
         )
 
         assert RunAlertCycle(broken).execute().decision == RunAlertCycle(healthy).execute().decision
+
+    def test_a_failed_read_leaves_the_send_the_recipients_and_the_record_as_a_successful_one_would(self) -> None:
+        """The read may change what the composer is *told*, never what the cycle *does*."""
+        forecast = _forecast(24, mm_total=29.8, probability_pct=70)
+        healthy = build_fake_deps(forecast=forecast)
+        broken = replace(build_fake_deps(forecast=forecast), alerts=_HistoryReadFails(OSError("timeout")))
+
+        ok_result = RunAlertCycle(healthy).execute()
+        failed_result = RunAlertCycle(broken).execute()
+
+        assert (failed_result.sent, failed_result.recipients_count) == (ok_result.sent, ok_result.recipients_count)
+        assert failed_result.recipients_count == 1
+        assert broken.alerts.record_calls == healthy.alerts.record_calls  # type: ignore[attr-defined]
+
+    def test_a_failed_read_is_logged_by_exception_class_and_never_by_its_message(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        deps = replace(
+            build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70)),
+            alerts=_HistoryReadFails(RuntimeError("secret-table-arn")),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            RunAlertCycle(deps).execute()
+
+        assert "continuity read failed: RuntimeError" in caplog.text
+        assert "secret-table-arn" not in caplog.text
