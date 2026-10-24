@@ -124,3 +124,23 @@ def test_no_client_is_built_until_the_first_read() -> None:
     reader = DynamoAlertReader()
 
     assert reader._client is None
+
+def test_the_client_region_comes_from_aws_region_because_botocore_ignores_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: dict[str, Any] = {}
+
+    class _Session:
+        def create_client(self, service: str, **kwargs: Any) -> Any:
+            created.update(kwargs)
+            stub = _client()
+            stubber = Stubber(stub)
+            stubber.add_response("query", {"Items": []}, EXPECTED_QUERY)
+            stubber.activate()
+            return stub
+
+    monkeypatch.setattr("history.get_session", lambda: _Session())
+    monkeypatch.setenv("AWS_REGION", "us-east-2")
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+
+    DynamoAlertReader().read("ferrenafe")
+
+    assert created["region_name"] == "us-east-2"

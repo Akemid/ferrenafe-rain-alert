@@ -28,6 +28,7 @@ and the IAM grant (design D8) denies the rest even if this code were wrong.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Protocol
@@ -225,7 +226,13 @@ class DynamoAlertReader:
                 either into the empty history rather than guessing.
         """
         if self._client is None:
-            self._client = get_session().create_client("dynamodb", config=client_config())
+            # botocore does not read AWS_REGION (AgentCore sets only that one),
+            # so the region is passed explicitly; see docs/runbooks/agentcore-deploy.md.
+            self._client = get_session().create_client(
+                "dynamodb",
+                region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
+                config=client_config(),
+            )
         response = self._client.query(
             TableName=TABLE_NAME,
             KeyConditionExpression="pk = :pk",
