@@ -9,7 +9,7 @@ the fenced prompt, can name a partition (design D1).
 **Every continuity fact is computed here, in code** (design D3). The model is
 handed `consecutive_days`, `previous_level`, `escalated` and `trend`; it is
 never asked to count days or compare levels. The same facts are computed a
-second time on the application side (the continuity module of the application's domain layer, added by a later PR of this change) because
+second time on the application side (`domain/continuity.py` in the application) because
 `agent/` must not import `rain_alert`; `contracts/recent-alerts.json` pins both
 copies with one fixture (design D2). The constants below are therefore
 duplicated on purpose, and `tests/test_history_contract.py` fails if they drift.

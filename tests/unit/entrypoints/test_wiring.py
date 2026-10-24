@@ -101,6 +101,17 @@ def test_agent_selects_a_fully_wired_agent_backed_composer(monkeypatch: pytest.M
     assert isinstance(composer._invoker, BedrockAgentCoreInvoker)  # noqa: SLF001 — the property under test
 
 
+def test_agent_composer_binds_history_to_the_configured_city_partition(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The partition comes from the city's own slug, never from a request field
+    or the environment (design D1)."""
+    monkeypatch.setenv(AGENT_RUNTIME_ARN_ENV_VAR, FAKE_ARN)
+
+    composer = select_composer(_config(ComposerName.AGENT), notifier=FakeNotifier(), now=lambda: NOW)
+
+    assert isinstance(composer, AgentBackedComposer)
+    assert composer._history_partition == "ferrenafe"  # noqa: SLF001 — the property under test
+
+
 def test_agent_selection_fails_loudly_with_no_runtime_arn_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     """An operator who flips `RAIN_ALERT_COMPOSER` to `agent` without also
     setting the ARN needs to hear about it at wiring time, not on the first

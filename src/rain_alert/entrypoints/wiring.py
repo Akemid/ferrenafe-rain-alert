@@ -91,6 +91,7 @@ def select_composer(
         build_prompt=build_prompt,
         notifier=notifier,
         now=now,
+        history_partition=config.city_slug,
     )
 
 

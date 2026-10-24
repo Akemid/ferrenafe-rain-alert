@@ -66,8 +66,8 @@ class _ScriptedInvoker:
     """A structural implementation, written here rather than imported, so the
     `Protocol` is exercised by something that does not subclass it."""
 
-    def invoke(self, prompt: str) -> Mapping[str, Any]:
-        return {"echo": prompt}
+    def invoke(self, prompt: str, history: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+        return {"echo": prompt, "history": history}
 
 
 class TestAgentInvokerProtocol:
@@ -77,7 +77,14 @@ class TestAgentInvokerProtocol:
         --strict` fact, and this assignment is what makes it one here."""
         invoker: AgentInvoker = _ScriptedInvoker()
 
-        assert invoker.invoke("hola") == {"echo": "hola"}
+        assert invoker.invoke("hola") == {"echo": "hola", "history": None}
+
+    def test_the_seam_takes_an_optional_history_binding(self) -> None:
+        """The application writes the binding, never the model (design D1)."""
+        invoker: AgentInvoker = _ScriptedInvoker()
+        binding = {"partition": "ferrenafe"}
+
+        assert invoker.invoke("hola", history=binding) == {"echo": "hola", "history": binding}
 
     def test_the_seam_returns_a_decoded_mapping_not_a_string(self) -> None:
         """The invoker owns decoding, so a body that is not JSON becomes a
@@ -109,6 +116,13 @@ class TestFakeAgentInvoker:
         invoker.invoke("second")
 
         assert invoker.calls == ["first", "second"]
+
+    def test_it_records_the_history_binding_of_every_call(self) -> None:
+        invoker = FakeAgentInvoker(response={})
+        invoker.invoke("first")
+        invoker.invoke("second", history={"partition": "ferrenafe"})
+
+        assert invoker.histories == [None, {"partition": "ferrenafe"}]
 
     def test_a_scripted_exception_is_raised_instead_of_returned(self) -> None:
         failure = AgentInvocationError(UnavailableReason.TIMEOUT, "deadline exceeded")

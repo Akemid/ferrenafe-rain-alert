@@ -41,6 +41,7 @@ is not a mapping — which is exactly the case parametrization is for.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -55,13 +56,15 @@ from rain_alert.adapters.agent_composer import (
 from rain_alert.adapters.agent_invoker import AgentInvocationError
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.run_alert_cycle import CycleResult, RunAlertCycle
+from rain_alert.domain.continuity import ContinuitySummary, PriorAlert, Trend
 from rain_alert.domain.entities import Forecast, HourlyPoint
 from rain_alert.domain.message_validation import MAX_BODY_LENGTH, ValidationRule
 from rain_alert.domain.messages import AlertMessage, MessageRequest, OperatorNotice
+from rain_alert.domain.reasons import WarningReason
 from rain_alert.domain.sanitize import MAX_SOURCE_TEXT_LENGTH, TRUNCATION_MARKER
 from rain_alert.domain.sources import Available
 from rain_alert.domain.template import MessageComposer as TemplateComposer
-from rain_alert.domain.values import ComposerName, Level, NoticeKind, UnavailableReason
+from rain_alert.domain.values import ComposerName, Level, NoticeKind, UnavailableReason, WarningLevel
 from rain_alert.ports import Notifier
 from tests.support.fakes import FakeAgentInvoker, FakeAlertRepository, FakeNotifier
 from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, build_fake_deps
@@ -714,3 +717,103 @@ class TestTheAcceptedPath:
         RunAlertCycle(deps).execute()
 
         assert len(composed) == 1
+
+
+# --- Continuity: the history binding and the continuity rules (design D1, D7, D10) ---
+
+
+def _composer(invoker: FakeAgentInvoker, notifier: FakeNotifier, **kwargs: Any) -> AgentBackedComposer:
+    return AgentBackedComposer(
+        invoker=invoker, build_prompt=lambda _request: PROMPT, notifier=notifier, now=lambda: NOW, **kwargs
+    )
+
+
+def _with_continuity(days: int) -> MessageRequest:
+    prior = tuple(
+        PriorAlert(sent_at=NOW - timedelta(days=day), level=Level.PREPARE, warning_level=None) for day in range(1, days)
+    )
+    summary = ContinuitySummary(
+        consecutive_days=days,
+        previous_level=Level.PREPARE,
+        escalated=False,
+        trend=Trend.STEADY,
+        prior_alerts=prior,
+    )
+    return replace(BASELINE_REQUEST, continuity=summary)
+
+
+class TestTheHistoryBindingTheInvokerReceives:
+    def test_it_names_the_partition_the_cycle_clock_and_the_current_levels(self) -> None:
+        invoker = FakeAgentInvoker(response=draft())
+        request = replace(
+            BASELINE_REQUEST,
+            reasons=(
+                WarningReason(level=WarningLevel.YELLOW, title="a"),
+                WarningReason(level=WarningLevel.ORANGE, title="b"),
+            ),
+        )
+
+        _composer(invoker, FakeNotifier(), history_partition="ferrenafe").compose(request)
+
+        assert invoker.histories == [
+            {
+                "partition": "ferrenafe",
+                "as_of": NOW.isoformat(),
+                "current_level": BASELINE_REQUEST.level.value,
+                "current_warning_level": "orange",
+            }
+        ]
+
+    def test_with_no_official_warning_the_current_warning_level_is_null(self) -> None:
+        invoker = FakeAgentInvoker(response=draft())
+        request = replace(BASELINE_REQUEST, reasons=())
+
+        _composer(invoker, FakeNotifier(), history_partition="demo-ferrenafe").compose(request)
+
+        binding = invoker.histories[0]
+        assert binding is not None
+        assert (binding["partition"], binding["current_warning_level"]) == ("demo-ferrenafe", None)
+
+    def test_without_a_partition_no_binding_is_sent(self) -> None:
+        invoker = FakeAgentInvoker(response=draft())
+
+        _composer(invoker, FakeNotifier()).compose(BASELINE_REQUEST)
+
+        assert invoker.histories == [None]
+        assert invoker.calls == [PROMPT]
+
+
+class TestContinuityClaimsAreValidatedAgainstTheRequestsSummary:
+    """agent-message-composition spec, "Tool failure never fails composition"."""
+
+    CLAIM = CLEAN_BODY + "\nVan 3 días consecutivos de alerta."
+
+    def test_a_claim_the_summary_supports_is_accepted_as_the_agents(self) -> None:
+        invoker = FakeAgentInvoker(response=draft(body=self.CLAIM))
+        notifier = FakeNotifier()
+
+        message = _composer(invoker, notifier).compose(_with_continuity(3))
+
+        assert message.composed_by is ComposerName.AGENT
+        assert "3 días consecutivos" in message.body
+        assert notifier.notice_calls == []
+
+    def test_the_same_claim_with_an_empty_summary_falls_back_with_exactly_one_notice(self) -> None:
+        invoker = FakeAgentInvoker(response=draft(body=self.CLAIM))
+        notifier = FakeNotifier()
+
+        message = _composer(invoker, notifier).compose(BASELINE_REQUEST)
+
+        assert message == TemplateComposer().compose(BASELINE_REQUEST)
+        assert message.composed_by is ComposerName.TEMPLATE
+        assert len(notifier.notice_calls) == 1
+        assert FallbackReason.VALIDATION_FAILED.value in notifier.notice_calls[0].subject
+
+    def test_a_draft_with_no_continuity_claim_is_accepted_with_an_empty_summary(self) -> None:
+        invoker = FakeAgentInvoker(response=draft())
+        notifier = FakeNotifier()
+
+        message = _composer(invoker, notifier).compose(BASELINE_REQUEST)
+
+        assert message.composed_by is ComposerName.AGENT
+        assert notifier.notice_calls == []
