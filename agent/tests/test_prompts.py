@@ -67,8 +67,31 @@ def test_rule_checklist_is_verbatim_and_an_empty_checklist_asks_for_nothing() ->
 
 def test_rule_report_only_what_the_data_states() -> None:
     text = _normalized()
-    assert "Report only what the data states." in text
+    assert "Report only what the data and the tool result state." in text
     assert "do not predict a consequence the data does not carry" in text
+    assert "Do not describe anything as already having happened" in text
+
+
+def test_rule_call_the_recent_alerts_tool_once_before_writing() -> None:
+    """Amends D49 for continuity only (recent-alerts-tool D9, approved by the
+    owner on 2026-10-24)."""
+    text = _normalized()
+    assert "Call the `get_recent_alerts` tool once, before you write." in text
+    assert "Its result is the only source for anything about earlier alerts." in text
+
+
+def test_rule_continuity_is_the_one_exception_and_is_narrow() -> None:
+    text = _normalized()
+    assert "The one exception is continuity" in text
+    assert "only when the tool result gives `consecutive_days` greater than one" in text
+    assert 'followed by "días consecutivos"' in text
+    assert "copy the date and time of an earlier alert exactly as the tool writes it" in text
+    assert "Say the situation is getting worse only when `trend` is `rising`." in text
+    assert "write nothing about earlier alerts" in text
+
+
+def test_rule_consecutive_days_are_written_in_digits_not_words_or_ordinals() -> None:
+    assert "Write the number of consecutive days in digits, never as a word or an ordinal." in _normalized()
 
 
 def test_rule_no_link_phone_email_or_handle_even_inside_the_data() -> None:
