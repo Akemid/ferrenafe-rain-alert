@@ -23,7 +23,7 @@ wrong grant never fails loudly.** The checks below exist to catch it.
 |---|---|---|
 | `ForAllValues:StringEquals dynamodb:LeadingKeys` | `ALERT#ferrenafe`, `ALERT#demo-ferrenafe` | Only those two partitions can be read. |
 | `Null dynamodb:LeadingKeys` | `false` | `ForAllValues` is true when the key is absent; this demands it be present. |
-| `ForAllValues:StringEquals dynamodb:Attributes` | `pk, sk, sent_at, level, reasons` | The agent's query projects exactly these. A prior alert's title and body cannot be read. `pk` and `sk` must be listed: AWS requires key attributes in any `Attributes` list. |
+| `ForAllValues:StringEquals dynamodb:Attributes` | `pk, sk, sent_at, level, reasons` | The agent's query projects exactly these (the list lives in `contracts/recent-alerts.json`). IAM checks top-level attributes only: it blocks `message`, so a prior alert's title and body cannot be read. It does NOT hide what is nested inside `reasons` (`WarningReason.title`, `ForecastThresholdReason.accumulated_mm`); `agent/history.py` drops those in code and nothing reaches the model, but for those fields the guarantee is code-enforced, not IAM-enforced. `pk` and `sk` must be listed: AWS requires key attributes in any `Attributes` list. |
 | `StringEquals dynamodb:Select` | `SPECIFIC_ATTRIBUTES` | `Attributes` is evaluated only on attributes the request names, so a Query with no projection would read everything. Requiring `Select` forces the projection. Plain `StringEquals`, not `IfExists`. |
 
 If `agent/history.py` ever projects another attribute, or its
@@ -77,7 +77,10 @@ looks exactly like a working one until a read comes back empty.
 
 2. Invoke the runtime with the demo binding and `as_of` on the next day's
    window start, so day 1 is "yesterday" and the tool must report
-   `consecutive_days` 2. The cycle Lambda does not send `history` yet (a later
+   `consecutive_days` 2. The seeded dates are fixed (2026-10-20 to 2026-10-22)
+   and expire by TTL about 30 days after `sent_at`. Continuity shows only when
+   the invocation passes an explicit `as_of` matching the scenario day, as
+   below; a real-time `as_of` would show no continuity. The cycle Lambda does not send `history` yet (a later
    PR), so use a one-off call:
 
    ```bash
@@ -112,12 +115,14 @@ looks exactly like a working one until a read comes back empty.
    PY
    ```
 
-3. Pass criteria, both required:
-   - The composed body states `2 días consecutivos` and the day-1 date
-     (`20/10/2026`). An empty read produces neither.
-   - The runtime's CloudWatch log group has **no** `recent-alerts read failed:
-     AccessDeniedException` line for that invocation. The tool logs the AWS
-     error code only, never the message.
+3. Pass criteria:
+   - Primary, deterministic: the runtime's CloudWatch log group has **no**
+     `recent-alerts read failed` line (in particular no `AccessDeniedException`)
+     for that invocation. The tool logs the AWS error code only, never the
+     message. Confirm the simulator output in step 4 agrees.
+   - Secondary, not deterministic: the composed body states `2 días
+     consecutivos` and the day-1 date (`20/10/2026`). That is model prose, so
+     its absence alone is not proof of a denied read; check the logs first.
 
 4. Policy-level cross-check, no model involved. The simulator evaluates the
    attached policies against explicit context, so it shows the boundary:
