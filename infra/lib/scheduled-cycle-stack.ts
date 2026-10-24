@@ -43,20 +43,26 @@ const RELAY_CONTRACT = JSON.parse(
 
 /**
  * The history contract shared with the agent's reader (`contracts/recent-alerts.json`, recent-alerts design
- * D2/D8). Only the key prefix and the partitions are needed: reading them at synth time keeps the IAM
- * `LeadingKeys` condition and `agent/history.py` from drifting.
+ * D2/D8). Only the key prefix, the partitions and the attributes are needed: reading them at synth time keeps
+ * the IAM `LeadingKeys` and `Attributes` conditions and `agent/history.py` from drifting.
  */
 const HISTORY_CONTRACT = JSON.parse(
   readFileSync(join(__dirname, '..', '..', 'contracts', 'recent-alerts.json'), 'utf-8'),
-) as { readonly key_prefix: string; readonly allowed_partitions: readonly string[] };
+) as {
+  readonly key_prefix: string;
+  readonly allowed_partitions: readonly string[];
+  readonly attributes: readonly string[];
+};
 
 /**
- * The only attributes the agent's `Query` names (`agent/history.py::DynamoAlertReader.read` projects exactly
- * these). `pk` and `sk` are listed because AWS requires the key attributes in any `dynamodb:Attributes`
- * list ("DynamoDB can't use these key attributes to perform the requested action" otherwise) and the
- * `KeyConditionExpression` names them. A prior alert's title and body are deliberately absent.
+ * The only attributes the agent's `Query` names, read from the contract (`agent/history.py` projects exactly
+ * these and `agent/tests/test_history_contract.py` asserts it). `pk` and `sk` are listed because AWS requires
+ * the key attributes in any `dynamodb:Attributes` list ("DynamoDB can't use these key attributes to perform
+ * the requested action" otherwise) and the `KeyConditionExpression` names them. Top-level only: a prior
+ * alert's `message` (title and body) is absent, but `reasons` is allowed whole, so IAM cannot hide the
+ * titles and rainfall amounts nested inside it; `agent/history.py` drops them in code.
  */
-const HISTORY_ATTRIBUTES = ['pk', 'sk', 'sent_at', 'level', 'reasons'];
+const HISTORY_ATTRIBUTES = [...HISTORY_CONTRACT.attributes];
 
 /** design.md D26. Matches `dynamodb_alert_repository.py::TABLE_NAME` by string, not by import — the two
  * languages agree by matching this literal, the same pattern `SSM_PATH_PREFIX` uses on the SSM side. */
@@ -425,7 +431,11 @@ export class ScheduledCycleStack extends Stack {
     // three conditions are what make it safe to hand to a model-driven process:
     //  - `LeadingKeys` limits which partitions can be read; `ForAllValues` is vacuously true when the key is
     //    absent, so the `Null` guard demands that it be present.
-    //  - `Attributes` is an allow-list. It is evaluated ONLY on attributes the request names, so it alone
+    //  - `Attributes` is an allow-list of TOP-LEVEL attributes. It blocks `message` (a prior alert's title and
+    //    body) but not what is nested inside an allowed attribute: `reasons` is a list of maps carrying
+    //    `WarningReason.title` and `ForecastThresholdReason.accumulated_mm`, which IAM cannot hide. Only
+    //    `agent/history.py` (`_top_warning_level`) drops them, so for those fields the guarantee is
+    //    code-enforced, not IAM-enforced. It is evaluated ONLY on attributes the request names, so it alone
     //    would let a Query with no ProjectionExpression read everything (AWS: "Ensuring attribute-based
     //    restrictions are enforced")...
     //  - ...hence `Select = SPECIFIC_ATTRIBUTES`, as plain `StringEquals` (not `...IfExists`): a request

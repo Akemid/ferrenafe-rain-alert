@@ -6,6 +6,7 @@
   "utc_offset_hours": -5,
   "lookback_days": 7,
   "max_n": 5,
+  "attributes": ["pk", "sk", "sent_at", "level", "reasons"],
   "allowed_partitions": [
     "ferrenafe",
     "demo-ferrenafe"

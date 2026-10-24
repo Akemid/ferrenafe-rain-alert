@@ -23,7 +23,9 @@ the community its alert.
 **What the tool never returns** (design D4): a prior alert's title, body or
 rainfall amount. Titles are scraped text, and amounts would widen what the
 validator has to accept. The query itself projects only the attributes it needs,
-and the IAM grant (design D8) denies the rest even if this code were wrong.
+and the IAM grant (design D8) denies the rest at top level (`message`). IAM
+cannot hide the fields nested inside `reasons`: dropping those is enforced
+here, in code.
 """
 
 from __future__ import annotations

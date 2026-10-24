@@ -737,17 +737,22 @@ describe('ScheduledCycleStack — relay audit log bucket (D46)', () => {
  * IAM grant and the agent's reader cannot drift on the partitions or the key prefix. */
 const HISTORY_CONTRACT = JSON.parse(
   readFileSync(join(__dirname, '..', '..', 'contracts', 'recent-alerts.json'), 'utf-8'),
-) as { key_prefix: string; allowed_partitions: string[] };
+) as { key_prefix: string; allowed_partitions: string[]; attributes: string[] };
 
-/** Exactly what `agent/history.py::DynamoAlertReader.read` projects (pk and sk are the key attributes: AWS
- * requires them listed once `dynamodb:Attributes` is used). Never title, body or rainfall amounts. */
-const HISTORY_ATTRIBUTES = ['pk', 'sk', 'sent_at', 'level', 'reasons'];
+/** What `agent/history.py::DynamoAlertReader.read` projects (pk and sk are the key attributes: AWS requires
+ * them listed once `dynamodb:Attributes` is used). Read from the contract; the agent suite pins the reader to
+ * it. Top-level only: never `message`; `reasons` is allowed whole and the agent code drops its nested fields. */
+const HISTORY_ATTRIBUTES = HISTORY_CONTRACT.attributes;
 
 describe('ScheduledCycleStack — AlertHistoryReader policy (recent-alerts design D8)', () => {
   const template = synthesizeTemplate();
   const historyPolicies = Object.entries(template.findResources('AWS::IAM::ManagedPolicy')).filter(([, policy]) =>
     JSON.stringify(policy.Properties.PolicyDocument.Statement).includes('dynamodb:Query'),
   );
+
+  test('the contract lists the attributes, never the message', () => {
+    expect([...HISTORY_ATTRIBUTES].sort()).toEqual(['level', 'pk', 'reasons', 'sent_at', 'sk']);
+  });
 
   test('is one managed policy with one Allow statement: Query only, on the table ARN only', () => {
     expect(historyPolicies).toHaveLength(1);
