@@ -7,7 +7,7 @@ service model, so a misspelled parameter fails here rather than in the account.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -43,10 +43,12 @@ def _forecast() -> dict[str, Any]:
     return {"kind": {"S": "forecast_threshold"}, "accumulated_mm": {"N": "31.5"}}
 
 
+AS_OF = datetime(2026, 10, 12, 15, tzinfo=UTC)
+
 EXPECTED_QUERY = {
     "TableName": TABLE_NAME,
-    "KeyConditionExpression": "pk = :pk",
-    "ExpressionAttributeValues": {":pk": {"S": "ALERT#ferrenafe"}},
+    "KeyConditionExpression": "pk = :pk AND sk >= :lo",
+    "ExpressionAttributeValues": {":pk": {"S": "ALERT#ferrenafe"}, ":lo": {"S": "2026-10-04T15:00:00+00:00"}},
     "ProjectionExpression": "pk, sk, sent_at, #lvl, reasons",
     "ExpressionAttributeNames": {"#lvl": "level"},
     "Select": "SPECIFIC_ATTRIBUTES",
@@ -61,18 +63,20 @@ def test_the_query_is_one_projected_read_of_the_bound_partition() -> None:
     with Stubber(client) as stubber:
         stubber.add_response("query", {"Items": []}, EXPECTED_QUERY)
 
-        rows = DynamoAlertReader(client).read("ferrenafe")
+        rows = DynamoAlertReader(client).read("ferrenafe", AS_OF)
 
         stubber.assert_no_pending_responses()
     assert rows == []
 
 
-def test_the_projection_never_asks_for_title_body_or_amounts() -> None:
-    projection = EXPECTED_QUERY["ProjectionExpression"]
+def test_the_query_bounds_the_sort_key_eight_days_back_in_utc() -> None:
+    client = _client()
+    with Stubber(client) as stubber:
+        stubber.add_response("query", {"Items": []}, EXPECTED_QUERY)
 
-    for forbidden in ("title", "body", "accumulated_mm", "window", "valid_until"):
-        assert forbidden not in str(projection)
+        DynamoAlertReader(client).read("ferrenafe", AS_OF.astimezone(timezone(timedelta(hours=-5))))
 
+        stubber.assert_no_pending_responses()
 
 def test_items_become_rows_with_the_top_warning_level_taken_from_the_reasons() -> None:
     client = _client()
@@ -83,7 +87,7 @@ def test_items_become_rows_with_the_top_warning_level_taken_from_the_reasons() -
     with Stubber(client) as stubber:
         stubber.add_response("query", {"Items": items}, EXPECTED_QUERY)
 
-        rows = DynamoAlertReader(client).read("ferrenafe")
+        rows = DynamoAlertReader(client).read("ferrenafe", AS_OF)
 
     assert rows == [
         AlertRow(datetime(2026, 10, 11, 13, tzinfo=UTC), "prepare", "orange"),
@@ -102,13 +106,20 @@ def test_items_become_rows_with_the_top_warning_level_taken_from_the_reasons() -
     ],
     ids=["missing sent_at", "bad sent_at", "unknown level", "naive sent_at", "unknown warning"],
 )
-def test_a_malformed_item_raises_rather_than_being_guessed_at(broken: dict[str, Any]) -> None:
+def test_a_malformed_item_is_skipped_and_the_rest_survive(broken: dict[str, Any], caplog: pytest.LogCaptureFixture) -> None:
     client = _client()
+    good = _item("2026-10-11T13:00:00+00:00", "prepare")
     with Stubber(client) as stubber:
-        stubber.add_response("query", {"Items": [broken]}, EXPECTED_QUERY)
+        stubber.add_response("query", {"Items": [broken, good]}, EXPECTED_QUERY)
 
-        with pytest.raises((KeyError, ValueError)):
-            DynamoAlertReader(client).read("ferrenafe")
+        with caplog.at_level("WARNING", logger="history"):
+            rows = DynamoAlertReader(client).read("ferrenafe", AS_OF)
+
+    assert rows == [AlertRow(datetime(2026, 10, 11, 13, tzinfo=UTC), "prepare", None)]
+    assert "skipped 1 malformed" in caplog.text
+    assert "not a date" not in caplog.text
+    assert "catastrophic" not in caplog.text
+    assert "purple" not in caplog.text
 
 
 def test_the_client_is_bounded_so_a_slow_store_cannot_stall_the_alert() -> None:
@@ -141,6 +152,6 @@ def test_the_client_region_comes_from_aws_region_because_botocore_ignores_it(mon
     monkeypatch.setenv("AWS_REGION", "us-east-2")
     monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
 
-    DynamoAlertReader().read("ferrenafe")
+    DynamoAlertReader().read("ferrenafe", AS_OF)
 
     assert created["region_name"] == "us-east-2"

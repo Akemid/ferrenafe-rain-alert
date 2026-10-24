@@ -69,7 +69,7 @@ class CountingSource:
         self.rows = rows
         self.reads: list[str] = []
 
-    def read(self, partition: str) -> list[AlertRow]:
+    def read(self, partition: str, as_of: datetime) -> list[AlertRow]:
         self.reads.append(partition)
         return self.rows
 

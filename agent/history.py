@@ -16,7 +16,8 @@ duplicated on purpose, and `tests/test_history_contract.py` fails if they drift.
 
 **History is optional, and its absence is never an error** (design D6, D7). A
 missing or malformed binding, a store that is slow or denied, a record that does
-not parse: each degrades to the empty history. A missing history must never cost
+not parse: each degrades (a bad record is skipped, the rest are kept; the others
+yield the empty history). A missing history must never cost
 the community its alert.
 
 **What the tool never returns** (design D4): a prior alert's title, body or
@@ -124,7 +125,7 @@ def _rank(level: str, warning_level: str | None) -> tuple[int, int]:
 
 
 def summarize(rows: list[AlertRow], binding: HistoryBinding, n: int) -> dict[str, Any]:
-    """The tool result: facts computed from `rows`, newest alerts first.
+    """The tool result: facts computed from `rows`, most recent alerts first.
 
     Only alerts sent in `[as_of - LOOKBACK_DAYS, as_of)` count. `consecutive_days`
     is the run of consecutive Lima dates ending at `as_of`'s own date: today
@@ -181,13 +182,17 @@ def empty_history() -> dict[str, Any]:
 class AlertSource(Protocol):
     """The one read the tool needs. Narrow on purpose: a fake is one method."""
 
-    def read(self, partition: str) -> list[AlertRow]: ...
+    def read(self, partition: str, as_of: datetime) -> list[AlertRow]: ...
 
 
 #: Rows read per request. Cycles are six-hourly and deduplicated, so a week of
 #: history is a handful of items; the cap bounds the worst case rather than
 #: serving as a page size, and no pagination loop is written for it.
 QUERY_LIMIT = 50
+
+#: One day wider than `LOOKBACK_DAYS`: the sort key is the window start, which can
+#: precede the `sent_at` that `summarize` cuts on.
+QUERY_LOOKBACK_DAYS = LOOKBACK_DAYS + 1
 
 
 def client_config() -> Config:
@@ -212,8 +217,16 @@ class DynamoAlertReader:
     def __init__(self, client: Any | None = None) -> None:
         self._client = client
 
-    def read(self, partition: str) -> list[AlertRow]:
-        """Every stored alert of `partition`, newest sort key first.
+    def read(self, partition: str, as_of: datetime) -> list[AlertRow]:
+        """The stored alerts of `partition` from the last `QUERY_LOOKBACK_DAYS`,
+        ordered by window start (the sort key), newest first.
+
+        The query is bounded below by `sk >= (as_of - QUERY_LOOKBACK_DAYS)`.
+        The sort key is `<window start ISO 8601 UTC>#<level>` and window starts
+        are always UTC (`TimeWindow` enforces it), so with `as_of` normalized to
+        UTC the bound compares correctly as a string. It is one day wider than
+        `LOOKBACK_DAYS` because the key is the window start, not `sent_at`;
+        `summarize` applies the exact cut on `sent_at`.
 
         Projects only `pk, sk, sent_at, level, reasons`, which is also the whole
         of what the IAM grant allows (design D8). `level` is a DynamoDB
@@ -221,9 +234,9 @@ class DynamoAlertReader:
         projected only to extract the top warning level; their titles and
         amounts are dropped here and never leave this function.
 
-        Raises:
-            KeyError, ValueError: A stored item is malformed. The tool turns
-                either into the empty history rather than guessing.
+        A malformed item is skipped rather than failing the read: one bad row
+        must not discard the rest of the history. Only the count is logged,
+        never the item's content.
         """
         if self._client is None:
             # botocore does not read AWS_REGION (AgentCore sets only that one),
@@ -233,10 +246,11 @@ class DynamoAlertReader:
                 region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
                 config=client_config(),
             )
+        lower_bound = (as_of.astimezone(UTC) - timedelta(days=QUERY_LOOKBACK_DAYS)).isoformat()
         response = self._client.query(
             TableName=TABLE_NAME,
-            KeyConditionExpression="pk = :pk",
-            ExpressionAttributeValues={":pk": {"S": f"{KEY_PREFIX}{partition}"}},
+            KeyConditionExpression="pk = :pk AND sk >= :lo",
+            ExpressionAttributeValues={":pk": {"S": f"{KEY_PREFIX}{partition}"}, ":lo": {"S": lower_bound}},
             ProjectionExpression="pk, sk, sent_at, #lvl, reasons",
             ExpressionAttributeNames={"#lvl": "level"},
             Select="SPECIFIC_ATTRIBUTES",
@@ -244,7 +258,16 @@ class DynamoAlertReader:
             ConsistentRead=True,
             Limit=QUERY_LIMIT,
         )
-        return [_row_from_item(item) for item in response.get("Items", [])]
+        rows: list[AlertRow] = []
+        skipped = 0
+        for item in response.get("Items", []):
+            try:
+                rows.append(_row_from_item(item))
+            except (KeyError, ValueError, TypeError, AttributeError):
+                skipped += 1
+        if skipped:
+            logger.warning("recent-alerts read skipped %d malformed item(s)", skipped)
+        return rows
 
 
 def _row_from_item(item: dict[str, Any]) -> AlertRow:
@@ -332,7 +355,7 @@ def _read_facts(binding: HistoryBinding | None, source: AlertSource, n: int) -> 
     if binding is None:
         return empty_history()
     try:
-        return summarize(source.read(binding.partition), binding, n)
+        return summarize(source.read(binding.partition, binding.as_of), binding, n)
     except ClientError as error:
         logger.warning("recent-alerts read failed: %s", error.response.get("Error", {}).get("Code", "unknown"))
     except BotoCoreError as error:

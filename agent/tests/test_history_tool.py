@@ -29,7 +29,7 @@ class RecordingSource:
         self.reads: list[str] = []
         self.writes: list[str] = []
 
-    def read(self, partition: str) -> list[AlertRow]:
+    def read(self, partition: str, as_of: datetime) -> list[AlertRow]:
         self.reads.append(partition)
         if self.error is not None:
             raise self.error
