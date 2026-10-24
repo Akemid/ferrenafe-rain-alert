@@ -862,9 +862,9 @@ def _day_counts_in_words(residue: str) -> tuple[tuple[str, str], ...]:
             tokens[following] in _NUMERAL_WORDS or tokens[following] in _NUMERAL_CONNECTORS
         ):
             following += 1
-        if following < len(tokens) and tokens[following] in _DAY_WORDS:
-            if _CONTINUITY_CLAUSE.search(_clause_around(residue, matches[index].start())) is not None:
-                found.append((token, tokens[following]))
+        states_days = following < len(tokens) and tokens[following] in _DAY_WORDS
+        if states_days and _CONTINUITY_CLAUSE.search(_clause_around(residue, matches[index].start())) is not None:
+            found.append((token, tokens[following]))
     return tuple(found)
 
 
