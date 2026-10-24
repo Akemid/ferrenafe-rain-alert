@@ -14,12 +14,13 @@ import pytest
 from rain_alert.adapters.agent_composer import AgentBackedComposer
 from rain_alert.adapters.agent_invoker import AgentInvocationError
 from rain_alert.application.run_alert_cycle import RunAlertCycle
-from rain_alert.domain.continuity import LOOKBACK_DAYS, Trend
+from rain_alert.domain.continuity import EMPTY_CONTINUITY, LOOKBACK_DAYS, Trend
 from rain_alert.domain.entities import Forecast, HourlyPoint, Warning
 from rain_alert.domain.hazards import Phenomenon, Zone
 from rain_alert.domain.messages import AlertMessage, AlertRecord
 from rain_alert.domain.reasons import WarningReason
 from rain_alert.domain.sources import Available, Unavailable
+from rain_alert.domain.template import MessageComposer as TemplateMessageComposer
 from rain_alert.domain.values import (
     ComposerName,
     Level,
@@ -29,7 +30,7 @@ from rain_alert.domain.values import (
     UnavailableReason,
     WarningLevel,
 )
-from tests.support.fakes import FakeAgentInvoker, FakeAlertRepository
+from tests.support.fakes import FakeAgentInvoker, FakeAlertRepository, FakeMessageComposer, FakeNotifier
 from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, ComposerFactory, build_fake_deps
 
 NOW = DEFAULT_NOW
@@ -626,3 +627,45 @@ class TestAFailedHistoryReadNeverBlocksTheSend:
 
         assert "continuity read failed: RuntimeError" in caplog.text
         assert "secret-table-arn" not in caplog.text
+
+
+class TestTheHistoryIsReadOnlyForAComposerThatConsumesIt:
+    """Design W4: the template never reads `continuity`, so a read for it is a store query with no reader."""
+
+    def test_a_composer_that_does_not_consume_history_costs_no_read(self) -> None:
+        deps = build_fake_deps(
+            forecast=_forecast(24, mm_total=29.8, probability_pct=70),
+            prior_alerts=[_history(1)],
+            composer=lambda _notifier, _now: FakeMessageComposer(consumes_history=False),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.sent is True
+        assert len(deps.alerts.query_calls) == 1  # the policy's own
+        assert result.message_request.continuity == EMPTY_CONTINUITY
+
+    def test_the_agent_composer_still_gets_the_summary(self) -> None:
+        deps = build_fake_deps(
+            forecast=_forecast(24, mm_total=29.8, probability_pct=70),
+            prior_alerts=[_history(1)],
+            composer=_agent_backed(FakeAgentInvoker(error=AgentInvocationError(UnavailableReason.TIMEOUT, "down"))),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert len(deps.alerts.query_calls) == 2
+        assert result.message_request.continuity.consecutive_days == 2
+
+    def test_the_real_template_declares_that_it_does_not_consume_history(self) -> None:
+        assert TemplateMessageComposer().consumes_history is False
+
+    def test_the_agent_composer_declares_that_it_does(self) -> None:
+        composer = AgentBackedComposer(
+            invoker=FakeAgentInvoker(error=AgentInvocationError(UnavailableReason.TIMEOUT, "down")),
+            build_prompt=lambda _request: "<prompt>",
+            notifier=FakeNotifier(),
+            now=lambda: NOW,
+        )
+
+        assert composer.consumes_history is True

@@ -196,6 +196,9 @@ class AgentBackedComposer:
             name a place.
     """
 
+    #: The agent's tool reads the history, and the validator needs the summary.
+    consumes_history = True
+
     def __init__(
         self,
         *,

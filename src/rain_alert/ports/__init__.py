@@ -70,6 +70,13 @@ class MessageComposer(Protocol):
     composer must not be handed unfiltered.
     """
 
+    #: Whether this composer reads `MessageRequest.continuity`. `RunAlertCycle`
+    #: reads the alert history only for one that does, so a composer that never
+    #: looks at it costs the store no query. Asked of the composer rather than
+    #: of the config, because a CLI override can select a composer the stored
+    #: configuration does not name.
+    consumes_history: bool
+
     def compose(self, request: MessageRequest) -> AlertMessage: ...
 
 

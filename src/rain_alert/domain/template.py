@@ -191,6 +191,9 @@ class MessageComposer:
     authorized the send; its return value never feeds back into any
     decision (the LLM composer invariant, preserved here structurally)."""
 
+    #: The template never reads `request.continuity`, so the cycle skips the read.
+    consumes_history = False
+
     def compose(self, request: MessageRequest) -> AlertMessage:
         level_label = LEVEL_LABELS_ES[request.level]
         title = f"Alerta de lluvias — {request.city} — {level_label}"

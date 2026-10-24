@@ -109,6 +109,10 @@ class FakeMessageComposer:
 
     calls: list[MessageRequest] = field(default_factory=list)
     log: CallLog = field(default_factory=CallLog)
+    #: Defaults to `True` so the double stands in for a composer that needs
+    #: the continuity summary and tests can observe the read; pass `False` to
+    #: stand in for the template.
+    consumes_history: bool = True
     _delegate: TemplateMessageComposer = field(default_factory=TemplateMessageComposer)
 
     def compose(self, request: MessageRequest) -> AlertMessage:

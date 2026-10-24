@@ -232,9 +232,10 @@ class RunAlertCycle:
         sent = False
         recipients_count = 0
         if decision.send and not outage_decision.suppress_community_alert:
-            message_request = replace(
-                message_request, continuity=_read_continuity(deps.alerts, config, assessment, now)
-            )
+            if deps.composer.consumes_history:
+                message_request = replace(
+                    message_request, continuity=_read_continuity(deps.alerts, config, assessment, now)
+                )
             message = deps.composer.compose(message_request)
             recipients = deps.contacts.list_active(config.active_channel)
             deps.notifier.send_alert(message, recipients)
