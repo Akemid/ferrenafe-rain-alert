@@ -4,14 +4,16 @@
 tool and the real structured-output machinery, and fakes only the model: a
 hand-written `Model` that replays two turns, first asking for the tool and then
 returning the structured output. It is what proves the call shape in design D5 —
-`agent(prompt, structured_output_model=...)` runs tools before the structured
-output, where the legacy `Agent.structured_output()` would not.
+`agent(prompt, structured_output_model=...)` lets tools run before the structured
+output, where the legacy `Agent.structured_output()` would not. The prompt asks
+for the tool first; the loop does not enforce it, and a test below covers a model
+that skips it.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -146,16 +148,34 @@ def test_compose_runs_the_tool_loop_end_to_end_through_the_entrypoint_seam() -> 
     assert set(result) == {"title", "body", "level", "valid_until"}
 
 
-@pytest.mark.parametrize("n", [100, 0, -3])
-def test_a_hostile_n_from_the_model_still_reads_only_the_bound_partition(n: int) -> None:
+MANY_ROWS = [
+    AlertRow(datetime(2026, 10, 11, 13, tzinfo=UTC) - timedelta(hours=6 * i), "prepare", None) for i in range(7)
+]
+
+
+@pytest.mark.parametrize(("n", "listed"), [(100, 5), (0, 1), (-3, 1)])
+def test_a_hostile_n_from_the_model_is_clamped_and_reads_only_the_bound_partition(n: int, listed: int) -> None:
     model = ScriptedModel(
         [
             _tool_use_turn("get_recent_alerts", {"n": n}, "t1"),
             _tool_use_turn("CompositionOutput", OUTPUT, "t2"),
         ]
     )
-    source = CountingSource(ROWS)
+    source = CountingSource(MANY_ROWS)
 
     _run(model, source)
 
     assert source.reads == ["ferrenafe"]
+    assert json.dumps(model.messages_seen[1]).count("sent_local") == listed
+
+
+def test_a_model_that_skips_the_tool_still_gets_a_valid_result_with_no_continuity() -> None:
+    # The loop does not enforce tool-first: the prompt only instructs it.
+    model = ScriptedModel([_tool_use_turn("CompositionOutput", OUTPUT, "t1")])
+    source = CountingSource(ROWS)
+
+    result = _run(model, source)
+
+    assert source.reads == []
+    assert isinstance(result.structured_output, CompositionOutput)
+    assert "consecutive_days" not in json.dumps(model.messages_seen)
