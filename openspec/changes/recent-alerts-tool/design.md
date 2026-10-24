@@ -80,3 +80,9 @@ AFTER script (outside the repo): `runs/after/invoke_after.py`. It reuses `runs/b
 
 - [ ] Confirm the table and the runtime are both in us-east-2. The tool client uses the runtime's region.
 - [ ] Owner approval of the D9 wording before apply.
+
+## Review Amendments
+
+Applied after the adversarial review of the validator change. Each one narrows D10 or D7 and none widens what a body may say.
+
+- **W1 (D10, spelled-out day counts).** A cardinal number word followed by a day-like word (`dia`, `jornada`, `noche`, `semana` and their plurals) is refused with `WORD_NUMBER` unless that exact phrase, folded, appears verbatim in the request's own checklist. This replaces "refused only when the clause has a continuity marker", which let `Hace tres días que llueve`, `van cuatro días de lluvia` and `por tres jornadas` through with any `consecutive_days`. The marker check stays as a second, additional refusal. Known wrong-lax residual: a phrase the checklist itself carries (today `dos días`) is still accepted outside a continuity-marker clause, so `Hace dos días que llueve` passes. It is bounded by the checklist and cannot be widened by the model.

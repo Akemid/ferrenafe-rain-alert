@@ -822,15 +822,17 @@ _ORDINAL_WORDS = frozenset({
     "octavo", "octava", "noveno", "novena", "decimo", "decima",
 })  # fmt: skip
 
-_DAY_WORDS = frozenset({"dia", "dias"})
+#: What an ordinal is held against: `primer día`, `tercer día`.
+_ORDINAL_DAY_WORDS = frozenset({"dia", "dias"})
 
-#: What makes a spelled-out number of days a *continuity claim* rather than
-#: ordinary prose. `al menos dos días` is the operator's own checklist wording
-#: and the existing suite pins that prose of that kind is left alone (the word
-#: rule's own docstring: an unconditioned days rule would refuse the template's
-#: body). A clause that talks about alerts continuing, on the other hand, is
-#: exactly the claim digits are required for, so a number word in it is refused
-#: even when it happens to be true. Wrong-strict, and narrow.
+#: Day-like nouns a cardinal can count. A body that says `por tres jornadas` or
+#: `cuatro noches` states a duration in words just as `tres días` does.
+_DAY_WORDS = frozenset({"dia", "dias", "jornada", "jornadas", "noche", "noches", "semana", "semanas"})
+
+#: What makes a spelled-out number of days a continuity claim even when the
+#: checklist happens to carry the same phrase. A clause that talks about alerts
+#: continuing is exactly the claim digits are required for, so a number word in
+#: it is refused even when it happens to be true. Wrong-strict, and narrow.
 _CONTINUITY_CLAUSE = re.compile(r"consecutiv|seguid|continu|alerta")
 
 
@@ -840,19 +842,35 @@ def _clause_around(text: str, position: int) -> str:
     return _clause_before(text, position) + text[position : min(ends, default=len(text))]
 
 
-def _day_counts_in_words(residue: str) -> tuple[tuple[str, str], ...]:
+def _checklist_phrases(request: MessageRequest) -> list[list[str]]:
+    """The request's own checklist, folded and tokenised one item at a time."""
+    return [_WORD_OR_NUMBER.findall(_fold(item)) for item in request.checklist]
+
+
+def _is_verbatim(phrase: list[str], items: list[list[str]]) -> bool:
+    """Whether `phrase` appears as a contiguous run of tokens in one checklist item."""
+    width = len(phrase)
+    return any(item[start : start + width] == phrase for item in items for start in range(len(item) - width + 1))
+
+
+def _day_counts_in_words(request: MessageRequest, residue: str) -> tuple[tuple[str, str], ...]:
     """Every `(number word, day word)` pair that states a day count in words.
 
     An ordinal directly before `dia`/`dias` is always refused. A cardinal
-    (`tres días`, `treinta y cinco días`) is refused when its clause makes a
-    continuity claim (`_CONTINUITY_CLAUSE`); elsewhere it is ordinary prose.
+    before a day word (`tres días`, `treinta y cinco jornadas`) is refused
+    unless that exact phrase, normalised, appears verbatim in the request's own
+    checklist — which is why the operator's `al menos dos días` is not refused.
+    The phrase is judged, not the clause, so `Hace tres días que llueve` is
+    refused with no marker in sight. A phrase the checklist does carry is
+    still refused when its clause claims continuity (`_CONTINUITY_CLAUSE`).
     """
     matches = list(_WORD_OR_NUMBER.finditer(residue))
     tokens = [match.group() for match in matches]
+    checklist = _checklist_phrases(request)
     found: list[tuple[str, str]] = []
     for index, token in enumerate(tokens):
         if token in _ORDINAL_WORDS:
-            if index + 1 < len(tokens) and tokens[index + 1] in _DAY_WORDS:
+            if index + 1 < len(tokens) and tokens[index + 1] in _ORDINAL_DAY_WORDS:
                 found.append((token, tokens[index + 1]))
             continue
         if token not in _NUMERAL_WORDS:
@@ -862,8 +880,11 @@ def _day_counts_in_words(residue: str) -> tuple[tuple[str, str], ...]:
             tokens[following] in _NUMERAL_WORDS or tokens[following] in _NUMERAL_CONNECTORS
         ):
             following += 1
-        states_days = following < len(tokens) and tokens[following] in _DAY_WORDS
-        if states_days and _CONTINUITY_CLAUSE.search(_clause_around(residue, matches[index].start())) is not None:
+        if following >= len(tokens) or tokens[following] not in _DAY_WORDS:
+            continue
+        in_the_checklist = _is_verbatim(tokens[index : following + 1], checklist)
+        claims_continuity = _CONTINUITY_CLAUSE.search(_clause_around(residue, matches[index].start())) is not None
+        if claims_continuity or not in_the_checklist:
             found.append((token, tokens[following]))
     return tuple(found)
 
@@ -1231,7 +1252,7 @@ def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[
     )
     violations.extend(
         Violation(ValidationRule.WORD_NUMBER, f"{word!r} quantifies {unit!r} in words instead of digits")
-        for word, unit in (*_word_numbers_quantifying_a_unit(residue), *_day_counts_in_words(residue))
+        for word, unit in (*_word_numbers_quantifying_a_unit(residue), *_day_counts_in_words(request, residue))
     )
 
     violations.extend(

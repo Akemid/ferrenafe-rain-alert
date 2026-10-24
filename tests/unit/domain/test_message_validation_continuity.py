@@ -188,6 +188,46 @@ class TestDaysWrittenInWordsAreRefused:
 
         assert found == {ValidationRule.WORD_NUMBER}
 
+    @pytest.mark.parametrize("days", [0, 1, 2, 3])
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "Hace tres días que llueve.",
+            "Van cuatro días de lluvia.",
+            "Llueve por tres jornadas.",
+            "Hace cuatro noches que llueve.",
+            "Llueve desde hace tres semanas.",
+        ],
+    )
+    def test_a_number_word_before_a_day_word_is_rejected_unless_the_checklist_says_it(
+        self, sentence: str, days: int
+    ) -> None:
+        """No continuity marker in these clauses, so only the verbatim-checklist rule can refuse them."""
+        message_request = request(_summary(days, PRIOR_A, PRIOR_B) if days else EMPTY_CONTINUITY)
+
+        found = rules(message_request, with_sentence(message_request, sentence))
+
+        assert ValidationRule.WORD_NUMBER in found
+
+    def test_a_phrase_the_checklist_carries_verbatim_is_accepted(self) -> None:
+        message_request = request(_summary(3, PRIOR_A, PRIOR_B))
+
+        assert rules(message_request, with_sentence(message_request, "Guarda provisiones para dos días.")) == set()
+
+    def test_the_exemption_is_the_checklists_own_phrase_not_the_day_word(self) -> None:
+        message_request = request(_summary(3, PRIOR_A, PRIOR_B))
+
+        found = rules(message_request, with_sentence(message_request, "Guarda provisiones para tres días."))
+
+        assert found == {ValidationRule.WORD_NUMBER}
+
+    def test_the_exemption_follows_the_requests_own_checklist(self) -> None:
+        message_request = replace(request(_summary(3, PRIOR_A, PRIOR_B)), checklist=("Almacena agua para tres días.",))
+
+        assert rules(message_request, with_sentence(message_request, "Guarda provisiones para dos días.")) == {
+            ValidationRule.WORD_NUMBER
+        }
+
     def test_the_word_dia_without_a_number_is_fine(self) -> None:
         message_request = request(_summary(3, PRIOR_A, PRIOR_B))
 
