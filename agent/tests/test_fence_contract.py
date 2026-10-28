@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app import PROMPT_KEY
+from app import HISTORY_KEY, PROMPT_KEY
 from prompts import SYSTEM_PROMPT
 
 CONTRACT_PATH = Path(__file__).resolve().parents[2] / "contracts" / "composer-fence.json"
@@ -32,3 +32,16 @@ def test_the_system_prompt_names_the_contract_markers() -> None:
     placeholder = str(contract["prompt_placeholder"])
     assert str(contract["open_marker"]).format(token=placeholder) in SYSTEM_PROMPT
     assert str(contract["close_marker"]).format(token=placeholder) in SYSTEM_PROMPT
+
+
+def test_the_contract_is_schema_version_2_and_names_the_history_key() -> None:
+    """Schema 2 adds `history_key`: the payload key under which the application
+    binds the continuity context (partition, as_of, current level). It is a
+    sibling of `prompt`, never part of the fenced prompt, so scraped text
+    cannot reach it."""
+    assert _contract()["schema_version"] == 2
+    assert _contract()["history_key"] == "history"
+
+
+def test_the_agent_reads_the_history_under_the_contract_key() -> None:
+    assert _contract()["history_key"] == HISTORY_KEY

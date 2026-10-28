@@ -58,13 +58,14 @@ def _prompt_contains_the_contract_markers(contract: dict[str, object], prompt: s
 def test_the_contract_pins_the_values_the_design_chose() -> None:
     """Guards the file itself: a test comparing two copies of a wrong value passes."""
     assert _contract() == {
-        "schema_version": 1,
+        "schema_version": 2,
         "tag": "datos",
         "open_marker": "<datos:{token}>",
         "close_marker": "</datos:{token}>",
         "token_hex_chars": 32,
         "prompt_placeholder": "TOKEN",
         "prompt_key": "prompt",
+        "history_key": "history",
     }
 
 
