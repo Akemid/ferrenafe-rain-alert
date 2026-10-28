@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from rain_alert.adapters.agent_prompt import _fence_token, build_prompt
-from rain_alert.adapters.agentcore_invoker import PROMPT_PAYLOAD_KEY
+from rain_alert.adapters.agentcore_invoker import HISTORY_PAYLOAD_KEY, PROMPT_PAYLOAD_KEY
 from rain_alert.adapters.local.static_config_repository import CHECKLIST
 from rain_alert.domain.messages import MessageRequest
 from rain_alert.domain.values import Level, TimeWindow
@@ -83,6 +83,10 @@ def test_the_fence_token_has_the_contract_length() -> None:
 
 def test_the_invoker_payload_key_matches_the_contract() -> None:
     assert _contract()["prompt_key"] == PROMPT_PAYLOAD_KEY
+
+
+def test_the_invoker_history_key_matches_the_contract() -> None:
+    assert _contract()["history_key"] == HISTORY_PAYLOAD_KEY
 
 
 def test_a_drifted_tag_is_caught() -> None:

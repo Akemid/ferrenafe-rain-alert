@@ -109,6 +109,10 @@ class FakeMessageComposer:
 
     calls: list[MessageRequest] = field(default_factory=list)
     log: CallLog = field(default_factory=CallLog)
+    #: Defaults to `True` so the double stands in for a composer that needs
+    #: the continuity summary and tests can observe the read; pass `False` to
+    #: stand in for the template.
+    consumes_history: bool = True
     _delegate: TemplateMessageComposer = field(default_factory=TemplateMessageComposer)
 
     def compose(self, request: MessageRequest) -> AlertMessage:
@@ -154,10 +158,13 @@ class FakeAgentInvoker:
         self._response = response
         self._error = error
         self.calls: list[str] = []
+        #: The history binding of each call, parallel to `calls`; `None` when none was sent.
+        self.histories: list[Mapping[str, Any] | None] = []
         self.log = log if log is not None else CallLog()
 
-    def invoke(self, prompt: str) -> Mapping[str, Any]:
+    def invoke(self, prompt: str, history: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
         self.calls.append(prompt)
+        self.histories.append(history)
         self.log.record("invoker", "invoke", str(len(self.calls)))
         if self._error is not None:
             raise self._error

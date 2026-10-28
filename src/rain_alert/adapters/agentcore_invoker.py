@@ -118,6 +118,10 @@ _JSON_CONTENT_TYPE = "application/json"
 #: `docs/blog/2026-09-21-three-docstrings-cited-a-file-that-was-never-written.md`.
 PROMPT_PAYLOAD_KEY = "prompt"
 
+#: The key `agent/app.py::HISTORY_KEY` reads, pinned from both sides by
+#: `contracts/composer-fence.json` (`history_key`, schema 2).
+HISTORY_PAYLOAD_KEY = "history"
+
 
 @dataclass(frozen=True, slots=True)
 class AgentRuntimeSettings:
@@ -196,11 +200,14 @@ class BedrockAgentCoreInvoker:
             )
         return self._client
 
-    def invoke(self, prompt: str) -> Mapping[str, Any]:
+    def invoke(self, prompt: str, history: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
         client = self._resolved_client()
+        payload: dict[str, Any] = {PROMPT_PAYLOAD_KEY: prompt}
+        if history is not None:
+            payload[HISTORY_PAYLOAD_KEY] = history
         kwargs: dict[str, Any] = {
             "agentRuntimeArn": self._agent_runtime_arn,
-            "payload": json.dumps({PROMPT_PAYLOAD_KEY: prompt}).encode("utf-8"),
+            "payload": json.dumps(payload).encode("utf-8"),
         }
         if self._qualifier is not None:
             kwargs["qualifier"] = self._qualifier

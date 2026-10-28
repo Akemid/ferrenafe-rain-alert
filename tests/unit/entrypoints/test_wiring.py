@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -99,6 +100,32 @@ def test_agent_selects_a_fully_wired_agent_backed_composer(monkeypatch: pytest.M
 
     assert isinstance(composer, AgentBackedComposer)
     assert isinstance(composer._invoker, BedrockAgentCoreInvoker)  # noqa: SLF001 — the property under test
+
+
+def test_agent_composer_binds_history_to_the_configured_city_partition(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The partition comes from the city's own slug, never from a request field
+    or the environment (design D1)."""
+    monkeypatch.setenv(AGENT_RUNTIME_ARN_ENV_VAR, FAKE_ARN)
+
+    composer = select_composer(_config(ComposerName.AGENT), notifier=FakeNotifier(), now=lambda: NOW)
+
+    assert isinstance(composer, AgentBackedComposer)
+    assert composer._history_partition == "ferrenafe"  # noqa: SLF001 — the property under test
+
+
+def test_the_agents_fixed_utc_minus_five_assumption_matches_the_configured_timezone() -> None:
+    """`agent/history.py` counts days in a fixed UTC-5 because it cannot import `rain_alert` or
+    carry tzdata. That is the same calendar as the application's zone only while every config
+    source keeps `America/Lima` and Lima keeps a constant offset; this fails if either moves."""
+    from rain_alert.adapters.local.static_config_repository import StaticConfigRepository
+    from rain_alert.adapters.ssm_config_repository import TIMEZONE as SSM_TIMEZONE
+
+    assert StaticConfigRepository().load().timezone == "America/Lima"
+    assert SSM_TIMEZONE == "America/Lima"
+    lima = ZoneInfo("America/Lima")
+    offsets = {datetime(2026, month, 15, 12, tzinfo=UTC).astimezone(lima).utcoffset() for month in range(1, 13)}
+    assert offsets == {timedelta(hours=-5)}
+    assert _config(ComposerName.AGENT).timezone == "America/Lima"
 
 
 def test_agent_selection_fails_loudly_with_no_runtime_arn_configured(monkeypatch: pytest.MonkeyPatch) -> None:

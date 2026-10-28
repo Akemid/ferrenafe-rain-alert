@@ -34,6 +34,7 @@ from decimal import Decimal
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
+from rain_alert.domain.continuity import MAX_PRIOR_ALERTS
 from rain_alert.domain.messages import AlertMessage, MessageRequest
 from rain_alert.domain.reasons import ForecastThresholdReason, WarningReason
 from rain_alert.domain.sanitize import has_unsafe_characters, sanitize_source_text
@@ -400,6 +401,10 @@ class NumberUnit(StrEnum):
     MILLIMETRES = "mm"
     PERCENTAGE = "%"
     HOURS = "h"
+    #: Continuity (design D10). Its one allowed value is
+    #: `ContinuitySummary.consecutive_days`, and only when that is more than
+    #: one: "1 día" is today alone, not continuity.
+    DAYS = "days"
 
 
 #: What may sit between a figure and the unit it is stated in without
@@ -441,7 +446,21 @@ _UNIT_AFTER_A_NUMBER: tuple[tuple[re.Pattern[str], NumberUnit], ...] = (
         NumberUnit.MILLIMETRES,
     ),
     (re.compile(_BETWEEN_A_FIGURE_AND_ITS_UNIT + r"(?:horas?|hs?)(?!\w)", re.IGNORECASE), NumberUnit.HOURS),
+    # `3er día`, `2º día`, `3ra día`: an ordinal figure counts days all the same.
+    (
+        re.compile(_BETWEEN_A_FIGURE_AND_ITS_UNIT + r"(?:(?:er|ro|ra|º|ª)[ \t]*)?d[ií]as?(?!\w)", re.IGNORECASE),
+        NumberUnit.DAYS,
+    ),
 )
+
+#: `día 3`, `dia 12`: the figure after the word counts days, so it is held to
+#: the day count and cannot borrow a millimetre or percentage value.
+_DAY_WORD_RIGHT_BEFORE = re.compile(r"d[ií]as?[ \t]+\Z", re.IGNORECASE)
+
+
+def _day_word_before(residue: str, position: int) -> NumberUnit | None:
+    """`DAYS` when a day word sits directly in front of `position`, else `None`."""
+    return NumberUnit.DAYS if _DAY_WORD_RIGHT_BEFORE.search(residue[:position]) else None
 
 
 def _unit_after(residue: str, position: int) -> NumberUnit | None:
@@ -564,6 +583,10 @@ def _allowed_numbers(request: MessageRequest) -> dict[NumberUnit, set[Decimal]]:
     Millimetre amounts are added twice, raw and at one decimal place, because
     `domain/template.py` prints `{value:.1f}` and a model told "12.4 mm" may
     legitimately write `12,4`.
+
+    The one allowed day count is the request's `consecutive_days`, and only
+    from two up. It lives under `DAYS` alone, so it can never be reused as a
+    rainfall figure, a percentage or an hour count.
     """
     allowed: dict[NumberUnit, set[Decimal]] = {unit: set() for unit in NumberUnit}
 
@@ -586,11 +609,21 @@ def _allowed_numbers(request: MessageRequest) -> dict[NumberUnit, set[Decimal]]:
             # template never renders it, only the English operator view does,
             # so it never reaches the prompt and a model cannot legitimately
             # know it. A recipient body carrying it has no honest reason to.
+    if request.continuity.consecutive_days > 1:
+        allowed[NumberUnit.DAYS].add(Decimal(request.continuity.consecutive_days))
     return allowed
 
 
-def _allowed_moments(request: MessageRequest) -> tuple[set[str], set[str]]:
-    """The local dates and local times the request's own instants render as."""
+def _allowed_moments(request: MessageRequest) -> tuple[set[str], set[str], set[str]]:
+    """The local dates, local times and prior date-time pairs the request's own
+    instants render as.
+
+    A prior alert's date is allowed on its own, but its time only beside that
+    same date as one `DD/MM/YYYY HH:MM` pair: allowing the two independently
+    let `20/10/2026 14:00` through when 14:00 belonged to another day's alert.
+    Only the `MAX_PRIOR_ALERTS` most recent priors count, the ones the agent's
+    tool could have shown the model.
+    """
     zone = ZoneInfo(request.timezone)
     moments: list[datetime] = [request.window.start, request.window.end]
     if request.warning is not None:
@@ -598,10 +631,27 @@ def _allowed_moments(request: MessageRequest) -> tuple[set[str], set[str]]:
     if request.forecast is not None:
         moments.append(request.forecast.peak_at)
     local = [moment.astimezone(zone) for moment in moments]
-    return (
-        {moment.strftime(_LOCAL_DATE_FORMAT) for moment in local},
-        {moment.strftime(_LOCAL_TIME_FORMAT) for moment in local},
-    )
+    dates = {moment.strftime(_LOCAL_DATE_FORMAT) for moment in local}
+    times = {moment.strftime(_LOCAL_TIME_FORMAT) for moment in local}
+    pairs: set[str] = set()
+    if request.continuity.consecutive_days > 0:
+        newest = sorted(request.continuity.prior_alerts, key=lambda prior: prior.sent_at, reverse=True)
+        for prior in newest[:MAX_PRIOR_ALERTS]:
+            moment = prior.sent_at.astimezone(zone)
+            dates.add(moment.strftime(_LOCAL_DATE_FORMAT))
+            pairs.add(f"{moment.strftime(_LOCAL_DATE_FORMAT)} {moment.strftime(_LOCAL_TIME_FORMAT)}")
+    return dates, times, pairs
+
+
+#: A date written directly in front of a time, the only shape a prior alert's
+#: time is accepted in.
+_DATE_RIGHT_BEFORE = re.compile(r"(\d{1,2}/\d{1,2}/\d{4})[ \t]+$")
+
+
+def _is_a_prior_pair(residue: str, start: int, time_token: str, pairs: set[str]) -> bool:
+    """Whether the time at `start` sits right after a date it is paired with."""
+    match = _DATE_RIGHT_BEFORE.search(residue[:start])
+    return match is not None and f"{_normalized_date(match.group(1))} {_normalized_time(time_token)}" in pairs
 
 
 def _normalized_date(token: str) -> str:
@@ -665,8 +715,12 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
     claims to be and was not.
     """
     allowed_numbers = _allowed_numbers(request)
-    any_unit = set[Decimal]().union(*allowed_numbers.values())
-    allowed_dates, allowed_times = _allowed_moments(request)
+    # The day count is deliberately outside the unit-blind union: a bare figure
+    # that happens to equal it is not a continuity claim.
+    any_unit = set[Decimal]().union(
+        *(values for unit, values in allowed_numbers.items() if unit is not NumberUnit.DAYS)
+    )
+    allowed_dates, allowed_times, prior_pairs = _allowed_moments(request)
     unknown: list[str] = []
     for match in _CANDIDATE_NUMBER.finditer(residue):
         token = match.group()
@@ -674,7 +728,9 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
             if _normalized_date(token) not in allowed_dates:
                 unknown.append(f"{token!r} traces to no date on the request")
         elif ":" in token:
-            if _normalized_time(token) not in allowed_times:
+            if _normalized_time(token) not in allowed_times and not _is_a_prior_pair(
+                residue, match.start(), token, prior_pairs
+            ):
                 unknown.append(f"{token!r} traces to no time on the request")
         elif (prose := _prose_date_day_and_month(residue, token, match.start(), match.end())) is not None:
             # A date written out is still a date, and is held to the request's
@@ -690,7 +746,11 @@ def _untraceable_numbers(request: MessageRequest, residue: str) -> tuple[str, ..
             # own statement about itself, and it beats anything the clause
             # merely implies. `probabilidad de 60 %` is a percentage because
             # it says so, not because `probabilidad` opens the clause.
-            unit = _unit_after(residue, match.end()) or _unit_before_a_figure(residue, match.start())
+            unit = (
+                _unit_after(residue, match.end())
+                or _day_word_before(residue, match.start())
+                or _unit_before_a_figure(residue, match.start())
+            )
             permitted = any_unit if unit is None else allowed_numbers[unit]
             if _canonical(token) not in permitted:
                 unknown.append(
@@ -792,6 +852,82 @@ def _word_numbers_quantifying_a_unit(residue: str) -> tuple[tuple[str, str], ...
         unit = _unit_written_after(tokens, index) or _unit_implied_before(residue, numerals[index].start())
         if unit is not None:
             found.append((token, unit))
+    return tuple(found)
+
+
+#: Spanish ordinals, accent-stripped like `_NUMERAL_WORDS`. `primer día`,
+#: `tercer día`: a count in words wearing an ordinal's clothes. The prompt told
+#: the model to write continuity in digits, and a body that did not is refused.
+_ORDINAL_WORDS = frozenset({
+    "primer", "primero", "primera", "segundo", "segunda", "tercer", "tercero", "tercera",
+    "cuarto", "cuarta", "quinto", "quinta", "sexto", "sexta", "septimo", "septima",
+    "octavo", "octava", "noveno", "novena", "decimo", "decima",
+})  # fmt: skip
+
+#: What an ordinal is held against: `primer día`, `tercer día`.
+_ORDINAL_DAY_WORDS = frozenset({"dia", "dias"})
+
+#: Day-like nouns a cardinal can count. A body that says `por tres jornadas` or
+#: `cuatro noches` states a duration in words just as `tres días` does.
+_DAY_WORDS = frozenset({"dia", "dias", "jornada", "jornadas", "noche", "noches", "semana", "semanas"})
+
+#: What makes a spelled-out number of days a continuity claim even when the
+#: checklist happens to carry the same phrase. A clause that talks about alerts
+#: continuing is exactly the claim digits are required for, so a number word in
+#: it is refused even when it happens to be true. Wrong-strict, and narrow.
+_CONTINUITY_CLAUSE = re.compile(r"consecutiv|seguid|continu|alerta")
+
+
+def _clause_around(text: str, position: int) -> str:
+    """The clause of `text` that contains `position`, bounded by `_CLAUSE_BOUNDARIES`."""
+    ends = [end for end in (text.find(character, position) for character in _CLAUSE_BOUNDARIES) if end != -1]
+    return _clause_before(text, position) + text[position : min(ends, default=len(text))]
+
+
+def _checklist_phrases(request: MessageRequest) -> list[list[str]]:
+    """The request's own checklist, folded and tokenised one item at a time."""
+    return [_WORD_OR_NUMBER.findall(_fold(item)) for item in request.checklist]
+
+
+def _is_verbatim(phrase: list[str], items: list[list[str]]) -> bool:
+    """Whether `phrase` appears as a contiguous run of tokens in one checklist item."""
+    width = len(phrase)
+    return any(item[start : start + width] == phrase for item in items for start in range(len(item) - width + 1))
+
+
+def _day_counts_in_words(request: MessageRequest, residue: str) -> tuple[tuple[str, str], ...]:
+    """Every `(number word, day word)` pair that states a day count in words.
+
+    An ordinal directly before `dia`/`dias` is always refused. A cardinal
+    before a day word (`tres días`, `treinta y cinco jornadas`) is refused
+    unless that exact phrase, normalised, appears verbatim in the request's own
+    checklist — which is why the operator's `al menos dos días` is not refused.
+    The phrase is judged, not the clause, so `Hace tres días que llueve` is
+    refused with no marker in sight. A phrase the checklist does carry is
+    still refused when its clause claims continuity (`_CONTINUITY_CLAUSE`).
+    """
+    matches = list(_WORD_OR_NUMBER.finditer(residue))
+    tokens = [match.group() for match in matches]
+    checklist = _checklist_phrases(request)
+    found: list[tuple[str, str]] = []
+    for index, token in enumerate(tokens):
+        if token in _ORDINAL_WORDS:
+            if index + 1 < len(tokens) and tokens[index + 1] in _ORDINAL_DAY_WORDS:
+                found.append((token, tokens[index + 1]))
+            continue
+        if token not in _NUMERAL_WORDS:
+            continue
+        following = index + 1
+        while following < len(tokens) and (
+            tokens[following] in _NUMERAL_WORDS or tokens[following] in _NUMERAL_CONNECTORS
+        ):
+            following += 1
+        if following >= len(tokens) or tokens[following] not in _DAY_WORDS:
+            continue
+        in_the_checklist = _is_verbatim(tokens[index : following + 1], checklist)
+        claims_continuity = _CONTINUITY_CLAUSE.search(_clause_around(residue, matches[index].start())) is not None
+        if claims_continuity or not in_the_checklist:
+            found.append((token, tokens[following]))
     return tuple(found)
 
 
@@ -1158,7 +1294,7 @@ def validate_message(request: MessageRequest, candidate: AlertMessage) -> tuple[
     )
     violations.extend(
         Violation(ValidationRule.WORD_NUMBER, f"{word!r} quantifies {unit!r} in words instead of digits")
-        for word, unit in _word_numbers_quantifying_a_unit(residue)
+        for word, unit in (*_word_numbers_quantifying_a_unit(residue), *_day_counts_in_words(request, residue))
     )
 
     violations.extend(

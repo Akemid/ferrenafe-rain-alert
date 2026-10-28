@@ -11,13 +11,22 @@ Steps: load config -> fetch warnings -> fetch forecast -> evaluate outage
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from rain_alert.application.dependencies import CycleDependencies
 from rain_alert.application.policies import AlertPolicy
 from rain_alert.domain.config import AlertConfig
+from rain_alert.domain.continuity import (
+    EMPTY_CONTINUITY,
+    LOOKBACK_DAYS,
+    ContinuitySummary,
+    summarize,
+    top_warning_level,
+)
 from rain_alert.domain.dedup import SendDecision
 from rain_alert.domain.entities import Forecast, RiskAssessment, Warning
 from rain_alert.domain.messages import (
@@ -33,6 +42,9 @@ from rain_alert.domain.reasons import WarningReason
 from rain_alert.domain.risk import IMMINENT_HORIZON_HOURS, evaluated_horizon
 from rain_alert.domain.sources import Available, SourceResult
 from rain_alert.domain.values import WarningLevel
+from rain_alert.ports import AlertRepository
+
+logger = logging.getLogger(__name__)
 
 _WARNING_SEVERITY_ORDER: Mapping[WarningLevel, int] = {
     WarningLevel.YELLOW: 1,
@@ -142,6 +154,46 @@ def _build_message_request(
     )
 
 
+#: The repository is keyed by window start, not by `sent_at`, so the read starts
+#: one day before the lookback (a window opens no later than its alert is sent)
+#: and has no practical upper bound: a warning window can open in the future.
+#: The exact cut on `sent_at` is `summarize`'s, and `agent/history.py` reads the
+#: same range, so both sides see the same alerts.
+_HISTORY_READ_BEFORE = timedelta(days=LOOKBACK_DAYS + 1)
+_HISTORY_READ_AFTER = timedelta(days=LOOKBACK_DAYS)
+
+
+def _read_continuity(
+    alerts: AlertRepository, config: AlertConfig, assessment: RiskAssessment, now: datetime
+) -> ContinuitySummary:
+    """What the community was already told, or the empty summary if that cannot be read.
+
+    Called only inside an authorized send, through the same port the dedup
+    policy uses, and never feeds back into a decision (design D7). A failed
+    read yields the empty summary rather than an error: the send is already
+    authorized, history is optional, and a model that then claims continuity is
+    refused by the validator instead of believed. The broad `except` is the
+    point, not an oversight: every store fault, whatever its type, must cost
+    the community nothing.
+    """
+    try:
+        records = alerts.alerts_with_window_start_between(
+            config.city_slug, now - _HISTORY_READ_BEFORE, now + _HISTORY_READ_AFTER
+        )
+        summary = summarize(
+            records,
+            as_of=now,
+            tz=ZoneInfo(config.timezone),
+            current_level=assessment.level,
+            current_warning_level=top_warning_level(assessment.reasons),
+        )
+        return replace(summary, as_of=now)
+    except Exception as exc:  # noqa: BLE001 - history must never block an authorized send
+        # The class only: a store's message can carry a table name or an ARN.
+        logger.warning("continuity read failed: %s", type(exc).__name__)
+        return replace(EMPTY_CONTINUITY, as_of=now)
+
+
 class RunAlertCycle:
     """Orchestrates one full alert cycle from injected `CycleDependencies`."""
 
@@ -181,6 +233,10 @@ class RunAlertCycle:
         sent = False
         recipients_count = 0
         if decision.send and not outage_decision.suppress_community_alert:
+            if deps.composer.consumes_history:
+                message_request = replace(
+                    message_request, continuity=_read_continuity(deps.alerts, config, assessment, now)
+                )
             message = deps.composer.compose(message_request)
             recipients = deps.contacts.list_active(config.active_channel)
             deps.notifier.send_alert(message, recipients)

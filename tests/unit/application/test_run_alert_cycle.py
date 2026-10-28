@@ -5,16 +5,22 @@ Uses `build_fake_deps()` and hand-written recording spies (design.md
 section 10) — no `unittest.mock`.
 """
 
+import logging
+from dataclasses import replace
 from datetime import datetime, timedelta
+
+import pytest
 
 from rain_alert.adapters.agent_composer import AgentBackedComposer
 from rain_alert.adapters.agent_invoker import AgentInvocationError
 from rain_alert.application.run_alert_cycle import RunAlertCycle
+from rain_alert.domain.continuity import EMPTY_CONTINUITY, LOOKBACK_DAYS, Trend
 from rain_alert.domain.entities import Forecast, HourlyPoint, Warning
 from rain_alert.domain.hazards import Phenomenon, Zone
 from rain_alert.domain.messages import AlertMessage, AlertRecord
 from rain_alert.domain.reasons import WarningReason
 from rain_alert.domain.sources import Available, Unavailable
+from rain_alert.domain.template import MessageComposer as TemplateMessageComposer
 from rain_alert.domain.values import (
     ComposerName,
     Level,
@@ -24,7 +30,7 @@ from rain_alert.domain.values import (
     UnavailableReason,
     WarningLevel,
 )
-from tests.support.fakes import FakeAgentInvoker
+from tests.support.fakes import FakeAgentInvoker, FakeAlertRepository, FakeMessageComposer, FakeNotifier
 from tests.support.wiring import DEFAULT_CONFIG, DEFAULT_NOW, ComposerFactory, build_fake_deps
 
 NOW = DEFAULT_NOW
@@ -123,7 +129,8 @@ class TestTheCycleRunsItsStepsInTheSpecifiedOrder:
             ("forecast", "fetch_forecast"),
             ("alerts", "get_active_outage"),
             ("evaluator", "evaluate"),
-            ("alerts", "alerts_with_window_start_between"),
+            ("alerts", "alerts_with_window_start_between"),  # the dedup policy's query
+            ("alerts", "alerts_with_window_start_between"),  # the continuity read, send branch only
             ("composer", "compose"),
             ("contacts", "list_active"),
             ("notifier", "send_alert"),
@@ -483,3 +490,221 @@ class TestDegradedModeWiring:
         assert [notice.kind for notice in result.notices] == [NoticeKind.SOURCE_UNAVAILABLE]
         assert len(deps.notifier.notice_calls) == 1
         assert deps.notifier.notice_calls[0].sources == frozenset({SourceName.SENAMHI})
+
+
+def _history(days_ago: int, level: Level = Level.PREPARE) -> AlertRecord:
+    """An alert sent `days_ago` days before the cycle, whose window opened when it was sent."""
+    sent_at = NOW - timedelta(days=days_ago)
+    window = TimeWindow(start=sent_at, end=sent_at + timedelta(hours=48))
+    return replace(_record(level, window), sent_at=sent_at)
+
+
+class _HistoryReadFails(FakeAlertRepository):
+    """Answers the dedup policy's query (the first one) and raises on every later one."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self._error = error
+
+    def alerts_with_window_start_between(self, city_slug: str, earliest_start: datetime, latest_start: datetime):  # type: ignore[no-untyped-def]
+        if self.query_calls:
+            self.query_calls.append((city_slug, earliest_start, latest_start))
+            raise self._error
+        return super().alerts_with_window_start_between(city_slug, earliest_start, latest_start)
+
+
+class TestContinuityIsReadOnlyInsideTheAuthorizedSend:
+    """alert-cycle spec, "History is read through the existing alert repository before composition"."""
+
+    def test_the_request_the_composer_receives_carries_the_summary_of_the_earlier_alerts(self) -> None:
+        deps = build_fake_deps(
+            forecast=_forecast(24, mm_total=29.8, probability_pct=70),
+            prior_alerts=[_history(1), _history(2)],
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.sent is True
+        continuity = deps.composer.calls[0].continuity
+        assert continuity.consecutive_days == 3
+        assert continuity.previous_level is Level.PREPARE
+        assert continuity.escalated is True
+        assert continuity.trend is Trend.RISING
+        assert len(continuity.prior_alerts) == 2
+        assert result.message_request.continuity == continuity
+
+    def test_with_no_earlier_alert_the_summary_is_empty(self) -> None:
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70))
+
+        RunAlertCycle(deps).execute()
+
+        assert deps.composer.calls[0].continuity.consecutive_days == 0
+        assert deps.composer.calls[0].continuity.prior_alerts == ()
+
+    def test_the_read_goes_through_the_repository_for_this_city_and_covers_the_lookback(self) -> None:
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70))
+
+        RunAlertCycle(deps).execute()
+
+        city, earliest, latest = deps.alerts.query_calls[-1]
+        assert len(deps.alerts.query_calls) == 2
+        assert city == DEFAULT_CONFIG.city_slug
+        assert earliest <= NOW - timedelta(days=LOOKBACK_DAYS)
+        assert latest >= NOW
+
+    def test_a_deduplicated_cycle_makes_no_history_read(self) -> None:
+        forecast = _forecast(24, mm_total=29.8, probability_pct=70)
+        deps = build_fake_deps(
+            forecast=forecast,
+            prior_alerts=[_record(Level.IMMINENT, forecast.data.precipitation_window(24))],
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.decision.send is False
+        assert len(deps.alerts.query_calls) == 1  # the policy's own
+        assert result.message_request.continuity.consecutive_days == 0
+
+    def test_a_suppressed_community_alert_makes_no_history_read(self) -> None:
+        deps = build_fake_deps(
+            warnings=_unavailable(SourceName.SENAMHI),
+            forecast=_unavailable(SourceName.OPEN_METEO),
+            prior_alerts=[_history(1)],
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.sent is False
+        assert len(deps.alerts.query_calls) == 1
+
+
+class TestAFailedHistoryReadNeverBlocksTheSend:
+    def test_the_request_carries_the_empty_summary_and_the_alert_is_still_sent_and_recorded(self) -> None:
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70))
+        failing = _HistoryReadFails(RuntimeError("store down"))
+        deps = replace(deps, alerts=failing)
+
+        result = RunAlertCycle(deps).execute()
+
+        assert len(failing.query_calls) == 2  # the read was attempted and raised
+        assert result.sent is True
+        assert len(failing.record_calls) == 1
+        assert deps.composer.calls[0].continuity.consecutive_days == 0  # type: ignore[attr-defined]
+        assert result.message_request.continuity.prior_alerts == ()
+
+    def test_the_failure_does_not_change_what_the_policy_authorized(self) -> None:
+        healthy = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70))
+        broken = replace(
+            build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70)),
+            alerts=_HistoryReadFails(OSError("timeout")),
+        )
+
+        assert RunAlertCycle(broken).execute().decision == RunAlertCycle(healthy).execute().decision
+
+    def test_a_failed_read_leaves_the_send_the_recipients_and_the_record_as_a_successful_one_would(self) -> None:
+        """The read may change what the composer is *told*, never what the cycle *does*."""
+        forecast = _forecast(24, mm_total=29.8, probability_pct=70)
+        healthy = build_fake_deps(forecast=forecast)
+        broken = replace(build_fake_deps(forecast=forecast), alerts=_HistoryReadFails(OSError("timeout")))
+
+        ok_result = RunAlertCycle(healthy).execute()
+        failed_result = RunAlertCycle(broken).execute()
+
+        assert (failed_result.sent, failed_result.recipients_count) == (ok_result.sent, ok_result.recipients_count)
+        assert failed_result.recipients_count == 1
+        assert broken.alerts.record_calls == healthy.alerts.record_calls  # type: ignore[attr-defined]
+
+    def test_a_failed_read_is_logged_by_exception_class_and_never_by_its_message(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        deps = replace(
+            build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70)),
+            alerts=_HistoryReadFails(RuntimeError("secret-table-arn")),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            RunAlertCycle(deps).execute()
+
+        assert "continuity read failed: RuntimeError" in caplog.text
+        assert "secret-table-arn" not in caplog.text
+
+
+class TestTheHistoryIsReadOnlyForAComposerThatConsumesIt:
+    """Design W4: the template never reads `continuity`, so a read for it is a store query with no reader."""
+
+    def test_a_composer_that_does_not_consume_history_costs_no_read(self) -> None:
+        deps = build_fake_deps(
+            forecast=_forecast(24, mm_total=29.8, probability_pct=70),
+            prior_alerts=[_history(1)],
+            composer=lambda _notifier, _now: FakeMessageComposer(consumes_history=False),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.sent is True
+        assert len(deps.alerts.query_calls) == 1  # the policy's own
+        assert result.message_request.continuity == EMPTY_CONTINUITY
+
+    def test_the_agent_composer_still_gets_the_summary(self) -> None:
+        deps = build_fake_deps(
+            forecast=_forecast(24, mm_total=29.8, probability_pct=70),
+            prior_alerts=[_history(1)],
+            composer=_agent_backed(FakeAgentInvoker(error=AgentInvocationError(UnavailableReason.TIMEOUT, "down"))),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        assert len(deps.alerts.query_calls) == 2
+        assert result.message_request.continuity.consecutive_days == 2
+
+    def test_the_real_template_declares_that_it_does_not_consume_history(self) -> None:
+        assert TemplateMessageComposer().consumes_history is False
+
+    def test_the_agent_composer_declares_that_it_does(self) -> None:
+        composer = AgentBackedComposer(
+            invoker=FakeAgentInvoker(error=AgentInvocationError(UnavailableReason.TIMEOUT, "down")),
+            build_prompt=lambda _request: "<prompt>",
+            notifier=FakeNotifier(),
+            now=lambda: NOW,
+        )
+
+        assert composer.consumes_history is True
+
+
+class TestTheSummaryAndTheAgentBindingShareOneInstant:
+    """Design S1: the app summary and the agent's tool count days from the same `as_of`."""
+
+    def test_the_summary_carries_the_cycle_clock(self) -> None:
+        deps = build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70), prior_alerts=[_history(1)])
+
+        result = RunAlertCycle(deps).execute()
+
+        assert result.message_request.continuity.as_of == NOW
+
+    def test_a_failed_read_still_carries_the_cycle_clock(self) -> None:
+        deps = replace(
+            build_fake_deps(forecast=_forecast(24, mm_total=29.8, probability_pct=70)),
+            alerts=_HistoryReadFails(OSError("timeout")),
+        )
+
+        assert RunAlertCycle(deps).execute().message_request.continuity.as_of == NOW
+
+    def test_the_binding_the_agent_receives_equals_the_summarys(self) -> None:
+        invoker = FakeAgentInvoker(response=_accepted_draft(NOW + timedelta(hours=48)))
+        deps = build_fake_deps(
+            forecast=_forecast(24, mm_total=29.8, probability_pct=70),
+            prior_alerts=[_history(1)],
+            composer=lambda notifier, now: AgentBackedComposer(
+                invoker=invoker,
+                build_prompt=lambda _request: "<prompt>",
+                notifier=notifier,
+                now=lambda: NOW + timedelta(seconds=30),  # a composer clock that has moved on
+                history_partition="ferrenafe",
+            ),
+        )
+
+        result = RunAlertCycle(deps).execute()
+
+        binding = invoker.histories[0]
+        assert binding is not None
+        assert binding["as_of"] == result.message_request.continuity.as_of.isoformat()  # type: ignore[union-attr]

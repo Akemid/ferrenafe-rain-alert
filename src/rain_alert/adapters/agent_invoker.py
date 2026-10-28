@@ -69,6 +69,12 @@ class AgentInvoker(Protocol):
        deadline is adapter configuration, not a constant, so first live
        measurements can move it.
 
+    `history` is the binding the **application** wrote for this request
+    (`partition`, `as_of`, `current_level`, `current_warning_level`; design D1).
+    It travels beside the prompt, never inside it, so nothing the model reads
+    or writes can name a partition. `None` means "no history": the agent then
+    composes without continuity, and an implementation must not invent one.
+
     Raises:
         AgentInvocationError: on any failure whatsoever, including the
             deadline. An implementation that lets a vendor exception escape
@@ -76,4 +82,4 @@ class AgentInvoker(Protocol):
             defect degrades the cycle rather than aborting it.
     """
 
-    def invoke(self, prompt: str) -> Mapping[str, Any]: ...
+    def invoke(self, prompt: str, history: Mapping[str, Any] | None = None) -> Mapping[str, Any]: ...

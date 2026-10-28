@@ -92,6 +92,31 @@ def test_the_prompt_is_sent_as_a_json_payload_under_the_agreed_key() -> None:
     assert json.loads(call["payload"]) == {"prompt": "hello"}
 
 
+def test_a_history_binding_is_sent_next_to_the_prompt() -> None:
+    client = _FakeBotoClient(response=_json_response({"title": "t", "body": "b"}))
+    invoker = BedrockAgentCoreInvoker(ARN, client=client)
+    binding = {
+        "partition": "ferrenafe",
+        "as_of": "2026-09-03T12:00:00+00:00",
+        "current_level": "imminent",
+        "current_warning_level": None,
+    }
+
+    invoker.invoke("hello", history=binding)
+
+    assert json.loads(client.calls[0]["payload"]) == {"prompt": "hello", "history": binding}
+
+
+def test_without_a_binding_the_payload_is_exactly_what_it_was_before() -> None:
+    """An old runtime ignores `history`, and a new one treats its absence as no history."""
+    client = _FakeBotoClient(response=_json_response({"title": "t", "body": "b"}))
+    invoker = BedrockAgentCoreInvoker(ARN, client=client)
+
+    invoker.invoke("hello", history=None)
+
+    assert json.loads(client.calls[0]["payload"]) == {"prompt": "hello"}
+
+
 def test_no_runtime_session_id_is_sent_unless_one_is_supplied() -> None:
     """AWS auto-generates one when omitted; a hand-rolled id risks the
     documented 33-character minimum (`runtimeSessionId` is an idempotency

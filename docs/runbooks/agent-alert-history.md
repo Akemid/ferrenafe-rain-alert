@@ -86,12 +86,13 @@ looks exactly like a working one until a read comes back empty.
    ```bash
    AWS_PROFILE=ferrenafe AWS_DEFAULT_REGION=us-east-2 \
    RAIN_ALERT_AGENT_RUNTIME_ARN=<arn> uv run python - <<'PY'
-   import importlib.util, json, os, uuid
+   import importlib.util, json, os, sys, uuid
    import boto3
    from rain_alert.adapters.agent_prompt import _fence_token, build_prompt
 
    spec = importlib.util.spec_from_file_location("acceptance", "scripts/agent_live_acceptance.py")
    acceptance = importlib.util.module_from_spec(spec)
+   sys.modules["acceptance"] = acceptance  # dataclass(slots=True) needs the module registered
    spec.loader.exec_module(acceptance)
    incident_request = acceptance.incident_request
 

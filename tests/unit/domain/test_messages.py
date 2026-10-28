@@ -10,8 +10,10 @@ they only asserted that a frozen dataclass returns what was passed in, which
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
-from rain_alert.domain.messages import AlertMessage, OutageRecord
-from rain_alert.domain.values import ComposerName, Level, SourceName
+from rain_alert.domain.continuity import EMPTY_CONTINUITY, ContinuitySummary, Trend
+from rain_alert.domain.messages import AlertMessage, MessageRequest, OutageRecord
+from rain_alert.domain.reasons import ForecastThresholdReason
+from rain_alert.domain.values import ComposerName, Level, SourceName, TimeWindow
 
 
 def _utc(hour: int) -> datetime:
@@ -78,3 +80,41 @@ class TestOutageRecord:
             notified_at=None,
         )
         assert record.is_dual() is False
+
+
+class TestMessageRequestContinuity:
+    """`MessageRequest.continuity` is additive: every construction site that
+    predates it keeps working and gets the empty summary (alert-cycle spec)."""
+
+    @staticmethod
+    def _request(**overrides: object) -> MessageRequest:
+        defaults: dict[str, object] = {
+            "city": "Ferreñafe",
+            "timezone": "America/Lima",
+            "level": Level.PREPARE,
+            "window": TimeWindow(start=_utc(0), end=_utc(48)),
+            "reasons": (ForecastThresholdReason(accumulated_mm=12.4, hours=24, probability_pct=60),),
+            "forecast": None,
+            "warning": None,
+            "senamhi_status": "available",
+            "open_meteo_status": "available",
+            "checklist": (),
+        }
+        defaults.update(overrides)
+        return MessageRequest(**defaults)  # type: ignore[arg-type]
+
+    def test_a_request_built_without_a_summary_carries_the_empty_one(self) -> None:
+        request = self._request()
+
+        assert request.continuity == EMPTY_CONTINUITY
+        assert request.continuity.consecutive_days == 0
+
+    def test_a_request_carries_the_summary_it_was_given(self) -> None:
+        summary = ContinuitySummary(
+            consecutive_days=3, previous_level=Level.PREPARE, escalated=True, trend=Trend.RISING
+        )
+
+        request = self._request(continuity=summary)
+
+        assert request.continuity is summary
+        assert request.continuity.consecutive_days == 3

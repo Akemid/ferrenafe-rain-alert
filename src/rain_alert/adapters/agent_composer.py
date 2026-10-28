@@ -70,6 +70,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from rain_alert.adapters.agent_invoker import AgentInvocationError, AgentInvoker
+from rain_alert.domain.continuity import top_warning_level
 from rain_alert.domain.message_validation import Violation, validate_message
 from rain_alert.domain.messages import AlertMessage, MessageRequest, OperatorNotice
 from rain_alert.domain.sanitize import sanitize_source_text
@@ -187,7 +188,16 @@ class AgentBackedComposer:
         template: The fallback. Defaults to the real deterministic template,
             which is the only thing the spec allows a fallback to be;
             injectable so a test can observe when it is called.
+        history_partition: The city's partition in the alerts table (its slug),
+            bound into the invocation so the agent's `get_recent_alerts` tool
+            reads that city and no other (design D1). `None` sends no binding
+            and the agent composes without continuity. It is wiring, not
+            request data, because a model-visible request must never be able to
+            name a place.
     """
+
+    #: The agent's tool reads the history, and the validator needs the summary.
+    consumes_history = True
 
     def __init__(
         self,
@@ -197,17 +207,37 @@ class AgentBackedComposer:
         notifier: Notifier,
         now: Callable[[], datetime],
         template: MessageComposer | None = None,
+        history_partition: str | None = None,
     ) -> None:
         self._invoker = invoker
         self._build_prompt = build_prompt
         self._notifier = notifier
         self._now = now
         self._template: MessageComposer = TemplateComposer() if template is None else template
+        self._history_partition = history_partition
+
+    def _history_binding(self, request: MessageRequest) -> Mapping[str, object] | None:
+        """The binding the agent's tool is closed over, or `None` without a partition.
+
+        `as_of` is the instant the request's own `ContinuitySummary` was built
+        at, so the agent counts days from exactly where the application did.
+        The composer's own clock is only the fallback for a request no cycle
+        stamped.
+        """
+        if self._history_partition is None:
+            return None
+        warning = top_warning_level(request.reasons)
+        return {
+            "partition": self._history_partition,
+            "as_of": (request.continuity.as_of or self._now()).isoformat(),
+            "current_level": request.level.value,
+            "current_warning_level": None if warning is None else warning.value,
+        }
 
     def compose(self, request: MessageRequest) -> AlertMessage:
         fallback = self._template.compose(request)
         try:
-            draft = self._invoker.invoke(self._build_prompt(request))
+            draft = self._invoker.invoke(self._build_prompt(request), history=self._history_binding(request))
             candidate = parse_candidate(draft)
             if candidate is None:
                 return self._fell_back(FallbackReason.MALFORMED_PAYLOAD, "draft is missing or malformed", fallback)

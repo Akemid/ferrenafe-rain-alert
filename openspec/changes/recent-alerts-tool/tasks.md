@@ -55,12 +55,12 @@ Tags: [DEMO] needed for the live before/after. [REQ] invariant, not cuttable. [P
 
 ## Phase 4: Domain + validator hardening (PR 3) [REQ]
 
-- [ ] 4.1 RED/GREEN `src/rain_alert/domain/continuity.py` `ContinuitySummary`/`summarize` against the same fixture; purity.
-- [ ] 4.2 RED/GREEN `messages.py`: `MessageRequest.continuity` default empty; template output unchanged and valid.
-- [ ] 4.3 RED/GREEN `message_validation.py`: `NumberUnit.DAYS`, prior dates, WORD_NUMBER on days, ordinals before `dia`; empty summary allows none; existing suite green.
-- [ ] 4.4 RED/GREEN `run_alert_cycle.py`: summary only in send branch (`dataclasses.replace`); read failure -> empty; no read on dedup.
-- [ ] 4.5 RED/GREEN `agent_invoker`, `agentcore_invoker`, `agent_composer`: `invoke(prompt, history=None)`; fence contract; architecture test green.
-- [ ] 4.6 PR 3 gate: full suite.
+- [x] 4.1 RED/GREEN `src/rain_alert/domain/continuity.py` `ContinuitySummary`/`summarize` against the same fixture; purity.
+- [x] 4.2 RED/GREEN `messages.py`: `MessageRequest.continuity` default empty; template output unchanged and valid.
+- [x] 4.3 RED/GREEN `message_validation.py`: `NumberUnit.DAYS`, prior dates, WORD_NUMBER on days, ordinals before `dia`; empty summary allows none; existing suite green.
+- [x] 4.4 RED/GREEN `run_alert_cycle.py`: summary only in send branch (`dataclasses.replace`); read failure -> empty; no read on dedup.
+- [x] 4.5 RED/GREEN `agent_invoker`, `agentcore_invoker`, `agent_composer`: `invoke(prompt, history=None)`; fence contract; architecture test green.
+- [x] 4.6 PR 3 gate: full suite.
 
 ## Phase 5: Evidence (PR 4) [DEMO]
 
