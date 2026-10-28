@@ -604,7 +604,7 @@ describe('ScheduledCycleStack — relayEnabled=false rollback switch (D41, D45)'
 
     template.resourceCountIs('AWS::S3::Bucket', 2); // relay bucket + audit log bucket
     template.resourceCountIs('AWS::CloudTrail::Trail', 1);
-    template.resourceCountIs('AWS::IAM::ManagedPolicy', 1);
+    template.resourceCountIs('AWS::IAM::ManagedPolicy', 2); // RelayWriter + AlertHistoryReader
     template.resourceCountIs('AWS::IAM::User', 1);
   });
 
@@ -729,6 +729,81 @@ describe('ScheduledCycleStack — relay audit log bucket (D46)', () => {
     for (const p of identityPolicies) {
       expect(JSON.stringify(p.Properties)).not.toContain(needle);
       expect(JSON.stringify(p.Properties)).not.toContain(JSON.stringify({ Ref: id }));
+    }
+  });
+});
+
+/** The history contract (`contracts/recent-alerts.json`), read independently of the stack under test so the
+ * IAM grant and the agent's reader cannot drift on the partitions or the key prefix. */
+const HISTORY_CONTRACT = JSON.parse(
+  readFileSync(join(__dirname, '..', '..', 'contracts', 'recent-alerts.json'), 'utf-8'),
+) as { key_prefix: string; allowed_partitions: string[]; attributes: string[] };
+
+/** What `agent/history.py::DynamoAlertReader.read` projects (pk and sk are the key attributes: AWS requires
+ * them listed once `dynamodb:Attributes` is used). Read from the contract; the agent suite pins the reader to
+ * it. Top-level only: never `message`; `reasons` is allowed whole and the agent code drops its nested fields. */
+const HISTORY_ATTRIBUTES = HISTORY_CONTRACT.attributes;
+
+describe('ScheduledCycleStack — AlertHistoryReader policy (recent-alerts design D8)', () => {
+  const template = synthesizeTemplate();
+  const historyPolicies = Object.entries(template.findResources('AWS::IAM::ManagedPolicy')).filter(([, policy]) =>
+    JSON.stringify(policy.Properties.PolicyDocument.Statement).includes('dynamodb:Query'),
+  );
+
+  test('the contract lists the attributes, never the message', () => {
+    expect([...HISTORY_ATTRIBUTES].sort()).toEqual(['level', 'pk', 'reasons', 'sent_at', 'sk']);
+  });
+
+  test('is one managed policy with one Allow statement: Query only, on the table ARN only', () => {
+    expect(historyPolicies).toHaveLength(1);
+    const [, policy] = historyPolicies[0];
+    const [tableLogicalId] = Object.keys(template.findResources('AWS::DynamoDB::Table'));
+    const statements = policy.Properties.PolicyDocument.Statement as Array<Record<string, unknown>>;
+    expect(statements).toHaveLength(1);
+    expect(statements[0].Effect).toBe('Allow');
+    expect(statements[0].Action).toBe('dynamodb:Query');
+    // The bare table ARN: no `/index/*` (there is no index) and no wildcard.
+    expect(statements[0].Resource).toEqual({ 'Fn::GetAtt': [tableLogicalId, 'Arn'] });
+    // A managed policy has no fixed name: IAM names are account-global.
+    expect(policy.Properties.ManagedPolicyName).toBeUndefined();
+  });
+
+  test('conditions: leading keys limited to the two partitions with a Null guard, attributes allow-listed, Select required', () => {
+    const [, policy] = historyPolicies[0];
+    const [statement] = policy.Properties.PolicyDocument.Statement as Array<Record<string, any>>;
+    const partitions = HISTORY_CONTRACT.allowed_partitions.map((slug) => `${HISTORY_CONTRACT.key_prefix}${slug}`);
+    expect(partitions).toEqual(['ALERT#ferrenafe', 'ALERT#demo-ferrenafe']);
+    expect(statement.Condition).toEqual({
+      'ForAllValues:StringEquals': {
+        'dynamodb:LeadingKeys': partitions,
+        'dynamodb:Attributes': HISTORY_ATTRIBUTES,
+      },
+      // `ForAllValues` is vacuously true when the key is absent, so presence is demanded explicitly.
+      Null: { 'dynamodb:LeadingKeys': 'false' },
+      // Plain `StringEquals`, not `...IfExists`: a Query that omits Select (and so returns every attribute)
+      // must be denied, because `dynamodb:Attributes` is evaluated only on attributes named in the request.
+      StringEquals: { 'dynamodb:Select': 'SPECIFIC_ATTRIBUTES' },
+    });
+  });
+
+  test('never grants a write, a Scan, a GetItem, or a read of title/body/mm attributes', () => {
+    const [, policy] = historyPolicies[0];
+    const serialized = JSON.stringify(policy.Properties.PolicyDocument);
+    for (const forbidden of ['PutItem', 'DeleteItem', 'Scan', 'GetItem', 'BatchGet', 'dynamodb:*', '"title"', '"body"']) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  test('the output carries the policy NAME (no ARN) and the policy is not attached to the Lambda role', () => {
+    const [policyLogicalId] = historyPolicies[0];
+    const outputs = template.toJSON().Outputs as Record<string, { Value: unknown }>;
+    expect(outputs.AlertHistoryReaderPolicyName.Value).toEqual({ 'Fn::Select': expect.anything() });
+    expect(JSON.stringify(outputs.AlertHistoryReaderPolicyName.Value)).toContain(policyLogicalId);
+    expect(JSON.stringify(outputs.AlertHistoryReaderPolicyName.Value)).not.toMatch(/arn:aws/);
+    // It is for the AgentCore execution role, which this stack does not own.
+    const roles = Object.values(template.findResources('AWS::IAM::Role'));
+    for (const role of roles) {
+      expect(JSON.stringify(role.Properties)).not.toContain(policyLogicalId);
     }
   });
 });

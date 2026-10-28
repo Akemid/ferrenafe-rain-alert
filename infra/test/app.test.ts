@@ -297,7 +297,7 @@ describe('bin/infra.ts — buildScheduledCycleStack', () => {
         const template = synth({ ...baseContext, relayEnabled });
         template.resourceCountIs('AWS::S3::Bucket', 2); // relay bucket + audit log bucket
         template.resourceCountIs('AWS::CloudTrail::Trail', 1);
-        template.resourceCountIs('AWS::IAM::ManagedPolicy', 1);
+        template.resourceCountIs('AWS::IAM::ManagedPolicy', 2); // RelayWriter + AlertHistoryReader
         template.resourceCountIs('AWS::IAM::User', 1);
       }
     });

@@ -9,6 +9,7 @@ suite asserts the agent side, and the application suite asserts the other.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -102,3 +103,23 @@ def test_n_trims_the_listed_alerts_but_never_the_facts() -> None:
     assert len(result["alerts"]) == 1
     assert result["alerts"][0] == case["expected"]["alerts"][0]
     assert result["consecutive_days"] == case["expected"]["consecutive_days"]
+
+
+def test_the_projection_and_key_condition_attributes_match_the_contract() -> None:
+    """The IAM `dynamodb:Attributes` list is read from the contract; the reader must name exactly those."""
+    captured: dict[str, Any] = {}
+
+    class Recorder:
+        def query(self, **kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {"Items": []}
+
+    history.DynamoAlertReader(client=Recorder()).read("ferrenafe", _instant("2026-10-12T15:00:00+00:00"))
+
+    names = captured.get("ExpressionAttributeNames", {})
+    projected = [names.get(part.strip(), part.strip()) for part in captured["ProjectionExpression"].split(",")]
+    key_condition = re.findall(r"[#\w]+(?= *(?:=|>=|<=|>|<))", captured["KeyConditionExpression"])
+    named = {names.get(attr, attr) for attr in [*projected, *key_condition]}
+
+    assert sorted(_contract()["attributes"]) == sorted(set(projected))
+    assert named == set(_contract()["attributes"])

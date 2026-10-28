@@ -41,10 +41,10 @@ Tags: [DEMO] needed for the live before/after. [REQ] invariant, not cuttable. [P
 
 ## Phase 2: IAM + seed (PR 2) [DEMO]
 
-- [ ] 2.1 RED `infra/test/*`: `AlertHistoryReader` = Query only, table ARN, three conditions, output name. GREEN in `infra/lib/scheduled-cycle-stack.ts`.
-- [ ] 2.2 RED/GREEN `scripts/seed_demo_history.py` (moto): `--day N`, `--reset`, refuses non-`demo-ferrenafe` slug with exit != 0 and zero writes.
-- [ ] 2.3 Create `docs/runbooks/agent-alert-history.md`: attach, post-deploy check, AccessDenied on `ALERT#other`, rollback.
-- [ ] 2.4 PR 2 gate: `cd infra && npm test`, `uv run pytest`.
+- [x] 2.1 RED `infra/test/*`: `AlertHistoryReader` = Query only, table ARN, three conditions, output name. GREEN in `infra/lib/scheduled-cycle-stack.ts`.
+- [x] 2.2 RED/GREEN `scripts/seed_demo_history.py` (moto): `--day N`, `--reset`, refuses non-`demo-ferrenafe` slug with exit != 0 and zero writes.
+- [x] 2.3 Create `docs/runbooks/agent-alert-history.md`: attach, post-deploy check, AccessDenied on `ALERT#other`, rollback.
+- [x] 2.4 PR 2 gate: `cd infra && npm test`, `uv run pytest`.
 
 ## Phase 3: Deploy + live smoke [DEMO] [OWNER]
 
